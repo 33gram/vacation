@@ -10,6 +10,7 @@
 Пример:
     python scripts/import_tasks_to_github.py --repo mycompany/vacation-tracker --dry-run
     python scripts/import_tasks_to_github.py --repo mycompany/vacation-tracker
+    python scripts/import_tasks_to_github.py --repo mycompany/vacation-tracker --delay 1.5
 
 Важно про идемпотентность:
   - Повторное создание Milestone с тем же названием безопасно пропускается.
@@ -26,10 +27,16 @@ import argparse
 import re
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 MILESTONE_PATTERN = re.compile(r"^##\s+(M\d)\.\s+(.+)$")
-TASK_PATTERN = re.compile(r"^- \[( |x)\]\s+\*\*(T-M\d+-\d+)\*\*\s+(?:\[P\]\s+)?(.+)$")
+# Секция сквозных подготовительных задач (T-000, T-001) — они вне этапов M0-M8
+PREP_SECTION_PATTERN = re.compile(r"^##\s+Сквозные задачи")
+PREP_MILESTONE_KEY = "M-pre"
+PREP_MILESTONE_TITLE = "M-pre — Сквозные подготовительные задачи"
+# ID задачи: этапная (T-M1-06) либо сквозная подготовительная (T-000)
+TASK_PATTERN = re.compile(r"^- \[( |x)\]\s+\*\*(T-(?:M\d+-\d+|\d{3}))\*\*\s+(?:\[P\]\s+)?(.+)$")
 REQ_REF_PATTERN = re.compile(r"`((?:FR|NFR|BR|A)-[A-Za-z0-9\-]+)`")
 
 # Метки по функциональным модулям (расширяйте при необходимости под свои конвенции)
@@ -132,6 +139,11 @@ def parse_tasks(tasks_file: Path) -> tuple[dict[str, str], list[tuple[str, str, 
     for raw_line in tasks_file.read_text(encoding="utf-8").splitlines():
         line = raw_line.strip()
 
+        if PREP_SECTION_PATTERN.match(line):
+            current_milestone = PREP_MILESTONE_TITLE
+            milestones[PREP_MILESTONE_KEY] = PREP_MILESTONE_TITLE
+            continue
+
         m = MILESTONE_PATTERN.match(line)
         if m:
             key, title = m.group(1), m.group(2)
@@ -152,6 +164,13 @@ def main() -> None:
     parser.add_argument("--repo", required=True, help="owner/name целевого репозитория на GitHub")
     parser.add_argument("--tasks-file", default="docs/tasks.md", help="путь к tasks.md (по умолчанию docs/tasks.md)")
     parser.add_argument("--dry-run", action="store_true", help="только показать, что будет создано, без вызова gh")
+    parser.add_argument(
+        "--delay",
+        type=float,
+        default=1.0,
+        help="пауза в секундах между созданием issue (по умолчанию 1.0) — страховка от вторичных "
+             "лимитов GitHub (~80 создающих контент запросов в минуту)",
+    )
     args = parser.parse_args()
 
     tasks_file = Path(args.tasks_file)
@@ -179,15 +198,21 @@ def main() -> None:
 
     print("Создание milestones...")
     for key, title in milestones.items():
-        create_milestone(args.repo, title, f"Этап {key} проекта «Система учёта отпусков»")
+        if key == PREP_MILESTONE_KEY:
+            description = "Сквозные подготовительные задачи до начала этапа M0 (проект «Система учёта отпусков»)"
+        else:
+            description = f"Этап {key} проекта «Система учёта отпусков»"
+        create_milestone(args.repo, title, description)
 
     print("\nСоздание меток модулей...")
     for label in sorted(set(MODULE_LABELS.values()) | {"task", "status:done"}):
         ensure_label(args.repo, label)
 
-    print("\nСоздание issues...")
-    for milestone_title, task_id, description, done in tasks:
+    print(f"\nСоздание issues (пауза между вызовами: {args.delay} сек)...")
+    for index, (milestone_title, task_id, description, done) in enumerate(tasks):
         create_issue(args.repo, milestone_title, task_id, description, done)
+        if args.delay > 0 and index < len(tasks) - 1:
+            time.sleep(args.delay)
 
     print("\nГотово. Проверьте вкладки Issues и Milestones репозитория.")
 

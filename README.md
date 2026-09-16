@@ -1,0 +1,88 @@
+# Система учёта отпусков
+
+Внутренний HR-сервис для учёта ежегодных оплачиваемых отпусков, больничных, отгулов и командировок сотрудников компании (до 500 человек). Спроектирован по подходу **Spec-Driven Development**: требования → архитектура → задачи → код.
+
+## Статус
+
+🚧 MVP в разработке. Текущий прогресс — см. чек-боксы в [`docs/tasks.md`](docs/tasks.md) или доску Issues/Projects (если настроена, см. раздел «Задачи и Milestones» ниже).
+
+## Документация
+
+- [`docs/requirements.md`](docs/requirements.md) — функциональные и нефункциональные требования (v1.2, все открытые вопросы закрыты)
+- [`docs/plan.md`](docs/plan.md) — техническая архитектура, стек, модель данных, API
+- [`docs/tasks.md`](docs/tasks.md) — декомпозиция на задачи по этапам M0–M8
+
+> **Важно:** если в вашем репозитории эти документы называются иначе (например, `Требования_к_системе_учета_отпусков.md` вместо `requirements.md`), переименуйте их под указанные выше пути либо поправьте ссылки в этом README и в `scripts/import_tasks_to_github.py`.
+
+## Технологический стек
+
+| Слой | Технология |
+|---|---|
+| Backend | Python 3.12, FastAPI, SQLAlchemy 2.x, Alembic, Celery + Redis |
+| Frontend | React 18, TypeScript, Vite, Ant Design |
+| База данных | PostgreSQL 16 |
+| Аутентификация | LDAP/Active Directory (+ локальный резерв) |
+| Инфраструктура | Docker Compose, Nginx, on-premise (серверы компании) |
+
+Подробное обоснование — `docs/plan.md`, раздел 1.
+
+## Структура репозитория
+
+```
+.
+├── backend/            # FastAPI-приложение (см. docs/plan.md §3, §6)
+├── frontend/            # React SPA
+├── infra/                # docker-compose, nginx, скрипты бэкапа
+├── docs/                 # requirements.md, plan.md, tasks.md
+├── scripts/              # вспомогательные скрипты (импорт задач в Issues и т.п.)
+└── .github/              # workflows, шаблоны issue/PR
+```
+
+Backend и frontend разворачиваются задачами этапа **M0** (`docs/tasks.md`) — до их выполнения репозиторий содержит только документацию и конфигурацию.
+
+## Разработка
+
+Пока этап M0 не выполнен, окружение не запускается «из коробки» — актуальный порядок настройки см. в `docs/tasks.md`, раздел M0.
+
+После выполнения M0, ожидаемый локальный запуск:
+
+```bash
+cp .env.example .env   # заполнить реальными значениями
+docker compose -f infra/docker-compose.yml up
+```
+
+## Ветвление и Pull Request'ы
+
+- `main` — защищённая ветка: прямые пуши запрещены, слияние только через Pull Request с минимум одним ревью.
+- Ветки задач: `task/T-M{этап}-{номер}-кратко`, например `task/T-M1-06-ldap-client`.
+- В заголовке коммитов и PR указывайте ID задачи (`T-Mx-yy`) — это даёт трассируемость от кода к требованию (`FR-XXX`/`NFR-XXX`) через `docs/tasks.md` и `docs/requirements.md`.
+- Шаблон PR — `.github/PULL_REQUEST_TEMPLATE.md`.
+
+## Задачи и Milestones
+
+Задачи ведутся как **GitHub Issues**, привязанные к **Milestones** `M0`–`M8` (соответствуют этапам `docs/plan.md`/`docs/tasks.md`). Метки (`labels`) — по функциональным модулям (`module:auth`, `module:requests` и т.д., см. `scripts/import_tasks_to_github.py`).
+
+Чтобы массово создать Milestones и Issues из `docs/tasks.md`, один раз выполните (после `gh auth login`):
+
+```bash
+python scripts/import_tasks_to_github.py --repo <owner>/<name> --dry-run   # проверить, что будет создано
+python scripts/import_tasks_to_github.py --repo <owner>/<name>             # создать по-настоящему
+```
+
+Прогресс по каждому этапу после этого виден во вкладке **Milestones** репозитория без необходимости открывать markdown-файлы.
+
+## CI
+
+`.github/workflows/ci.yml` — GitHub Actions, прогоняет линтер и тесты backend/frontend на каждый Pull Request в `main`. Workflow ожидает структуру backend (`pyproject.toml`, `ruff`, `pytest`, `alembic`) и frontend (`package.json` со скриптами `lint`/`test`/`build`), которая появится по итогам этапа M0 — до этого job'ы будут падать, это ожидаемо.
+
+Поскольку развёртывание — on-premise (не облако), для реального деплоя на серверы компании потребуется **self-hosted GitHub Actions runner** внутри сети компании либо ручная выкладка — облачный runner GitHub до внутренней инфраструктуры не достучится (открытый вопрос `plan.md` §14, п. 2).
+
+## Секреты и переменные окружения
+
+- `.env` в репозиторий не коммитится (см. `.gitignore`); шаблон — `.env.example`.
+- Секреты CI (пароли БД для тестового контура, ключи и т.п.) — через **GitHub Actions Secrets** репозитория/организации, не в коде.
+- Параметры подключения к LDAP/AD (`FR-ADMIN-005`) в `.env` **не хранятся** — они настраиваются через интерфейс администратора приложения и живут в таблице `ldap_settings` (см. `docs/plan.md` §5.2).
+
+## Конфиденциальность
+
+Внутренний проект компании — репозиторий должен оставаться **приватным**. Не публикуйте в коде, Issues или PR реальные персональные данные сотрудников, содержимое `.env`, пароли или иные секреты.

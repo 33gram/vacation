@@ -1,0 +1,60 @@
+name: Задача из tasks.md
+description: Создать Issue для одной задачи (T-Mx-yy) из docs/tasks.md
+title: "[T-Mxx-yy] "
+labels: ["task"]
+body:
+  - type: input
+    id: task_id
+    attributes:
+      label: ID задачи
+      description: Точный ID из docs/tasks.md, например T-M1-06
+      placeholder: T-Mx-yy
+    validations:
+      required: true
+
+  - type: dropdown
+    id: milestone_stage
+    attributes:
+      label: Этап
+      options:
+        - "M0 — Каркас проекта"
+        - "M1 — Аутентификация и сотрудники"
+        - "M2 — Остатки и справочники"
+        - "M3 — Заявки, больничные, отгулы и согласование"
+        - "M4 — График отпусков"
+        - "M5 — Календарь и уведомления"
+        - "M6 — Отчётность и аудит"
+        - "M7 — Безопасность и эксплуатационная готовность"
+        - "M8 — Импорт данных и приёмочное тестирование"
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Описание задачи
+      description: Скопируйте формулировку из docs/tasks.md
+    validations:
+      required: true
+
+  - type: input
+    id: requirements
+    attributes:
+      label: Связанные требования
+      description: Например, FR-AUTH-001, NFR-SEC-003 (см. docs/requirements.md)
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Критерии приёмки
+      description: EARS-критерии (WHEN/IF/WHILE/WHERE... THE SYSTEM SHALL...) соответствующего требования из docs/requirements.md
+
+  - type: checkboxes
+    id: definition_of_done
+    attributes:
+      label: Definition of Done
+      options:
+        - label: Реализация покрывает все указанные критерии приёмки
+        - label: Написаны/обновлены тесты (unit/integration — где применимо)
+        - label: При изменении схемы БД — добавлена миграция Alembic
+        - label: Обновлена документация в docs/, если менялась описанная там логика

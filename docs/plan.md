@@ -1,8 +1,8 @@
 # План реализации (plan.md) — Система учёта отпусков
 
-**Версия документа:** 1.0
-**Дата:** 15.09.2026
-**Основание:** `trebovaniya-k-sisteme-ucheta-otpuskov-v1.md`, версия 1.2 (все открытые вопросы закрыты)
+**Версия документа:** 1.1
+**Дата:** 16.09.2026
+**Основание:** `docs/requirements.md`, версия 1.3 (включая локальную аутентификацию и режим внедрения без LDAP)
 **Статус:** Технический план для декомпозиции на задачи (`tasks.md`) и передачи в разработку AI-агентам (Spec-Driven Development)
 
 **Назначение документа:** описать архитектуру, технологический стек, модель данных, API и порядок реализации MVP системы учёта отпусков. Каждый раздел явно ссылается на функциональные требования (`FR-XXX`) и допущения (`A-N`) из `requirements.md`, чтобы разработчик/AI-агент мог проверить полноту покрытия. Технические решения ниже — конкретизация требований, а не пересмотр их содержания.
@@ -129,7 +129,7 @@ vacation-tracker/
 |---|---|---|
 | `departments` | `id`, `name`, `parent_id → departments.id`, `head_employee_id → employees.id` | Дерево подразделений, `FR-EMP-002`. |
 | `employees` | `id`, `full_name`, `personnel_number` (unique), `department_id`, `position`, `hire_date`, `manager_id → employees.id`, `email` (unique), `work_schedule_type` (`standard`/`shift`), `employment_status` (`active`/`terminated`), `termination_date`, `leave_category` (nullable, зарезервировано под A-3.1), `created_at`, `updated_at` | `FR-EMP-001`, `FR-EMP-004`. `work_schedule_type` — признак сменного графика, A-7. |
-| `accounts` | `id`, `employee_id → employees.id` (nullable для служебных записей), `auth_type` (`ldap`/`local`), `local_password_hash` (nullable), `role` (`employee`/`hr_admin`/`accountant`/`system_admin`), `is_active` | `FR-AUTH-001/002`. Роль «руководитель» — не отдельная запись `role`, а производится из наличия подчинённых (`employees.manager_id`), см. раздел 5. |
+| `accounts` | `id`, `employee_id → employees.id` (nullable для служебных записей), `auth_type` (`ldap`/`local`), `local_password_hash` (nullable), `must_change_password` (bool), `failed_login_attempts`, `locked_until` (nullable), `role` (`employee`/`hr_admin`/`accountant`/`system_admin`), `is_active` | `FR-AUTH-001…004`. Роль «руководитель» — не отдельная запись `role`, а производится из наличия подчинённых (`employees.manager_id`), см. раздел 5. |
 | `ldap_settings` | `id`, `server_url`, `port`, `base_dn`, `bind_dn`, `bind_password_encrypted`, `user_match_attribute` (по умолчанию `mail`), `is_active`, `last_tested_at`, `last_test_status` | `FR-ADMIN-005`, A-8. Пароль сервисной записи хранится зашифрованным (см. раздел 9.5). |
 | `leave_types` | `id`, `code` (unique), `name`, `is_paid` (`full`/`none`/`partial`), `unit` (`calendar_days`/`working_days`/`hours`), `reduces_main_balance` (bool), `requires_document` (bool), `requires_approval` (bool), `annual_limit`, `carry_over_policy`, `exclude_weekends_holidays` (bool) | Раздел 6, `FR-ADMIN-001`. |
 | `leave_balances` | `id`, `employee_id`, `leave_type_id`, `working_year_start`, `working_year_end`, `accrued`, `used`, `manual_adjustment`, `adjustment_reason` | `FR-BAL-001…004`. Остаток = `accrued + manual_adjustment - used` (вычисляется, не хранится как отдельное поле, либо материализуется представлением). |
@@ -186,7 +186,9 @@ sequenceDiagram
 ```
 
 - Параметры подключения (`server_url`, `port`, `base_dn`, `bind_dn`, пароль сервисной записи, атрибут сопоставления) читаются из таблицы `ldap_settings`, редактируются только через `system_admin`-интерфейс (`FR-ADMIN-005`), включают кнопку «тестовое подключение» (отдельный эндпоинт `POST /api/admin/ldap-settings/test`, не сохраняющий некорректные параметры).
-- Резервная локальная аутентификация (`FR-AUTH-002`) — для записей с `auth_type = local` (в первую очередь `system_admin` на случай недоступности LDAP-сервера); пароль хранится как `bcrypt`-хэш.
+- Локальная аутентификация (`FR-AUTH-002`) — для записей с `auth_type = local`: служебных/административных (в первую очередь `system_admin` на случай недоступности LDAP-сервера) и отдельных сотрудников, которым такой способ входа назначен в карточке (`FR-EMP-001`). Пароль хранится как `bcrypt`-хэш (`NFR-SEC-004`); флаг `must_change_password` форсирует смену первичного пароля, счётчик `failed_login_attempts` вместе с `locked_until` реализуют временную блокировку после серии неудачных попыток.
+- Режим внедрения (`FR-AUTH-003`): пока в `ldap_settings` нет активной записи, `/api/auth/login` обслуживает всех пользователей локально, а UI показывает администратору предупреждение. После успешного сохранения и проверки параметров каталога способ входа по умолчанию переключается на LDAP; сотрудники с явно выбранным локальным паролем продолжают входить локально.
+- Общие проверки доступа (`FR-AUTH-004`) вынесены в отдельный сервис, вызываемый после любой успешной аутентификации: наличие и активность карточки сотрудника, активность учётной записи, назначение роли — одинаково для LDAP и локального входа.
 - Авторизация — через FastAPI-зависимость (`dependency`), проверяющую JWT и роль/принадлежность к подразделению перед каждым эндпоинтом; матрица соответствует разделу 7 требований.
 
 ---
@@ -195,7 +197,7 @@ sequenceDiagram
 
 | Модуль (пакет) | Функциональные требования | Основные сущности |
 |---|---|---|
-| `auth` | FR-AUTH-001, FR-AUTH-002 | `accounts`, `ldap_settings` |
+| `auth` | FR-AUTH-001…004 | `accounts`, `ldap_settings` |
 | `employees` | FR-EMP-001…004 | `employees`, `departments` |
 | `balances` | FR-BAL-001…004 | `leave_balances` |
 | `schedule` | FR-SCHED-001…004 | `vacation_schedules`, `schedule_entries` |
@@ -220,6 +222,8 @@ sequenceDiagram
 ```
 POST   /api/auth/login                          FR-AUTH-001
 POST   /api/auth/login/local                     FR-AUTH-002
+POST   /api/auth/password/change                 FR-AUTH-002
+POST   /api/auth/password/reset-request          FR-AUTH-002
 POST   /api/auth/logout
 GET    /api/auth/me
 

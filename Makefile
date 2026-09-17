@@ -1,4 +1,4 @@
-COMPOSE = docker compose -f infra/docker-compose.yml
+COMPOSE = docker compose --env-file .env -f infra/docker-compose.yml
 
 .PHONY: up down logs test-backend test-frontend lint-backend lint-frontend openapi-export openapi-client
 

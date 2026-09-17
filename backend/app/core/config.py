@@ -1,5 +1,7 @@
 from functools import lru_cache
+from urllib.parse import quote_plus
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -9,8 +11,19 @@ class Settings(BaseSettings):
     environment: str = "development"
     tz: str = "Europe/Moscow"
 
-    database_url: str = "postgresql+asyncpg://vacation_app:changeme@localhost:5432/vacation_tracker"
-    redis_url: str = "redis://localhost:6379/0"
+    # Части подключения (см. .env.example) — из них собираются database_url/
+    # redis_url, если не задан полный override. Имена полей database_url и
+    # redis_url не менять: на них завязаны app/db/session.py и alembic/env.py.
+    postgres_user: str = "vacation_app"
+    postgres_password: str = "changeme"
+    postgres_db: str = "vacation_tracker"
+    postgres_host: str = "localhost"
+    postgres_port: int = 5432
+    database_url: str = ""
+
+    redis_host: str = "localhost"
+    redis_port: int = 6379
+    redis_url: str = ""
 
     jwt_secret_key: str = "changeme-generate-a-random-secret"
     jwt_algorithm: str = "HS256"
@@ -29,6 +42,18 @@ class Settings(BaseSettings):
     smtp_from: str = "vacation-noreply@company.local"
 
     cors_origins: str = "http://localhost:5173"
+
+    @model_validator(mode="after")
+    def _assemble_urls(self) -> "Settings":
+        if not self.database_url:
+            password = quote_plus(self.postgres_password)
+            self.database_url = (
+                f"postgresql+asyncpg://{self.postgres_user}:{password}"
+                f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
+            )
+        if not self.redis_url:
+            self.redis_url = f"redis://{self.redis_host}:{self.redis_port}/0"
+        return self
 
     @property
     def cors_origins_list(self) -> list[str]:

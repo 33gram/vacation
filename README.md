@@ -48,8 +48,15 @@ Backend и frontend разворачиваются задачами этапа *
 
 ```bash
 cp .env.example .env   # заполнить реальными значениями
-docker compose -f infra/docker-compose.yml up
+docker compose --env-file .env -f infra/docker-compose.yml up
 ```
+
+Обе команды — из корня репозитория. Путь к `--env-file` резолвится
+относительно текущего каталога, а не относительно `-f`: без явного
+`--env-file .env` Compose ищет `.env` рядом с `infra/docker-compose.yml`
+(в `infra/`), а не в корне, и подстановка `${POSTGRES_*}`/`${LDAP_*}`
+в `infra/docker-compose.yml` молча берёт значения по умолчанию вместо
+заданных в корневом `.env`.
 
 ## Ветвление и Pull Request'ы
 

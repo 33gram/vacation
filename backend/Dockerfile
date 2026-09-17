@@ -10,7 +10,12 @@ COPY app ./app
 COPY alembic ./alembic
 COPY alembic.ini ./
 
-RUN pip install --no-cache-dir -e .
+ARG INSTALL_DEV=false
+RUN if [ "$INSTALL_DEV" = "true" ]; then \
+      pip install --no-cache-dir -e ".[dev]"; \
+    else \
+      pip install --no-cache-dir -e .; \
+    fi
 
 EXPOSE 8000
 

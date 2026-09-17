@@ -29,4 +29,5 @@ def test_development_with_default_secrets_starts() -> None:
 def test_test_environment_with_default_secrets_starts() -> None:
     settings = Settings(environment="test")
 
-    assert settings.bootstrap_admin_password == Settings.model_fields["bootstrap_admin_password"].default
+    default_password = Settings.model_fields["bootstrap_admin_password"].default
+    assert settings.bootstrap_admin_password == default_password

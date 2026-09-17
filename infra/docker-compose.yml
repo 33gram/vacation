@@ -54,6 +54,8 @@ services:
     build:
       context: ../backend
       dockerfile: Dockerfile
+      args:
+        INSTALL_DEV: "true"
     restart: unless-stopped
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
     env_file:
@@ -69,6 +71,7 @@ services:
     volumes:
       - ../backend/app:/app/app
       - ../backend/alembic:/app/alembic
+      - ../backend/tests:/app/tests
     ports:
       - "8000:8000"
 

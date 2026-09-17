@@ -25,16 +25,16 @@
 
 *Требования: инфраструктурные допущения раздела 4, `plan.md` §2–3, §8.*
 
-- [ ] **T-M0-01** Инициализировать монорепозиторий со структурой `backend/`, `frontend/`, `infra/`, `docs/` (`plan.md` §3); перенести `requirements.md` и `plan.md` в `docs/`.
-- [ ] **T-M0-02** [P] Настроить `backend/pyproject.toml`: FastAPI, SQLAlchemy 2.x (async), Alembic, `ldap3`, Celery, `pytest`, `pytest-asyncio`, `httpx`, `bcrypt`.
-- [ ] **T-M0-03** [P] Инициализировать `frontend/` (Vite + React 18 + TypeScript), подключить Ant Design, React Router, React Query.
-- [ ] **T-M0-04** Написать `infra/docker-compose.yml`: `postgres:16`, `redis`, тестовый `openldap` (тестовые данные — 3–5 пользователей с разными ролями), `backend`, `worker`, `frontend` (dev-режим).
-- [ ] **T-M0-05** Настроить Alembic (`backend/alembic/`), подключение к БД через переменные окружения (`.env.example`).
-- [ ] **T-M0-06** Настроить базовый CI-пайплайн (lint + unit-тесты backend и frontend) — конкретный инструмент CI уточняется по `T-000`, до решения — GitHub Actions/локальный `make test` как временная заглушка.
-- [ ] **T-M0-07** Настроить генерацию OpenAPI-схемы FastAPI и автогенерацию TypeScript-клиента (`frontend/src/api/`) из неё (`plan.md` §7).
-- [ ] **T-M0-08** [P] Добавить `nginx`-конфигурацию для dev/prod (реверс-прокси на `backend`, раздача статики `frontend`) — `infra/nginx/`.
-- [ ] **T-M0-09** Настроить структурированное JSON-логирование backend/worker (`plan.md` §10) и health-check эндпоинт `GET /healthz` (проверка БД).
-- [ ] **T-M0-10** Настроить `frontend`-роутинг верхнего уровня и заглушку авторизации (страница логина без реальной интеграции) — основа для M1.
+- [x] **T-M0-01** Инициализировать монорепозиторий со структурой `backend/`, `frontend/`, `infra/`, `docs/` (`plan.md` §3); перенести `requirements.md` и `plan.md` в `docs/`.
+- [x] **T-M0-02** [P] Настроить `backend/pyproject.toml`: FastAPI, SQLAlchemy 2.x (async), Alembic, `ldap3`, Celery, `pytest`, `pytest-asyncio`, `httpx`, `bcrypt`.
+- [x] **T-M0-03** [P] Инициализировать `frontend/` (Vite + React 18 + TypeScript), подключить Ant Design, React Router, React Query.
+- [x] **T-M0-04** Написать `infra/docker-compose.yml`: `postgres:16`, `redis`, тестовый `openldap` (тестовые данные — 3–5 пользователей с разными ролями), `backend`, `worker`, `frontend` (dev-режим).
+- [x] **T-M0-05** Настроить Alembic (`backend/alembic/`), подключение к БД через переменные окружения (`.env.example`).
+- [x] **T-M0-06** Настроить базовый CI-пайплайн (lint + unit-тесты backend и frontend) — конкретный инструмент CI уточняется по `T-000`, до решения — GitHub Actions/локальный `make test` как временная заглушка.
+- [x] **T-M0-07** Настроить генерацию OpenAPI-схемы FastAPI и автогенерацию TypeScript-клиента (`frontend/src/api/`) из неё (`plan.md` §7).
+- [x] **T-M0-08** [P] Добавить `nginx`-конфигурацию для dev/prod (реверс-прокси на `backend`, раздача статики `frontend`) — `infra/nginx/`.
+- [x] **T-M0-09** Настроить структурированное JSON-логирование backend/worker (`plan.md` §10) и health-check эндпоинт `GET /healthz` (проверка БД).
+- [x] **T-M0-10** Настроить `frontend`-роутинг верхнего уровня и заглушку авторизации (страница логина без реальной интеграции) — основа для M1.
 
 **Готовность этапа:** `docker compose up` поднимает пустой каркас, CI зелёный, `/healthz` отвечает 200.
 

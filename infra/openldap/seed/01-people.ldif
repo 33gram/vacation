@@ -1,0 +1,67 @@
+# Тестовые данные OpenLDAP для локальной разработки/CI (T-M0-04).
+# Это НЕ боевой каталог компании — синтетические учётные записи для
+# проверки LDAP-аутентификации (FR-AUTH-001) на этапе M1. Переключение на
+# боевой LDAP/AD — задача T-M8-02.
+#
+# Сопоставление с employees идёт по атрибуту mail (FR-ADMIN-005,
+# user_match_attribute по умолчанию = mail).
+
+dn: dc=company,dc=local
+objectClass: dcObject
+objectClass: organization
+o: Company
+dc: company
+
+dn: ou=people,dc=company,dc=local
+objectClass: organizationalUnit
+ou: people
+
+dn: uid=ivanov,ou=people,dc=company,dc=local
+objectClass: inetOrgPerson
+uid: ivanov
+cn: Иван Иванов
+sn: Иванов
+givenName: Иван
+mail: ivanov@company.local
+title: Руководитель отдела разработки
+userPassword: TestPass123!
+
+dn: uid=petrov,ou=people,dc=company,dc=local
+objectClass: inetOrgPerson
+uid: petrov
+cn: Пётр Петров
+sn: Петров
+givenName: Пётр
+mail: petrov@company.local
+title: Сотрудник
+userPassword: TestPass123!
+
+dn: uid=smirnova,ou=people,dc=company,dc=local
+objectClass: inetOrgPerson
+uid: smirnova
+cn: Анна Смирнова
+sn: Смирнова
+givenName: Анна
+mail: smirnova@company.local
+title: HR-администратор
+userPassword: TestPass123!
+
+dn: uid=fedorova,ou=people,dc=company,dc=local
+objectClass: inetOrgPerson
+uid: fedorova
+cn: Ольга Фёдорова
+sn: Фёдорова
+givenName: Ольга
+mail: fedorova@company.local
+title: Бухгалтер
+userPassword: TestPass123!
+
+dn: uid=sysadmin,ou=people,dc=company,dc=local
+objectClass: inetOrgPerson
+uid: sysadmin
+cn: Сергей Кузнецов
+sn: Кузнецов
+givenName: Сергей
+mail: sysadmin@company.local
+title: Системный администратор
+userPassword: TestPass123!

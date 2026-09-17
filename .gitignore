@@ -16,6 +16,10 @@ build/
 # Alembic: миграции коммитим, кэш — нет
 backend/**/__pycache__/
 
+# OpenAPI-схема — генерируется из кода (T-M0-07), в git не хранится;
+# итоговый TS-клиент frontend/src/api/generated коммитится.
+backend/openapi.json
+
 # --- Node / frontend ---
 node_modules/
 frontend/dist/
@@ -42,3 +46,8 @@ Thumbs.db
 *.log
 *.pid
 .tmp/
+
+# Локальные настройки Claude Code (персональные разрешения машины).
+# Внимание: .claude/ целиком НЕ игнорируем — там лежат скиллы (.claude/skills/),
+# которые коммитятся намеренно.
+.claude/settings.local.json

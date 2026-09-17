@@ -1,6 +1,6 @@
 # Декомпозиция задач (tasks.md) — Система учёта отпусков
 
-**Версия документа:** 1.2
+**Версия документа:** 1.3
 **Дата:** 17.09.2026
 **Основание:** `requirements.md` v1.4 (функциональные/нефункциональные требования), `plan.md` v1.2 (архитектура, стек, этапы M0–M8)
 **Статус:** Финальный артефакт SDD-цепочки (`requirements.md` → `plan.md` → `tasks.md`) — готов к исполнению разработчиками/AI-агентами.
@@ -49,7 +49,7 @@
 - [ ] **T-M1-01** Миграция: таблица `departments` (`id`, `name`, `parent_id`, `head_employee_id`), self-FK на дерево.
 - [ ] **T-M1-02** Миграция: таблица `employees` (все поля `plan.md` §4), включая `work_schedule_type`, `employment_status`, `leave_category` (nullable, задел под A-3.1).
 - [ ] **T-M1-03** Миграция: таблица `accounts` (`role`, `auth_type`, `local_password_hash`, `is_active`) + FK на `employees`.
-- [ ] **T-M1-04** Миграция: таблица `ldap_settings` с полем `bind_password_encrypted`. Механизм — обратимое шифрование на уровне приложения (`cryptography`, AES-GCM либо Fernet), ключ из `FIELD_ENCRYPTION_KEY` (решение по `T-000`, `plan.md` §4/§9). При реализации добавить зависимость `cryptography` в `backend/pyproject.toml`.
+- [ ] **T-M1-04** Миграция: таблица `ldap_settings` с полем `bind_password_encrypted`. Механизм — обратимое шифрование на уровне приложения (`cryptography`, AES-GCM либо Fernet), ключ из `FIELD_ENCRYPTION_KEY` (решение по `T-000`, `plan.md` §4/§9). При реализации добавить зависимость `cryptography` в `backend/pyproject.toml` и переименовать переменную окружения `FIELD_ENCRYPTION_KEY` в `LDAP_PASSWORD_ENCRYPTION_KEY` (`backend/app/core/config.py`, `.env.example`, `.github/workflows/ci.yml`, тесты) — после `T-000` область действия переменной сузилась до пароля служебной записи LDAP.
 - [ ] **T-M1-05** Миграция: таблица `production_calendar_days`.
 
 ### Бизнес-логика и сервисы

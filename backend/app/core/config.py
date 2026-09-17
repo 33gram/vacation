@@ -43,6 +43,10 @@ class Settings(BaseSettings):
 
     cors_origins: str = "http://localhost:5173"
 
+    # Поля, для которых нельзя стартовать со значением по умолчанию вне
+    # development/test (NFR-SEC-001) — см. _forbid_default_secrets_outside_dev.
+    _SECRET_FIELDS = ("jwt_secret_key", "field_encryption_key", "bootstrap_admin_password")
+
     @model_validator(mode="after")
     def _assemble_urls(self) -> "Settings":
         if not self.database_url:
@@ -53,6 +57,24 @@ class Settings(BaseSettings):
             )
         if not self.redis_url:
             self.redis_url = f"redis://{self.redis_host}:{self.redis_port}/0"
+        return self
+
+    @model_validator(mode="after")
+    def _forbid_default_secrets_outside_dev(self) -> "Settings":
+        if self.environment in {"development", "test"}:
+            return self
+
+        fields = type(self).model_fields
+        unset = [
+            name.upper()
+            for name in self._SECRET_FIELDS
+            if getattr(self, name) == fields[name].default
+        ]
+        if unset:
+            raise ValueError(
+                f"Environment '{self.environment}' must not start with default "
+                f"secret values. Set these environment variables: {', '.join(unset)}."
+            )
         return self
 
     @property

@@ -33,8 +33,10 @@ services:
   # Образ закреплён на bitnamilegacy (свежие теги bitnami/* ушли за
   # платную подписку Bitnami Secure Images) — этого достаточно для
   # тестового каталога разработки/CI, не для прод-эксплуатации.
+  # Тег закреплён по digest, а не по имени: bitnamilegacy не поддерживается,
+  # и тег может быть перезаписан под собой другим содержимым.
   openldap:
-    image: bitnamilegacy/openldap:2.6.10-debian-12-r4
+    image: bitnamilegacy/openldap@sha256:966fd39ed25813890e9bd57dac56def163bbcfe64967e0bae59ab018d505bd93
     restart: unless-stopped
     environment:
       LDAP_ROOT: dc=company,dc=local

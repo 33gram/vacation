@@ -13,7 +13,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.core.crypto import decrypt, encrypt
-from app.core.ldap_client import LdapAuthError, LdapSettingsData
+from app.core.ldap_client import (
+    DEFAULT_LDAP_PORT,
+    DEFAULT_USER_MATCH_ATTRIBUTE,
+    LdapAuthError,
+    LdapSettingsData,
+)
 from app.core.ldap_client import test_connection as ldap_test_connection
 from app.core.time_utils import utcnow
 from app.models.ldap_settings import LdapSettings
@@ -135,13 +140,15 @@ async def _test_draft_ldap_params(
 
     port = payload.port if payload.port is not None else (saved_row.port if saved_row else None)
     user_match_attribute = pick(payload.user_match_attribute, "user_match_attribute")
+    if user_match_attribute is None:
+        user_match_attribute = DEFAULT_USER_MATCH_ATTRIBUTE
     params = LdapSettingsData(
         server_url=server_url,
-        port=port if port is not None else 389,
+        port=port if port is not None else DEFAULT_LDAP_PORT,
         base_dn=base_dn,
         bind_dn=bind_dn,
         bind_password=bind_password,
-        user_match_attribute=user_match_attribute if user_match_attribute is not None else "mail",
+        user_match_attribute=user_match_attribute,
     )
     return await _run_ldap_test(params)
 

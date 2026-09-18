@@ -13,6 +13,16 @@ from ldap3 import Connection, Server
 from ldap3.core.exceptions import LDAPException
 from ldap3.utils.conv import escape_filter_chars
 
+# Единственное место для дефолтов подключения к LDAP (PR #137 review,
+# круг 4, замечание #4): до этой правки `port=389`/`user_match_attribute=
+# "mail"` были продублированы здесь, в `schemas/ldap_settings.py` и в
+# фолбэке `admin/ldap_settings_service.py`. DB-дефолт в
+# `models/ldap_settings.py` (и `server_default` в миграции 0004) сюда не
+# входит — это отдельный, неизменяемый слой (защита для вставок мимо
+# ORM/приложения), а не то же самое бизнес-правило.
+DEFAULT_LDAP_PORT = 389
+DEFAULT_USER_MATCH_ATTRIBUTE = "mail"
+
 
 class LdapAuthError(Exception):
     """Bind не удался: неверные учётные данные, сбой соединения или
@@ -27,7 +37,7 @@ class LdapSettingsData:
     base_dn: str
     bind_dn: str
     bind_password: str
-    user_match_attribute: str = "mail"
+    user_match_attribute: str = DEFAULT_USER_MATCH_ATTRIBUTE
 
 
 def authenticate(settings: LdapSettingsData, login: str, password: str) -> str:

@@ -6,6 +6,8 @@ import datetime
 
 from pydantic import BaseModel, ConfigDict, SecretStr
 
+from app.core.ldap_client import DEFAULT_LDAP_PORT, DEFAULT_USER_MATCH_ATTRIBUTE
+
 
 class LdapSettingsOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -23,12 +25,12 @@ class LdapSettingsOut(BaseModel):
 
 class LdapSettingsIn(BaseModel):
     server_url: str
-    port: int = 389
+    port: int = DEFAULT_LDAP_PORT
     base_dn: str
     bind_dn: str
     # None/отсутствует — сохранённый пароль не трогаем (T-M1-16).
     bind_password: str | None = None
-    user_match_attribute: str = "mail"
+    user_match_attribute: str = DEFAULT_USER_MATCH_ATTRIBUTE
     is_active: bool = False
 
 

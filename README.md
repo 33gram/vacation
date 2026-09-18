@@ -76,6 +76,8 @@ docker compose --env-file .env -f infra/docker-compose.yml exec postgres \
 
 Отдельная сессионная фикстура в `backend/tests/conftest.py` дополнительно проверяет, что имя базы, к которой подключаются тесты, оканчивается на `_test`, и сразу останавливает прогон понятной ошибкой, если это не так, — так что подключение к dev/prod-базе в обход `make test-backend` (например, прямым `docker compose exec backend pytest`) не пройдёт тихо.
 
+С переменной окружения `PYTEST_FORBID_SKIPS=1` (выставлена в CI, `.github/workflows/ci.yml`) прогон заваливается с ненулевым кодом возврата ровно на том, что сам pytest считает пропуском, — включая пропуск на стадии сбора модуля (`pytest.skip(allow_module_level=True)`, `pytest.importorskip(...)`), но не `xfail`. Это ловит молчаливый пропуск по любой причине, а не только недоступность тестового LDAP, — но не ловит исключение файла из сбора (`collect_ignore`, имя вне маски `test_*.py`, флаги `--ignore`/`-k`/`-m`): pytest такие файлы пропусками не считает, и, в отличие от пропуска, это всегда видимая правка в диффе. Локально без переменной `PYTEST_FORBID_SKIPS` пропуски по-прежнему разрешены (`backend/tests/conftest.py`, докстринг модуля).
+
 ## Ветвление и Pull Request'ы
 
 - `main` — защищённая ветка: прямые пуши запрещены, слияние только через Pull Request.
@@ -102,6 +104,8 @@ python scripts/import_tasks_to_github.py --repo <owner>/<name>             # с�
 `.github/workflows/ci.yml` — GitHub Actions, прогоняет линтер и тесты backend/frontend на каждый Pull Request в `main`. Workflow ожидает структуру backend (`pyproject.toml`, `ruff`, `pytest`, `alembic`) и frontend (`package.json` со скриптами `lint`/`test`/`build`), которая появится по итогам этапа M0 — до этого job'ы будут падать, это ожидаемо.
 
 Поскольку развёртывание — on-premise (не облако), для реального деплоя на серверы компании потребуется **self-hosted GitHub Actions runner** внутри сети компании либо ручная выкладка — облачный runner GitHub до внутренней инфраструктуры не достучится (открытый вопрос `plan.md` §14, п. 2).
+
+Отдельный job `openapi-client-check` (T-M1-28) сверяет сгенерированный TS-клиент (`frontend/src/api/generated/schema.d.ts`) со схемой backend; правка докстринга класса Pydantic-модели меняет OpenAPI-схему (Pydantic кладёт его в JSON-схему как `description`) и требует `make openapi-client` перед коммитом точно так же, как правка самого эндпоинта.
 
 ## Секреты и переменные окружения
 

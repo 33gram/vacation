@@ -13,6 +13,15 @@ from ldap3 import Connection, Server
 from ldap3.core.exceptions import LDAPException
 from ldap3.utils.conv import escape_filter_chars
 
+# Единственное место для дефолтов подключения к LDAP: значения также
+# используются в `schemas/ldap_settings.py` и в фолбэке
+# `admin/ldap_settings_service.py`, чтобы не дублировать их там. DB-дефолт
+# в `models/ldap_settings.py` (и `server_default` в миграции 0004) сюда не
+# входит — это отдельный, неизменяемый слой (защита для вставок мимо
+# ORM/приложения), а не то же самое бизнес-правило.
+DEFAULT_LDAP_PORT = 389
+DEFAULT_USER_MATCH_ATTRIBUTE = "mail"
+
 
 class LdapAuthError(Exception):
     """Bind не удался: неверные учётные данные, сбой соединения или
@@ -27,7 +36,7 @@ class LdapSettingsData:
     base_dn: str
     bind_dn: str
     bind_password: str
-    user_match_attribute: str = "mail"
+    user_match_attribute: str = DEFAULT_USER_MATCH_ATTRIBUTE
 
 
 def authenticate(settings: LdapSettingsData, login: str, password: str) -> str:
@@ -75,3 +84,21 @@ def authenticate(settings: LdapSettingsData, login: str, password: str) -> str:
         raise LdapAuthError("Invalid credentials") from exc
 
     return matched_value
+
+
+def test_connection(settings: LdapSettingsData) -> None:
+    """Проверяет bind сервисной записью и доступность `base_dn` — без
+    аутентификации конкретного пользователя (T-M1-16,
+    `POST /api/admin/ldap-settings/test`). Поднимает `LdapAuthError` при
+    неудаче; ничего не возвращает и не сохраняет."""
+    server = Server(settings.server_url, port=settings.port, use_ssl=settings.port == 636)
+    try:
+        with Connection(
+            server,
+            user=settings.bind_dn,
+            password=settings.bind_password,
+            auto_bind=True,
+        ) as conn:
+            conn.search(search_base=settings.base_dn, search_filter="(objectClass=*)", size_limit=1)
+    except LDAPException as exc:
+        raise LdapAuthError("Service bind or base DN search failed") from exc

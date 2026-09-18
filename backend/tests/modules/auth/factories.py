@@ -8,6 +8,7 @@ import itertools
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.security import create_access_token
 from app.models.account import Account
 from app.models.employee import Employee
 
@@ -61,3 +62,8 @@ async def make_account(
     session.add(account)
     await session.flush()
     return account
+
+
+def bearer_header(account: Account) -> dict[str, str]:
+    token = create_access_token(account_id=account.id, role=account.role)
+    return {"Authorization": f"Bearer {token}"}

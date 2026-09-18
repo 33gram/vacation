@@ -47,9 +47,13 @@ class LdapTestRequest(BaseModel):
     port: int | None = None
     base_dn: str | None = None
     bind_dn: str | None = None
-    # SecretStr (PR #137 review, замечание #4): OpenAPI/generated TS client
-    # mark this as writeOnly instead of a plain string, and str()/repr()
-    # never leak the value if this ever ends up in a log line by accident.
+    # SecretStr (PR #137 review, замечание #4): в OpenAPI-схеме backend'а
+    # это writeOnly-строка, а не обычная (TypeScript такого понятия не
+    # знает, openapi-typescript его не переносит — в сгенерированном
+    # клиенте поле остаётся обычным `string | null`, это ожидаемо). От
+    # утечки самого пароля защищает не тип клиента, а то, что его вообще
+    # нет в LdapSettingsOut; SecretStr здесь лишь маскирует repr()/str(),
+    # если это когда-нибудь случайно попадёт в лог.
     bind_password: SecretStr | None = None
     user_match_attribute: str | None = None
 

@@ -21,10 +21,337 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/auth/login": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Login
+         * @description FR-AUTH-001/003: LDAP, если в `ldap_settings` есть активная запись;
+         *     иначе — режим внедрения, вход тем же логином/паролем обслуживается
+         *     локально, как того требует FR-AUTH-003.
+         */
+        post: operations["login_api_auth_login_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/auth/login/local": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Login Local
+         * @description FR-AUTH-002: всегда локальный вход, независимо от состояния LDAP —
+         *     служебные записи и сотрудники с явно выбранным локальным паролем.
+         */
+        post: operations["login_local_api_auth_login_local_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/auth/password/change": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Change Password
+         * @description Доступен и при `must_change_password=True` (не идёт через
+         *     `require_roles`) — иначе первичный пароль было бы нечем сменить.
+         */
+        post: operations["change_password_api_auth_password_change_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/auth/logout": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Logout
+         * @description См. обоснование выбора (stateless JWT, не отзывается) в теле
+         *     коммита T-M1-13: клиент обязан удалить оба токена локально.
+         */
+        post: operations["logout_api_auth_logout_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/auth/me": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Me */
+        get: operations["me_api_auth_me_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/ldap-settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Ldap Settings */
+        get: operations["get_ldap_settings_api_admin_ldap_settings_get"];
+        /** Put Ldap Settings */
+        put: operations["put_ldap_settings_api_admin_ldap_settings_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/ldap-settings/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Test Ldap Settings */
+        post: operations["test_ldap_settings_api_admin_ldap_settings_test_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/production-calendar/{year}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Production Calendar */
+        get: operations["get_production_calendar_api_admin_production_calendar__year__get"];
+        /** Put Production Calendar */
+        put: operations["put_production_calendar_api_admin_production_calendar__year__put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
-    schemas: never;
+    schemas: {
+        /** HTTPValidationError */
+        HTTPValidationError: {
+            /** Detail */
+            detail?: components["schemas"]["ValidationError"][];
+        };
+        /** LdapSettingsIn */
+        LdapSettingsIn: {
+            /** Server Url */
+            server_url: string;
+            /**
+             * Port
+             * @default 389
+             */
+            port: number;
+            /** Base Dn */
+            base_dn: string;
+            /** Bind Dn */
+            bind_dn: string;
+            /** Bind Password */
+            bind_password?: string | null;
+            /**
+             * User Match Attribute
+             * @default mail
+             */
+            user_match_attribute: string;
+            /**
+             * Is Active
+             * @default false
+             */
+            is_active: boolean;
+        };
+        /** LdapSettingsOut */
+        LdapSettingsOut: {
+            /** Id */
+            id: number;
+            /** Server Url */
+            server_url: string;
+            /** Port */
+            port: number;
+            /** Base Dn */
+            base_dn: string;
+            /** Bind Dn */
+            bind_dn: string;
+            /** User Match Attribute */
+            user_match_attribute: string;
+            /** Is Active */
+            is_active: boolean;
+            /** Last Tested At */
+            last_tested_at: string | null;
+            /** Last Test Status */
+            last_test_status: string | null;
+        };
+        /** LdapTestRequest */
+        LdapTestRequest: {
+            /** Server Url */
+            server_url: string;
+            /**
+             * Port
+             * @default 389
+             */
+            port: number;
+            /** Base Dn */
+            base_dn: string;
+            /** Bind Dn */
+            bind_dn: string;
+            /** Bind Password */
+            bind_password: string;
+            /**
+             * User Match Attribute
+             * @default mail
+             */
+            user_match_attribute: string;
+        };
+        /** LdapTestResponse */
+        LdapTestResponse: {
+            /** Success */
+            success: boolean;
+            /** Detail */
+            detail: string;
+        };
+        /** LoginRequest */
+        LoginRequest: {
+            /** Login */
+            login: string;
+            /** Password */
+            password: string;
+        };
+        /** MeResponse */
+        MeResponse: {
+            /** Id */
+            id: number;
+            /** Role */
+            role: string;
+            /** Is Active */
+            is_active: boolean;
+            /** Must Change Password */
+            must_change_password: boolean;
+            /** Employee Id */
+            employee_id: number | null;
+            /** Login */
+            login: string | null;
+            /** Embedded Mode */
+            embedded_mode: boolean;
+        };
+        /** PasswordChangeRequest */
+        PasswordChangeRequest: {
+            /** Current Password */
+            current_password: string;
+            /** New Password */
+            new_password: string;
+        };
+        /** ProductionCalendarDayIn */
+        ProductionCalendarDayIn: {
+            /**
+             * Date
+             * Format: date
+             */
+            date: string;
+            /**
+             * Day Type
+             * @enum {string}
+             */
+            day_type: "working" | "weekend" | "holiday";
+        };
+        /** ProductionCalendarDayOut */
+        ProductionCalendarDayOut: {
+            /**
+             * Date
+             * Format: date
+             */
+            date: string;
+            /** Day Type */
+            day_type: string;
+        };
+        /** ProductionCalendarYearIn */
+        ProductionCalendarYearIn: {
+            /** Days */
+            days: components["schemas"]["ProductionCalendarDayIn"][];
+        };
+        /** ProductionCalendarYearOut */
+        ProductionCalendarYearOut: {
+            /** Year */
+            year: number;
+            /** Days */
+            days: components["schemas"]["ProductionCalendarDayOut"][];
+        };
+        /** TokenResponse */
+        TokenResponse: {
+            /** Access Token */
+            access_token: string;
+            /** Refresh Token */
+            refresh_token: string;
+            /**
+             * Token Type
+             * @default bearer
+             */
+            token_type: string;
+            /** Role */
+            role: string;
+            /** Must Change Password */
+            must_change_password: boolean;
+        };
+        /** ValidationError */
+        ValidationError: {
+            /** Location */
+            loc: (string | number)[];
+            /** Message */
+            msg: string;
+            /** Error Type */
+            type: string;
+        };
+    };
     responses: never;
     parameters: never;
     requestBodies: never;
@@ -51,6 +378,293 @@ export interface operations {
                     "application/json": {
                         [key: string]: string;
                     };
+                };
+            };
+        };
+    };
+    login_api_auth_login_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LoginRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TokenResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    login_local_api_auth_login_local_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LoginRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TokenResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    change_password_api_auth_password_change_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PasswordChangeRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    logout_api_auth_logout_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    me_api_auth_me_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MeResponse"];
+                };
+            };
+        };
+    };
+    get_ldap_settings_api_admin_ldap_settings_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LdapSettingsOut"] | null;
+                };
+            };
+        };
+    };
+    put_ldap_settings_api_admin_ldap_settings_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LdapSettingsIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LdapSettingsOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    test_ldap_settings_api_admin_ldap_settings_test_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LdapTestRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LdapTestResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_production_calendar_api_admin_production_calendar__year__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                year: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProductionCalendarYearOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    put_production_calendar_api_admin_production_calendar__year__put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                year: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProductionCalendarYearIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProductionCalendarYearOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

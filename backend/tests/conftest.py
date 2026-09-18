@@ -11,7 +11,7 @@ from app.core.config import get_settings
 from app.db.session import get_db_session, get_engine
 from app.main import app
 
-_forbidden_skips: list[pytest.TestReport] = []
+_forbidden_skips: list[pytest.TestReport | pytest.CollectReport] = []
 
 
 def pytest_runtest_logreport(report: pytest.TestReport) -> None:
@@ -23,12 +23,34 @@ def pytest_runtest_logreport(report: pytest.TestReport) -> None:
 
     `xfail` тоже приходит сюда с `report.skipped=True` — исключаем его
     через `report.wasxfail` (см. `_pytest/skipping.py`), иначе первый же
-    ожидаемый xfail завалил бы прогон как «неожиданный пропуск»."""
+    ожидаемый xfail завалил бы прогон как «неожиданный пропуск».
+
+    Этот хук получает отчёты только по тестам, которые дошли до стадии
+    выполнения (`runtest`) — пропуск на стадии СБОРА модуля
+    (`pytest_collectreport` ниже) сюда не попадает."""
     if report.skipped and not hasattr(report, "wasxfail"):
         _forbidden_skips.append(report)
 
 
-def _skip_reason(report: pytest.TestReport) -> str:
+def pytest_collectreport(report: pytest.CollectReport) -> None:
+    """PR #137 review, круг 3, замечание #1: `pytest.skip(...,
+    allow_module_level=True)` и `pytest.importorskip(...)` пропускают
+    модуль на стадии СБОРА — элемент теста не создаётся, и
+    `pytest_runtest_logreport` выше о таком пропуске никогда не узнаёт
+    (нет провалившегося/пропущенного теста — есть нераскрытая коллекция).
+    Без этого хука такой файл проходит CI молча, как будто его прогнали.
+
+    `wasxfail` здесь не бывает — xfail — исход выполнения теста, а не
+    сбора, поэтому фильтровать его не нужно."""
+    if report.outcome == "skipped":
+        _forbidden_skips.append(report)
+
+
+def _skip_nodeid(report: pytest.TestReport | pytest.CollectReport) -> str:
+    return report.nodeid or "<сбор корня сессии>"
+
+
+def _skip_reason(report: pytest.TestReport | pytest.CollectReport) -> str:
     if isinstance(report.longrepr, tuple) and len(report.longrepr) == 3:
         return str(report.longrepr[2])
     return str(report.longrepr)
@@ -47,12 +69,12 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     if reporter is not None:
         reporter.write_line("")
         reporter.write_line(
-            f"PYTEST_FORBID_SKIPS=1: {len(_forbidden_skips)} тест(ов) пропущено "
+            f"PYTEST_FORBID_SKIPS=1: {len(_forbidden_skips)} пропуск(ов) "
             "— в CI это запрещено:",
             red=True,
         )
         for report in _forbidden_skips:
-            reporter.write_line(f"  - {report.nodeid}: {_skip_reason(report)}", red=True)
+            reporter.write_line(f"  - {_skip_nodeid(report)}: {_skip_reason(report)}", red=True)
 
     session.exitstatus = 1
 

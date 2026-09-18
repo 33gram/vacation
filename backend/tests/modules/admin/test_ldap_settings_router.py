@@ -2,26 +2,12 @@
 
 from __future__ import annotations
 
-import os
-import socket
-
-import pytest
 from sqlalchemy import select
 
 from app.models.ldap_settings import LdapSettings
 from app.modules.auth.embedded_mode import is_embedded_mode
+from tests.ldap_guard import LDAP_TEST_HOST, LDAP_TEST_PORT, requires_ldap
 from tests.modules.auth.factories import bearer_header, make_account, make_employee
-
-LDAP_TEST_HOST = os.environ.get("LDAP_TEST_HOST", "openldap")
-LDAP_TEST_PORT = int(os.environ.get("LDAP_TEST_PORT", "1389"))
-
-
-def _ldap_reachable() -> bool:
-    try:
-        with socket.create_connection((LDAP_TEST_HOST, LDAP_TEST_PORT), timeout=5.0):
-            return True
-    except OSError:
-        return False
 
 
 async def _make_admin(db_session, *, must_change_password: bool = False):
@@ -179,10 +165,7 @@ async def test_put_ldap_settings_without_password_keeps_existing_one(
 # --- POST /test -------------------------------------------------------------
 
 
-@pytest.mark.skipif(
-    not _ldap_reachable(),
-    reason="Тестовый OpenLDAP недоступен — запускать через `make test-backend`",
-)
+@requires_ldap
 async def test_test_ldap_settings_succeeds_and_does_not_persist(db_session, api_client) -> None:
     account = await _make_admin(db_session)
 
@@ -203,10 +186,7 @@ async def test_test_ldap_settings_succeeds_and_does_not_persist(db_session, api_
     assert (await db_session.execute(select(LdapSettings))).scalars().first() is None
 
 
-@pytest.mark.skipif(
-    not _ldap_reachable(),
-    reason="Тестовый OpenLDAP недоступен — запускать через `make test-backend`",
-)
+@requires_ldap
 async def test_test_ldap_settings_reports_failure_without_persisting(
     db_session, api_client
 ) -> None:
@@ -239,10 +219,7 @@ async def test_test_saved_settings_with_nothing_saved_returns_400(db_session, ap
     assert response.status_code == 400
 
 
-@pytest.mark.skipif(
-    not _ldap_reachable(),
-    reason="Тестовый OpenLDAP недоступен — запускать через `make test-backend`",
-)
+@requires_ldap
 async def test_test_adhoc_params_does_not_touch_saved_settings(db_session, api_client) -> None:
     # FR-ADMIN-005/FR-AUTH-003 (PR #137 review): проверка черновых
     # параметров, отличных от сохранённых, не должна помечать сохранённую
@@ -279,10 +256,7 @@ async def test_test_adhoc_params_does_not_touch_saved_settings(db_session, api_c
     assert row.last_test_status is None
 
 
-@pytest.mark.skipif(
-    not _ldap_reachable(),
-    reason="Тестовый OpenLDAP недоступен — запускать через `make test-backend`",
-)
+@requires_ldap
 async def test_test_saved_settings_persists_success_and_ends_embedded_mode(
     db_session, api_client
 ) -> None:
@@ -317,10 +291,7 @@ async def test_test_saved_settings_persists_success_and_ends_embedded_mode(
     assert await is_embedded_mode(db_session) is False
 
 
-@pytest.mark.skipif(
-    not _ldap_reachable(),
-    reason="Тестовый OpenLDAP недоступен — запускать через `make test-backend`",
-)
+@requires_ldap
 async def test_test_saved_settings_persists_failure_and_keeps_embedded_mode(
     db_session, api_client
 ) -> None:
@@ -355,10 +326,7 @@ async def test_test_saved_settings_persists_failure_and_keeps_embedded_mode(
     assert await is_embedded_mode(db_session) is True
 
 
-@pytest.mark.skipif(
-    not _ldap_reachable(),
-    reason="Тестовый OpenLDAP недоступен — запускать через `make test-backend`",
-)
+@requires_ldap
 async def test_editing_saved_settings_resets_verification_status(db_session, api_client) -> None:
     # FR-AUTH-003 (PR #137 review): правка ранее подтверждённых параметров
     # должна снова потребовать проверки, а не наследовать старый 'success'.

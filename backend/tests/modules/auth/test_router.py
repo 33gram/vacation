@@ -3,29 +3,14 @@
 
 from __future__ import annotations
 
-import os
-import socket
-
-import pytest
-
 from app.core.config import get_settings
 from app.core.crypto import encrypt
 from app.core.security import hash_password
 from app.models.ldap_settings import LdapSettings
+from tests.ldap_guard import LDAP_TEST_HOST, LDAP_TEST_PORT, requires_ldap
 from tests.modules.auth.factories import bearer_header, make_account, make_employee
 
 PASSWORD = "CorrectHorseBatteryStaple"
-
-LDAP_TEST_HOST = os.environ.get("LDAP_TEST_HOST", "openldap")
-LDAP_TEST_PORT = int(os.environ.get("LDAP_TEST_PORT", "1389"))
-
-
-def _ldap_reachable() -> bool:
-    try:
-        with socket.create_connection((LDAP_TEST_HOST, LDAP_TEST_PORT), timeout=5.0):
-            return True
-    except OSError:
-        return False
 
 
 # --- POST /api/auth/login/local ---------------------------------------
@@ -158,10 +143,7 @@ async def test_login_rejects_empty_password_before_ldap_bind(db_session, api_cli
     assert response.status_code == 401
 
 
-@pytest.mark.skipif(
-    not _ldap_reachable(),
-    reason="Тестовый OpenLDAP недоступен — запускать через `make test-backend`",
-)
+@requires_ldap
 async def test_login_uses_ldap_when_active_settings_exist(db_session, api_client) -> None:
     settings_row = LdapSettings(
         server_url=LDAP_TEST_HOST,

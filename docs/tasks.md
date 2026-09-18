@@ -73,7 +73,7 @@
 - [ ] **T-M1-14** `GET/POST /api/departments`, `PUT /api/departments/{id}`.
 - [ ] **T-M1-15** `GET/POST /api/employees`, `GET/PUT /api/employees/{id}`, `POST /api/employees/import`, `POST /api/employees/{id}/deactivate`.
 - [x] **T-M1-16** `GET/PUT /api/admin/ldap-settings`, `POST /api/admin/ldap-settings/test` (тестовое подключение без сохранения при ошибке). `FR-ADMIN-005`.
-- [ ] **T-M1-17** `GET/PUT /api/admin/production-calendar/{year}`. `FR-ADMIN-003`.
+- [x] **T-M1-17** `GET/PUT /api/admin/production-calendar/{year}`. `FR-ADMIN-003`.
 
 ### Frontend
 

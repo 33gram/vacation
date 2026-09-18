@@ -15,6 +15,7 @@ e-mail уже заняты первой, оборванной попыткой).
 from __future__ import annotations
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import hash_password
@@ -132,6 +133,40 @@ async def _require_email_free(
         raise ValueError(f"email: '{email}' is already in use")
 
 
+# Источник истины — ограничение БД, а не проверка выше: под конкурентной
+# нагрузкой два запроса могут пройти `_require_personnel_number_free`/
+# `_require_email_free` одновременно (TOCTOU — обе проверки читают
+# состояние до записи другого запроса), и тогда именно эта проверка при
+# `COMMIT` ловит нарушение. Поле определяется по ИМЕНИ ОГРАНИЧЕНИЯ из
+# диагностики asyncpg, а не разбором текста ошибки — имя не зависит от
+# локали/версии сервера, текст сообщения зависит.
+_UNIQUE_CONSTRAINT_FIELDS = {
+    "employees_personnel_number_key": "personnel_number",
+    "ix_employees_email_lower": "email",
+}
+
+
+def _translate_unique_violation(
+    exc: IntegrityError, payload: EmployeeCreate | EmployeeUpdate
+) -> Exception:
+    """`ValueError` с тем же текстом и тем же полем, что и опережающая
+    проверка (`_require_personnel_number_free`/`_require_email_free`) —
+    клиент не должен различать «поймали до записи» и «поймали на
+    гонке», поэтому оба пути дают один и тот же тип исключения (роутер
+    превращает `ValueError` в 400 одинаково для обоих) и один и тот же
+    текст. Ограничение, не входящее в карту (например, случайное
+    нарушение внешнего ключа), не подменяется — исходная ошибка
+    поднимается как есть, чтобы не маскировать неожиданный сбой под
+    штатный отказ 400."""
+    constraint_name = getattr(getattr(exc.orig, "__cause__", None), "constraint_name", None)
+    field = _UNIQUE_CONSTRAINT_FIELDS.get(constraint_name)
+    if field == "personnel_number":
+        return ValueError(f"personnel_number: '{payload.personnel_number}' is already in use")
+    if field == "email":
+        return ValueError(f"email: '{payload.email}' is already in use")
+    return exc
+
+
 async def create_employee(session: AsyncSession, payload: EmployeeCreate) -> Employee:
     await _require_department_reference(session, payload.department_id)
     if payload.manager_id is not None:
@@ -172,10 +207,13 @@ async def create_employee(session: AsyncSession, payload: EmployeeCreate) -> Emp
         )
         session.add(account)
         await session.commit()
+    except IntegrityError as exc:
+        # Карточка и учётная запись — одна транзакция: откат отменяет и
+        # вставку карточки тоже, сбой не оставляет сотрудника, которого
+        # нельзя ни авторизовать, ни дозавести повторным `POST`.
+        await session.rollback()
+        raise _translate_unique_violation(exc, payload) from exc
     except Exception:
-        # Карточка и учётная запись — одна транзакция: сбой после вставки
-        # карточки не должен оставить сотрудника, который не может войти
-        # и которого нельзя дозавести (табельный номер/e-mail уже заняты).
         await session.rollback()
         raise
 
@@ -260,6 +298,11 @@ async def update_employee(
     employee.work_schedule_type = payload.work_schedule_type
     employee.leave_category = payload.leave_category
 
-    await session.commit()
+    try:
+        await session.commit()
+    except IntegrityError as exc:
+        await session.rollback()
+        raise _translate_unique_violation(exc, payload) from exc
+
     await session.refresh(employee)
     return employee

@@ -104,25 +104,36 @@ async def _test_draft_ldap_params(
     проверить только изменённое поле, не перепечатывая остальные. Ничего
     не сохраняет: успех здесь не подтверждает, что сохранённая
     конфигурация рабочая, — только что введённые значения годятся для
-    сохранения."""
-    saved = _settings_data_from_row(saved_row) if saved_row is not None else None
+    сохранения.
+
+    Недостающие поля читаются прямо из `saved_row` (PR #137 review, круг
+    3, замечание #3): пароль расшифровывается только когда тело запроса
+    его не содержит и фолбэк на сохранённый действительно нужен — не
+    имеет смысла держать открытый пароль в памяти, если он и не
+    понадобится."""
 
     def pick(value: str | None, attr: str) -> str | None:
         if value is not None:
             return value
-        return getattr(saved, attr) if saved is not None else None
+        return getattr(saved_row, attr) if saved_row is not None else None
 
     server_url = pick(payload.server_url, "server_url")
     base_dn = pick(payload.base_dn, "base_dn")
     bind_dn = pick(payload.bind_dn, "bind_dn")
-    bind_password = pick(
-        payload.bind_password.get_secret_value() if payload.bind_password is not None else None,
-        "bind_password",
-    )
+
+    if payload.bind_password is not None:
+        bind_password: str | None = payload.bind_password.get_secret_value()
+    elif saved_row is not None:
+        bind_password = decrypt(
+            saved_row.bind_password_encrypted, get_settings().ldap_password_encryption_key
+        )
+    else:
+        bind_password = None
+
     if server_url is None or base_dn is None or bind_dn is None or bind_password is None:
         raise ValueError("Укажите все параметры подключения для проверки")
 
-    port = payload.port if payload.port is not None else (saved.port if saved else None)
+    port = payload.port if payload.port is not None else (saved_row.port if saved_row else None)
     user_match_attribute = pick(payload.user_match_attribute, "user_match_attribute")
     params = LdapSettingsData(
         server_url=server_url,

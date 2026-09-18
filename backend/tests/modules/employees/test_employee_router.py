@@ -12,6 +12,7 @@ from sqlalchemy import event, select
 
 from app.core.security import verify_password
 from app.db.session import get_engine
+from app.main import app
 from app.models.account import Account
 from app.models.employee import Employee
 from tests.modules.auth.factories import (
@@ -22,6 +23,20 @@ from tests.modules.auth.factories import (
 )
 
 MIN_PASSWORD = "CorrectHorseBatteryStaple"
+
+
+def test_employee_password_fields_are_marked_write_only() -> None:
+    # NFR-SEC-001, симметрично LdapTestRequest (PR #137): пароль не
+    # должен уходить в OpenAPI-схему (и сгенерированный TS-клиент) как
+    # обычная строка.
+    schema = app.openapi()["components"]["schemas"]
+    for model_name, field_name in (
+        ("EmployeeCreate", "initial_password"),
+        ("EmployeeUpdate", "new_password"),
+    ):
+        field_schema = schema[model_name]["properties"][field_name]
+        variants = field_schema.get("anyOf", [field_schema])
+        assert any(variant.get("writeOnly") is True for variant in variants)
 
 
 @contextmanager
@@ -691,6 +706,8 @@ async def test_put_employee_switch_to_local_sets_password_and_forces_change(
     )
 
     assert response.status_code == 200
+    assert "new_password" not in response.json()
+    assert MIN_PASSWORD not in response.text
     updated_account = (
         await db_session.execute(select(Account).where(Account.employee_id == employee.id))
     ).scalar_one()

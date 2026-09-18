@@ -1,17 +1,21 @@
 """Общий guard для тестов, которым нужен тестовый OpenLDAP из
 `infra/docker-compose.yml` (T-M1-06/07/16).
 
-`_ldap_reachable()`/`LDAP_TEST_REQUIRED` были продублированы по одной
-копии на файл (`test_ldap_service.py`, `modules/auth/test_router.py`,
-`modules/admin/test_ldap_settings_router.py`), и только в первом была
-защита `LDAP_TEST_REQUIRED` — то есть новый тестовый модуль с LDAP-тестами
-мог снова получить молчаливый skip в CI, ничем не защищённый (PR #137
-review, замечание #3). Это и есть риск, ради устранения которого
-`LDAP_TEST_REQUIRED` вводился (см. c6c3b69): зелёный CI без реального
-прогона LDAP-тестов.
+`_ldap_reachable()` была продублирована по одной копии на файл
+(`test_ldap_service.py`, `modules/auth/test_router.py`,
+`modules/admin/test_ldap_settings_router.py`) — `requires_ldap` отсюда
+устраняет это дублирование, но сам по себе не может гарантировать, что
+*новый* файл с LDAP-тестами его вообще импортирует (PR #137 review,
+узкое ревью): файл со своей собственной, неправильной проверкой
+доступности каталога прошёл бы мимо этого guard'а незамеченным.
 
-Импортируя `requires_ldap` отсюда, а не копируя логику, любой новый файл
-получает защиту автоматически.
+Поэтому запрет на молчаливый пропуск в CI живёт не здесь, а уровнем
+выше — в `tests/conftest.py` (`PYTEST_FORBID_SKIPS`), где он ловит
+пропуск любого теста по любой причине, а не только LDAP-ных и не только
+через этот guard. Здесь остаётся ровно то, для чего guard изначально
+создавался: не копировать проверку доступности в три файла. Локально
+(без `PYTEST_FORBID_SKIPS`) пропуск при недоступном каталоге по-прежнему
+разрешён — это осознанное поведение, не дыра в защите.
 """
 
 from __future__ import annotations
@@ -24,10 +28,6 @@ import pytest
 LDAP_TEST_HOST = os.environ.get("LDAP_TEST_HOST", "openldap")
 LDAP_TEST_PORT = int(os.environ.get("LDAP_TEST_PORT", "1389"))
 
-# В CI выставлен LDAP_TEST_REQUIRED=1: если тестовый каталог недоступен,
-# тесты должны падать, а не молча пропускаться.
-LDAP_TEST_REQUIRED = os.environ.get("LDAP_TEST_REQUIRED") == "1"
-
 
 def ldap_reachable() -> bool:
     try:
@@ -38,7 +38,7 @@ def ldap_reachable() -> bool:
 
 
 requires_ldap = pytest.mark.skipif(
-    not LDAP_TEST_REQUIRED and not ldap_reachable(),
+    not ldap_reachable(),
     reason=(
         "Тестовый OpenLDAP (infra/docker-compose.yml, сервис openldap) "
         "недоступен — запускать через `make test-backend`"

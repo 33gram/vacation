@@ -1,4 +1,5 @@
 import asyncio
+import os
 from collections.abc import AsyncIterator, Iterator
 
 import pytest
@@ -9,6 +10,51 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import get_settings
 from app.db.session import get_db_session, get_engine
 from app.main import app
+
+_forbidden_skips: list[pytest.TestReport] = []
+
+
+def pytest_runtest_logreport(report: pytest.TestReport) -> None:
+    """Собирает пропущенные тесты для `pytest_sessionfinish` (PR #137
+    review, узкое ревью): точечная защита конкретно LDAP-тестов
+    (`tests/ldap_guard.py`) не ловит пропуск теста, который стучится
+    в LDAP по-своему и её не импортирует. Здесь — инвариант уровнем выше,
+    общий для любого пропуска в любом файле, независимо от причины.
+
+    `xfail` тоже приходит сюда с `report.skipped=True` — исключаем его
+    через `report.wasxfail` (см. `_pytest/skipping.py`), иначе первый же
+    ожидаемый xfail завалил бы прогон как «неожиданный пропуск»."""
+    if report.skipped and not hasattr(report, "wasxfail"):
+        _forbidden_skips.append(report)
+
+
+def _skip_reason(report: pytest.TestReport) -> str:
+    if isinstance(report.longrepr, tuple) and len(report.longrepr) == 3:
+        return str(report.longrepr[2])
+    return str(report.longrepr)
+
+
+def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
+    """С `PYTEST_FORBID_SKIPS=1` (выставлено в CI) любой пропущенный тест
+    заваливает прогон с ненулевым кодом возврата -- это осознанно жёстче,
+    чем локальная работа: без docker compose (LDAP, например, недоступен)
+    `make test-backend` должен по-прежнему уметь пропускать такие тесты,
+    поэтому без этой переменной пропуски остаются разрешены."""
+    if os.environ.get("PYTEST_FORBID_SKIPS") != "1" or not _forbidden_skips:
+        return
+
+    reporter = session.config.pluginmanager.get_plugin("terminalreporter")
+    if reporter is not None:
+        reporter.write_line("")
+        reporter.write_line(
+            f"PYTEST_FORBID_SKIPS=1: {len(_forbidden_skips)} тест(ов) пропущено "
+            "— в CI это запрещено:",
+            red=True,
+        )
+        for report in _forbidden_skips:
+            reporter.write_line(f"  - {report.nodeid}: {_skip_reason(report)}", red=True)
+
+    session.exitstatus = 1
 
 
 @pytest.fixture(scope="session", autouse=True)

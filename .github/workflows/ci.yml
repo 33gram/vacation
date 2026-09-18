@@ -83,7 +83,7 @@ jobs:
           ENVIRONMENT: test
           LDAP_TEST_HOST: localhost
           LDAP_TEST_PORT: "389"
-          LDAP_TEST_REQUIRED: "1"
+          PYTEST_FORBID_SKIPS: "1"
         run: pytest --maxfail=1 --disable-warnings -q
 
   frontend-tests:

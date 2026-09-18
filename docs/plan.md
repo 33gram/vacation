@@ -1,8 +1,8 @@
 # План реализации (plan.md) — Система учёта отпусков
 
-**Версия документа:** 1.3
-**Дата:** 17.09.2026
-**Основание:** `docs/requirements.md`, версия 1.5 (включая закрытое решение T-000 по шифрованию чувствительных данных, отказ от файлов-вложений к заявкам и FR-AUTH-005 — bootstrap-учётная запись администратора)
+**Версия документа:** 1.4
+**Дата:** 18.09.2026
+**Основание:** `docs/requirements.md`, версия 1.6 (включая закрытое решение T-000 по шифрованию чувствительных данных, отказ от файлов-вложений к заявкам, FR-AUTH-005 — bootstrap-учётная запись администратора, и уточнения FR-AUTH-002/004 по итогам ревью PR #134)
 **Статус:** Технический план для декомпозиции на задачи (`tasks.md`) и передачи в разработку AI-агентам (Spec-Driven Development)
 
 **Назначение документа:** описать архитектуру, технологический стек, модель данных, API и порядок реализации MVP системы учёта отпусков. Каждый раздел явно ссылается на функциональные требования (`FR-XXX`) и допущения (`A-N`) из `requirements.md`, чтобы разработчик/AI-агент мог проверить полноту покрытия. Технические решения ниже — конкретизация требований, а не пересмотр их содержания.
@@ -128,9 +128,9 @@ vacation-tracker/
 | Таблица | Ключевые поля | Комментарий / связь с требованиями |
 |---|---|---|
 | `departments` | `id`, `name`, `parent_id → departments.id`, `head_employee_id → employees.id` | Дерево подразделений, `FR-EMP-002`. |
-| `employees` | `id`, `full_name`, `personnel_number` (unique), `department_id`, `position`, `hire_date`, `manager_id → employees.id`, `email` (unique), `work_schedule_type` (`standard`/`shift`), `employment_status` (`active`/`terminated`), `termination_date`, `leave_category` (nullable, зарезервировано под A-3.1), `created_at`, `updated_at` | `FR-EMP-001`, `FR-EMP-004`. `work_schedule_type` — признак сменного графика, A-7. |
+| `employees` | `id`, `full_name`, `personnel_number` (unique), `department_id`, `position`, `hire_date`, `manager_id → employees.id`, `email` (unique — уникальность обеспечивается индексом по `lower(email)`, поиск сотрудника по e-mail регистронезависим), `work_schedule_type` (`standard`/`shift`), `employment_status` (`active`/`terminated`), `termination_date`, `leave_category` (nullable, зарезервировано под A-3.1), `created_at`, `updated_at` | `FR-EMP-001`, `FR-EMP-004`. `work_schedule_type` — признак сменного графика, A-7. |
 | `accounts` | `id`, `employee_id → employees.id` (nullable для служебных записей), `login` (nullable, unique — логин для записей без карточки сотрудника, например bootstrap-администратора, `FR-AUTH-005`; для записей с `employee_id` не заполняется, логином служит `employees.email`; `CHECK` гарантирует ровно одно заполненное поле из `employee_id`/`login`), `auth_type` (`ldap`/`local`), `local_password_hash` (nullable), `must_change_password` (bool), `failed_login_attempts`, `locked_until` (nullable), `role` (`employee`/`hr_admin`/`accountant`/`system_admin`), `is_active` | `FR-AUTH-001…005`. Роль «руководитель» — не отдельная запись `role`, а производится из наличия подчинённых (`employees.manager_id`), см. раздел 5. |
-| `ldap_settings` | `id`, `server_url`, `port`, `base_dn`, `bind_dn`, `bind_password_encrypted`, `user_match_attribute` (по умолчанию `mail`), `is_active`, `last_tested_at`, `last_test_status` | `FR-ADMIN-005`, A-8. `bind_password_encrypted` — обратимое шифрование на уровне приложения (`cryptography`, AES-GCM либо Fernet), ключ из `FIELD_ENCRYPTION_KEY` (см. §5.2, `NFR-SEC-001` в §9, T-000). |
+| `ldap_settings` | `id`, `server_url`, `port`, `base_dn`, `bind_dn`, `bind_password_encrypted`, `user_match_attribute` (по умолчанию `mail`), `is_active`, `last_tested_at`, `last_test_status` | `FR-ADMIN-005`, A-8. `bind_password_encrypted` — обратимое шифрование на уровне приложения (`cryptography`, AES-GCM либо Fernet), ключ из `LDAP_PASSWORD_ENCRYPTION_KEY` (см. §5.2, `NFR-SEC-001` в §9, T-000). |
 | `leave_types` | `id`, `code` (unique), `name`, `is_paid` (`full`/`none`/`partial`), `unit` (`calendar_days`/`working_days`/`hours`), `reduces_main_balance` (bool), `requires_document` (bool), `requires_approval` (bool), `annual_limit`, `carry_over_policy`, `exclude_weekends_holidays` (bool) | Раздел 6, `FR-ADMIN-001`. |
 | `leave_balances` | `id`, `employee_id`, `leave_type_id`, `working_year_start`, `working_year_end`, `accrued`, `used`, `manual_adjustment`, `adjustment_reason` | `FR-BAL-001…004`. Остаток = `accrued + manual_adjustment - used` (вычисляется, не хранится как отдельное поле, либо материализуется представлением). |
 | `overtime_ledger` | `id`, `employee_id`, `hours_accrued`, `hours_used`, `source` (`weekend_work`/`shift_overtime`/…), `related_request_id`, `note`, `created_at` | Счётчик компенсации за переработку/сменную работу, `FR-DAYOFF-001`, A-7 (почасовая оплата). |
@@ -197,7 +197,7 @@ sequenceDiagram
 
 | Модуль (пакет) | Функциональные требования | Основные сущности |
 |---|---|---|
-| `auth` | FR-AUTH-001…004 | `accounts`, `ldap_settings` |
+| `auth` | FR-AUTH-001…005 | `accounts`, `ldap_settings` |
 | `employees` | FR-EMP-001…004 | `employees`, `departments` |
 | `balances` | FR-BAL-001…004 | `leave_balances` |
 | `schedule` | FR-SCHED-001…004 | `vacation_schedules`, `schedule_entries` |
@@ -290,7 +290,7 @@ GET    /api/audit-log                                FR-AUDIT-001
 |---|---|
 | NFR-PERF-001 | Асинхронный FastAPI + пул соединений PostgreSQL (SQLAlchemy async engine); индексы на `leave_requests(employee_id, status)`, `leave_balances(employee_id, leave_type_id)`; нагрузочное тестирование (Locust) перед запуском. |
 | NFR-AVAIL-001 | Health-check эндпоинт (`/healthz`), автоперезапуск контейнеров (`restart: unless-stopped` / systemd), мониторинг доступности (см. раздел 10). |
-| NFR-SEC-001/002 | TLS на `nginx`; шифрование носителя БД и резервных копий (без колоночного шифрования — решение T-000); доступ к сведениям о больничных ограничен ролевой моделью приложения; диагноз/причина нетрудоспособности в схеме отсутствует в принципе (поле не создаётся). Обратимое шифрование на уровне приложения (`cryptography`) — отдельно, только для `ldap_settings.bind_password_encrypted` (ключ `FIELD_ENCRYPTION_KEY`). |
+| NFR-SEC-001/002 | TLS на `nginx`; шифрование носителя БД и резервных копий (без колоночного шифрования — решение T-000); доступ к сведениям о больничных ограничен ролевой моделью приложения; диагноз/причина нетрудоспособности в схеме отсутствует в принципе (поле не создаётся). Обратимое шифрование на уровне приложения (`cryptography`) — отдельно, только для `ldap_settings.bind_password_encrypted` (ключ `LDAP_PASSWORD_ENCRYPTION_KEY`). |
 | NFR-SEC-003 | RBAC-зависимость FastAPI на каждом эндпоинте + фильтрация выборок по `department_id`/`manager_id` для роли «руководитель». |
 | NFR-COMPLY-001 | Вся инфраструктура — на серверах компании в РФ (раздел 8); политика хранения — раздел NFR-DATA-001. |
 | NFR-DATA-001 | Мягкое удаление (`employment_status = terminated`), данные не физически удаляются; настраиваемый срок хранения в `business_rules_config`. |
@@ -355,7 +355,7 @@ GET    /api/audit-log                                FR-AUDIT-001
 
 ## 14. Открытые технические вопросы для этапа `tasks.md`
 
-1. ~~Конкретный способ шифрования чувствительных полей~~ — **закрыт (T-000, v1.4/v1.2)**: колоночное шифрование сведений о нетрудоспособности не применяется (защищаемый факт выражен структурой строки, а не значением поля); вместо этого — шифрование носителя БД и резервных копий. Исключение — обратимое шифрование на уровне приложения (`cryptography`, AES-GCM либо Fernet) для пароля служебной записи LDAP, ключ из `FIELD_ENCRYPTION_KEY`. См. `requirements.md` раздел 13, п. 11, §4/§9 настоящего документа.
+1. ~~Конкретный способ шифрования чувствительных полей~~ — **закрыт (T-000, v1.4/v1.2)**: колоночное шифрование сведений о нетрудоспособности не применяется (защищаемый факт выражен структурой строки, а не значением поля); вместо этого — шифрование носителя БД и резервных копий. Исключение — обратимое шифрование на уровне приложения (`cryptography`, AES-GCM либо Fernet) для пароля служебной записи LDAP, ключ из `LDAP_PASSWORD_ENCRYPTION_KEY`. См. `requirements.md` раздел 13, п. 11, §4/§9 настоящего документа.
 2. Способ доставки обновлений на production-серверы компании (CI/CD инструмент, доступ к серверам) — зависит от инфраструктурной политики ИТ-отдела, вне компетенции текущего документа.
 3. Точный набор атрибутов LDAP, доступных в корпоративном AD компании (помимо `mail`) — уточняется тестовым подключением на этапе разработки `FR-ADMIN-005`.
 4. Библиотека UI-компонентов (Ant Design vs MUI) — окончательный выбор на старте фронтенд-разработки, не блокирует архитектуру.

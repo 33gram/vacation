@@ -44,7 +44,17 @@ async def get_current_account(
 
 
 def require_roles(*roles: str) -> Callable[[Account], Awaitable[Account]]:
+    """T-M1-13: пока `account.must_change_password` истинно, доступны
+    только `GET /api/auth/me` и `POST /api/auth/password/change` (они
+    используют `get_current_account` напрямую, без `require_roles`) —
+    любой эндпоинт за этой зависимостью требует сначала сменить пароль."""
+
     async def _dependency(account: Account = Depends(get_current_account)) -> Account:
+        if account.must_change_password:
+            raise HTTPException(
+                status.HTTP_403_FORBIDDEN,
+                "Password change required before continuing",
+            )
         if account.role not in roles:
             raise HTTPException(status.HTTP_403_FORBIDDEN, "Insufficient role")
         return account

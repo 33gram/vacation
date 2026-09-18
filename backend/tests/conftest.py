@@ -1,5 +1,5 @@
 import asyncio
-from collections.abc import Iterator
+from collections.abc import AsyncIterator, Iterator
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -7,7 +7,7 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
-from app.db.session import get_engine
+from app.db.session import get_db_session, get_engine
 from app.main import app
 
 
@@ -71,3 +71,22 @@ async def db_session() -> AsyncSession:
         finally:
             await session.close()
             await connection.rollback()
+
+
+@pytest.fixture
+async def api_client(db_session: AsyncSession) -> AsyncClient:
+    """HTTP-клиент для тестов эндпоинтов (T-M1-13/16/17): подменяет
+    `get_db_session` приложения на `db_session` этого теста, чтобы записи,
+    созданные через HTTP-запросы, тоже откатывались по завершении теста, а
+    не коммитились в реальную БД мимо фикстуры изоляции."""
+
+    async def _override_get_db_session() -> AsyncIterator[AsyncSession]:
+        yield db_session
+
+    app.dependency_overrides[get_db_session] = _override_get_db_session
+    try:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as ac:
+            yield ac
+    finally:
+        app.dependency_overrides.pop(get_db_session, None)

@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db_session
@@ -44,7 +44,11 @@ async def put_ldap_settings(
 @router.post("/ldap-settings/test", response_model=LdapTestResponse)
 async def test_ldap_settings(
     payload: LdapTestRequest,
+    session: AsyncSession = Depends(get_db_session),
     _: Account = Depends(_require_system_admin),
 ) -> LdapTestResponse:
-    success, detail = await ldap_settings_service.test_ldap_connection(payload)
+    try:
+        success, detail = await ldap_settings_service.test_ldap_connection(session, payload)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
     return LdapTestResponse(success=success, detail=detail)

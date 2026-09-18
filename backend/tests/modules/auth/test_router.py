@@ -173,6 +173,9 @@ async def test_login_uses_ldap_when_active_settings_exist(db_session, api_client
         ),
         user_match_attribute="mail",
         is_active=True,
+        # FR-AUTH-003 (PR #137 review): переключение на LDAP требует не
+        # только is_active, но и подтверждённой проверки подключения.
+        last_test_status="success",
     )
     db_session.add(settings_row)
     await db_session.flush()
@@ -181,6 +184,42 @@ async def test_login_uses_ldap_when_active_settings_exist(db_session, api_client
 
     response = await api_client.post(
         "/api/auth/login", json={"login": "ivanov@company.local", "password": "TestPass123!"}
+    )
+
+    assert response.status_code == 200
+
+
+async def test_login_stays_local_when_active_settings_not_yet_verified(
+    db_session, api_client
+) -> None:
+    # FR-AUTH-003 (PR #137 review): is_active=true без успешной проверки
+    # не должен уводить служебные/обычные учётные записи от локального
+    # входа в неработающий каталог.
+    settings_row = LdapSettings(
+        server_url="unreachable.invalid",
+        port=389,
+        base_dn="dc=company,dc=local",
+        bind_dn="cn=admin,dc=company,dc=local",
+        bind_password_encrypted=encrypt(
+            "changeme", key=get_settings().ldap_password_encryption_key
+        ),
+        user_match_attribute="mail",
+        is_active=True,
+        last_test_status=None,
+    )
+    db_session.add(settings_row)
+    await db_session.flush()
+    employee = await make_employee(db_session, email="still-local@company.local")
+    await make_account(
+        db_session,
+        employee_id=employee.id,
+        auth_type="local",
+        role="employee",
+        password_hash=hash_password(PASSWORD),
+    )
+
+    response = await api_client.post(
+        "/api/auth/login", json={"login": "still-local@company.local", "password": PASSWORD}
     )
 
     assert response.status_code == 200
@@ -281,7 +320,36 @@ async def test_me_reports_embedded_mode_true_without_active_ldap_settings(
     assert response.json()["embedded_mode"] is True
 
 
-async def test_me_reports_embedded_mode_false_with_active_ldap_settings(
+async def test_me_reports_embedded_mode_true_with_active_but_unverified_ldap_settings(
+    db_session, api_client
+) -> None:
+    # FR-AUTH-003 (PR #137 review): сохранённая, но не проверенная запись
+    # не выводит из режима внедрения — баннер T-M1-21 должен оставаться.
+    db_session.add(
+        LdapSettings(
+            server_url="openldap",
+            port=1389,
+            base_dn="dc=company,dc=local",
+            bind_dn="cn=admin,dc=company,dc=local",
+            bind_password_encrypted=encrypt(
+                "changeme", key=get_settings().ldap_password_encryption_key
+            ),
+            is_active=True,
+        )
+    )
+    await db_session.flush()
+    employee = await make_employee(db_session, email="me-ldap-unverified@company.local")
+    account = await make_account(
+        db_session, employee_id=employee.id, auth_type="local", role="employee"
+    )
+
+    response = await api_client.get("/api/auth/me", headers=bearer_header(account))
+
+    assert response.status_code == 200
+    assert response.json()["embedded_mode"] is True
+
+
+async def test_me_reports_embedded_mode_false_with_verified_ldap_settings(
     db_session, api_client
 ) -> None:
     db_session.add(
@@ -294,6 +362,7 @@ async def test_me_reports_embedded_mode_false_with_active_ldap_settings(
                 "changeme", key=get_settings().ldap_password_encryption_key
             ),
             is_active=True,
+            last_test_status="success",
         )
     )
     await db_session.flush()

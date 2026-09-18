@@ -1,8 +1,11 @@
 """Режим внедрения — работа без подключённого LDAP (T-M1-26, FR-AUTH-003).
 
-Админский API управления `ldap_settings` (`T-M1-16`) — отдельная ветка;
-здесь реализована только сервисная логика: определение режима и отказ
-LDAP-входа с понятной причиной, пока каталог не настроен.
+FR-AUTH-003 переключает способ входа по умолчанию на LDAP, WHEN
+администратор «сохраняет И УСПЕШНО ПРОВЕРЯЕТ» параметры — то есть
+активной записи `is_active=true` недостаточно: пока
+`POST /admin/ldap-settings/test` ни разу не подтвердил именно сохранённые
+параметры (PR #137 review), `last_test_status` остаётся не `'success'`
+(включая `NULL` сразу после сохранения) и режим внедрения не завершается.
 """
 
 from __future__ import annotations
@@ -13,4 +16,5 @@ from app.modules.auth.repository import get_active_ldap_settings
 
 
 async def is_embedded_mode(session: AsyncSession) -> bool:
-    return await get_active_ldap_settings(session) is None
+    settings_row = await get_active_ldap_settings(session)
+    return settings_row is None or settings_row.last_test_status != "success"

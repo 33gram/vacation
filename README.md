@@ -105,6 +105,8 @@ python scripts/import_tasks_to_github.py --repo <owner>/<name>             # с�
 
 Поскольку развёртывание — on-premise (не облако), для реального деплоя на серверы компании потребуется **self-hosted GitHub Actions runner** внутри сети компании либо ручная выкладка — облачный runner GitHub до внутренней инфраструктуры не достучится (открытый вопрос `plan.md` §14, п. 2).
 
+Отдельный job `openapi-client-check` (T-M1-28) сверяет сгенерированный TS-клиент (`frontend/src/api/generated/schema.d.ts`) со схемой backend; правка докстринга класса Pydantic-модели меняет OpenAPI-схему (Pydantic кладёт его в JSON-схему как `description`) и требует `make openapi-client` перед коммитом точно так же, как правка самого эндпоинта.
+
 ## Секреты и переменные окружения
 
 - `.env` в репозиторий не коммитится (см. `.gitignore`); шаблон — `.env.example`.

@@ -28,7 +28,14 @@ class EmployeeOut(BaseModel):
     leave_category: str | None
 
 
-class EmployeeCreate(BaseModel):
+class EmployeeCardFields(BaseModel):
+    """Девять полей карточки, общих для создания и правки (PR review:
+    раньше этот список был продублирован в `EmployeeCreate`,
+    `EmployeeUpdate`, конструкторе `create_employee` и блоке
+    присваиваний `update_employee` — теперь единственный канонический
+    источник; `employee_service._CARD_FIELD_NAMES` берёт имена полей
+    отсюда же, а не хранит собственный список)."""
+
     full_name: str
     personnel_number: str
     department_id: int
@@ -41,6 +48,9 @@ class EmployeeCreate(BaseModel):
     work_schedule_type: WorkScheduleType
     # Зарезервировано под A-3.1 — не заполняется в MVP.
     leave_category: str | None = None
+
+
+class EmployeeCreate(EmployeeCardFields):
     auth_type: EmployeeAuthType = "ldap"
     # SecretStr — маскирует repr()/str() (см. LdapTestRequest, PR #137);
     # обязателен при `auth_type = "local"`, запрещён при `"ldap"`.
@@ -59,7 +69,7 @@ class EmployeeCreate(BaseModel):
         return self
 
 
-class EmployeeUpdate(BaseModel):
+class EmployeeUpdate(EmployeeCardFields):
     """Правка карточки, включая способ входа (`T-M1-34`). Статус
     занятости (`employment_status`) сюда не входит — меняется только
     деактивацией (`T-M1-12`, ещё не реализована).
@@ -71,15 +81,6 @@ class EmployeeUpdate(BaseModel):
     это зависит от ТЕКУЩЕГО способа входа учётной записи, а не только от
     тела запроса, — эту часть проверяет сервис."""
 
-    full_name: str
-    personnel_number: str
-    department_id: int
-    position: str
-    hire_date: datetime.date
-    manager_id: int | None = None
-    email: str
-    work_schedule_type: WorkScheduleType
-    leave_category: str | None = None
     auth_type: EmployeeAuthType
     # SecretStr — см. `EmployeeCreate.initial_password`; принимается
     # только при переходе с `ldap` на `local` (проверяет сервис).

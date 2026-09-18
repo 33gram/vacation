@@ -25,7 +25,13 @@ from app.models.employee import Employee
 from app.modules.auth.password_policy import validate_password_strength
 from app.modules.auth.rbac import is_in_management_chain, list_subordinate_employee_ids
 from app.modules.auth.repository import get_account_by_employee_id
-from app.schemas.employee import EmployeeCreate, EmployeeUpdate
+from app.schemas.employee import EmployeeCardFields, EmployeeCreate, EmployeeUpdate
+
+# Имена полей — из `EmployeeCardFields` (schemas/employee.py), а не
+# отдельный список здесь: раньше эти девять полей были перечислены
+# четырежды (в `EmployeeCreate`, `EmployeeUpdate`, конструкторе
+# `create_employee` и блоке присваиваний `update_employee`).
+_CARD_FIELD_NAMES = tuple(EmployeeCardFields.model_fields)
 
 # Роли, видящие ЛЮБУЮ карточку (`plan.md` §5.1); `accountant` — только
 # чтение, ограничение на запись обеспечивает `require_roles` в роутере,
@@ -167,6 +173,15 @@ def _translate_unique_violation(
     return exc
 
 
+def _apply_card_fields(employee: Employee, payload: EmployeeCardFields) -> None:
+    """Копирует девять общих полей карточки (`_CARD_FIELD_NAMES`) из
+    тела запроса в ORM-объект — общая для `create_employee` (на новый,
+    ещё не добавленный в сессию объект) и `update_employee` (на
+    существующий)."""
+    for field_name in _CARD_FIELD_NAMES:
+        setattr(employee, field_name, getattr(payload, field_name))
+
+
 async def create_employee(session: AsyncSession, payload: EmployeeCreate) -> Employee:
     await _require_department_reference(session, payload.department_id)
     if payload.manager_id is not None:
@@ -182,17 +197,8 @@ async def create_employee(session: AsyncSession, payload: EmployeeCreate) -> Emp
         validate_password_strength(payload.initial_password.get_secret_value())
         password_hash = hash_password(payload.initial_password.get_secret_value())
 
-    employee = Employee(
-        full_name=payload.full_name,
-        personnel_number=payload.personnel_number,
-        department_id=payload.department_id,
-        position=payload.position,
-        hire_date=payload.hire_date,
-        manager_id=payload.manager_id,
-        email=payload.email,
-        work_schedule_type=payload.work_schedule_type,
-        leave_category=payload.leave_category,
-    )
+    employee = Employee()
+    _apply_card_fields(employee, payload)
     session.add(employee)
 
     try:
@@ -288,15 +294,7 @@ async def update_employee(
     await _require_email_free(session, payload.email, exclude_employee_id=employee.id)
     _apply_auth_type_change(account, payload)
 
-    employee.full_name = payload.full_name
-    employee.personnel_number = payload.personnel_number
-    employee.department_id = payload.department_id
-    employee.position = payload.position
-    employee.hire_date = payload.hire_date
-    employee.manager_id = payload.manager_id
-    employee.email = payload.email
-    employee.work_schedule_type = payload.work_schedule_type
-    employee.leave_category = payload.leave_category
+    _apply_card_fields(employee, payload)
 
     try:
         await session.commit()

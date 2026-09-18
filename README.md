@@ -74,6 +74,8 @@ docker compose --env-file .env -f infra/docker-compose.yml exec postgres \
   sh -c 'createdb -U "$POSTGRES_USER" vacation_tracker_test'
 ```
 
+Отдельная сессионная фикстура в `backend/tests/conftest.py` дополнительно проверяет, что имя базы, к которой подключаются тесты, оканчивается на `_test`, и сразу останавливает прогон понятной ошибкой, если это не так, — так что подключение к dev/prod-базе в обход `make test-backend` (например, прямым `docker compose exec backend pytest`) не пройдёт тихо.
+
 ## Ветвление и Pull Request'ы
 
 - `main` — защищённая ветка: прямые пуши запрещены, слияние только через Pull Request.

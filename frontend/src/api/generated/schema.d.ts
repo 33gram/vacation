@@ -232,26 +232,31 @@ export interface components {
             /** Last Test Status */
             last_test_status: string | null;
         };
-        /** LdapTestRequest */
+        /**
+         * LdapTestRequest
+         * @description Все поля необязательны и по умолчанию `None` — так эндпоинт
+         *     `/ldap-settings/test` различает два случая (PR #137 review):
+         *
+         *     - тело пустое (все поля `None`) и параметры уже сохранены — проверяется
+         *       именно сохранённая запись (её собственный расшифрованный пароль), и
+         *       результат фиксируется в `last_tested_at`/`last_test_status`;
+         *     - указано хотя бы одно поле — проверяются черновые/произвольные
+         *       параметры (недостающие берутся из сохранённой записи, как в PUT),
+         *       результат нигде не сохраняется.
+         */
         LdapTestRequest: {
             /** Server Url */
-            server_url: string;
-            /**
-             * Port
-             * @default 389
-             */
-            port: number;
+            server_url?: string | null;
+            /** Port */
+            port?: number | null;
             /** Base Dn */
-            base_dn: string;
+            base_dn?: string | null;
             /** Bind Dn */
-            bind_dn: string;
+            bind_dn?: string | null;
             /** Bind Password */
-            bind_password: string;
-            /**
-             * User Match Attribute
-             * @default mail
-             */
-            user_match_attribute: string;
+            bind_password?: string | null;
+            /** User Match Attribute */
+            user_match_attribute?: string | null;
         };
         /** LdapTestResponse */
         LdapTestResponse: {

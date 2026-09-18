@@ -4,10 +4,20 @@ from __future__ import annotations
 
 from sqlalchemy import select
 
+from app.main import app
 from app.models.ldap_settings import LdapSettings
 from app.modules.auth.embedded_mode import is_embedded_mode
 from tests.ldap_guard import LDAP_TEST_HOST, LDAP_TEST_PORT, requires_ldap
 from tests.modules.auth.factories import bearer_header, make_account, make_employee
+
+
+def test_ldap_test_request_marks_bind_password_write_only() -> None:
+    # PR #137 review, замечание #4: bind_password не должен уходить в
+    # OpenAPI-схему (и сгенерированный TS-клиент) как обычная строка.
+    schema = app.openapi()["components"]["schemas"]["LdapTestRequest"]
+    bind_password_schema = schema["properties"]["bind_password"]
+    variants = bind_password_schema.get("anyOf", [bind_password_schema])
+    assert any(variant.get("writeOnly") is True for variant in variants)
 
 
 async def _make_admin(db_session, *, must_change_password: bool = False):

@@ -108,10 +108,16 @@ async def test_ldap_connection(session: AsyncSession, payload: LdapTestRequest) 
         bind_dn = payload.bind_dn if payload.bind_dn is not None else (
             saved_row.bind_dn if saved_row else None
         )
-        bind_password = payload.bind_password if payload.bind_password is not None else (
-            decrypt(saved_row.bind_password_encrypted, get_settings().ldap_password_encryption_key)
-            if saved_row
-            else None
+        bind_password = (
+            payload.bind_password.get_secret_value()
+            if payload.bind_password is not None
+            else (
+                decrypt(
+                    saved_row.bind_password_encrypted, get_settings().ldap_password_encryption_key
+                )
+                if saved_row
+                else None
+            )
         )
         if server_url is None or base_dn is None or bind_dn is None or bind_password is None:
             raise ValueError("Укажите все параметры подключения для проверки")

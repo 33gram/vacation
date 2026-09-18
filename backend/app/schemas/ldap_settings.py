@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import datetime
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, SecretStr
 
 
 class LdapSettingsOut(BaseModel):
@@ -47,7 +47,10 @@ class LdapTestRequest(BaseModel):
     port: int | None = None
     base_dn: str | None = None
     bind_dn: str | None = None
-    bind_password: str | None = None
+    # SecretStr (PR #137 review, замечание #4): OpenAPI/generated TS client
+    # mark this as writeOnly instead of a plain string, and str()/repr()
+    # never leak the value if this ever ends up in a log line by accident.
+    bind_password: SecretStr | None = None
     user_match_attribute: str | None = None
 
 

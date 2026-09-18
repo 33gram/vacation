@@ -13,8 +13,20 @@ logs:
 	$(COMPOSE) logs -f
 
 # Требуют запущенного `make up` (выполняются внутри контейнера backend).
+# Прогоняются на vacation_tracker_test (T-M1-31), а не на dev-базе
+# работающего приложения — POSTGRES_DB переопределяется на время команды,
+# DATABASE_URL обнуляется, чтобы .env-override (если задан) не перебивал
+# переопределение (см. backend/app/core/config.py).
+TEST_DB_OVERRIDE = -e DATABASE_URL= -e POSTGRES_DB=vacation_tracker_test
+
 test-backend:
-	$(COMPOSE) exec backend pytest
+	@$(COMPOSE) exec -T postgres sh -c 'psql -U "$$POSTGRES_USER" -lqt' | cut -d '|' -f 1 | grep -qw vacation_tracker_test || { \
+		echo "База vacation_tracker_test не найдена — /docker-entrypoint-initdb.d выполняется только при первой инициализации пустого тома Postgres, на существующем томе она сама не появится."; \
+		echo "Восстановление — см. README.md, раздел «Тестирование»."; \
+		exit 1; \
+	}
+	$(COMPOSE) exec $(TEST_DB_OVERRIDE) backend alembic upgrade head
+	$(COMPOSE) exec $(TEST_DB_OVERRIDE) backend pytest
 
 lint-backend:
 	$(COMPOSE) exec backend ruff check .

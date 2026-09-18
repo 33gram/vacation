@@ -9,6 +9,9 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-vacation_tracker}
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      # Создаёт vacation_tracker_test при первой инициализации тома
+      # (T-M1-31) — см. postgres/init/01-create-test-db.sql.
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
     ports:
       - "${POSTGRES_PORT:-5432}:5432"
     healthcheck:

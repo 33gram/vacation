@@ -58,6 +58,22 @@ docker compose --env-file .env -f infra/docker-compose.yml up
 в `infra/docker-compose.yml` молча берёт значения по умолчанию вместо
 заданных в корневом `.env`.
 
+## Тестирование
+
+`make test-backend` прогоняет backend-тесты **не в dev-базе** работающего приложения, а в отдельной базе `vacation_tracker_test` (T-M1-31) — том же имени, что использует CI (`.github/workflows/ci.yml`), чтобы локальный прогон воспроизводил состояние CI, а не только приближался к нему. Без этого `make test-backend` подключался бы к той же базе и тому же `DATABASE_URL`, что и запущенное через `make up` приложение — а его `lifespan` при старте создаёт bootstrap-учётную запись администратора (`FR-AUTH-005`) обычным `commit`, минуя откат транзакций тестовой фикстуры.
+
+База `vacation_tracker_test` создаётся автоматически скриптом `infra/postgres/init/01-create-test-db.sql` — но **только при первой инициализации пустого тома** Postgres (так работает `/docker-entrypoint-initdb.d` в официальном образе). На уже существующем томе (например, если он был создан до появления этой базы) скрипт не выполнится, и `make test-backend` завершится понятной ошибкой вместо невнятного отказа подключения. Восстановление — один из двух вариантов:
+
+```bash
+# Пересоздать том целиком (полный сброс dev-данных):
+docker compose --env-file .env -f infra/docker-compose.yml down -v
+make up
+
+# Либо создать недостающую базу разово, не трогая остальные данные:
+docker compose --env-file .env -f infra/docker-compose.yml exec postgres \
+  sh -c 'createdb -U "$POSTGRES_USER" vacation_tracker_test'
+```
+
 ## Ветвление и Pull Request'ы
 
 - `main` — защищённая ветка: прямые пуши запрещены, слияние только через Pull Request.

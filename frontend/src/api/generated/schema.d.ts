@@ -32,9 +32,14 @@ export interface paths {
         put?: never;
         /**
          * Login
-         * @description FR-AUTH-001/003: LDAP, если в `ldap_settings` есть активная запись;
-         *     иначе — режим внедрения, вход тем же логином/паролем обслуживается
-         *     локально, как того требует FR-AUTH-003.
+         * @description FR-AUTH-001/003: LDAP, если в `ldap_settings` есть активная и
+         *     подтверждённая запись; иначе — режим внедрения, вход тем же
+         *     логином/паролем обслуживается локально (FR-AUTH-003).
+         *
+         *     Сотрудники с явно выбранным локальным паролем (`accounts.auth_type =
+         *     'local'`) продолжают входить локально и при настроенном LDAP —
+         *     диспетчеризация смотрит на способ входа из карточки, а не только на
+         *     режим внедрения (T-M1-32).
          */
         post: operations["login_api_auth_login_post"];
         delete?: never;
@@ -123,6 +128,77 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/departments": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Departments */
+        get: operations["get_departments_api_departments_get"];
+        put?: never;
+        /** Create Department */
+        post: operations["create_department_api_departments_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/departments/{department_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Update Department */
+        put: operations["update_department_api_departments__department_id__put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/employees": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Employees */
+        get: operations["get_employees_api_employees_get"];
+        put?: never;
+        /** Create Employee */
+        post: operations["create_employee_api_employees_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/employees/{employee_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Employee */
+        get: operations["get_employee_api_employees__employee_id__get"];
+        /** Update Employee */
+        put: operations["update_employee_api_employees__employee_id__put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/admin/ldap-settings": {
         parameters: {
             query?: never;
@@ -180,6 +256,144 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** DepartmentCreate */
+        DepartmentCreate: {
+            /** Name */
+            name: string;
+            /** Parent Id */
+            parent_id?: number | null;
+        };
+        /** DepartmentOut */
+        DepartmentOut: {
+            /** Id */
+            id: number;
+            /** Name */
+            name: string;
+            /** Parent Id */
+            parent_id: number | null;
+            /** Head Employee Id */
+            head_employee_id: number | null;
+        };
+        /** DepartmentUpdate */
+        DepartmentUpdate: {
+            /** Name */
+            name: string;
+            /** Parent Id */
+            parent_id?: number | null;
+            /** Head Employee Id */
+            head_employee_id?: number | null;
+        };
+        /** EmployeeCreate */
+        EmployeeCreate: {
+            /** Full Name */
+            full_name: string;
+            /** Personnel Number */
+            personnel_number: string;
+            /** Department Id */
+            department_id: number;
+            /** Position */
+            position: string;
+            /**
+             * Hire Date
+             * Format: date
+             */
+            hire_date: string;
+            /** Manager Id */
+            manager_id?: number | null;
+            /** Email */
+            email: string;
+            /**
+             * Work Schedule Type
+             * @enum {string}
+             */
+            work_schedule_type: "standard" | "shift";
+            /** Leave Category */
+            leave_category?: string | null;
+            /**
+             * Auth Type
+             * @default ldap
+             * @enum {string}
+             */
+            auth_type: "ldap" | "local";
+            /** Initial Password */
+            initial_password?: string | null;
+        };
+        /** EmployeeOut */
+        EmployeeOut: {
+            /** Id */
+            id: number;
+            /** Full Name */
+            full_name: string;
+            /** Personnel Number */
+            personnel_number: string;
+            /** Department Id */
+            department_id: number | null;
+            /** Position */
+            position: string;
+            /**
+             * Hire Date
+             * Format: date
+             */
+            hire_date: string;
+            /** Manager Id */
+            manager_id: number | null;
+            /** Email */
+            email: string;
+            /** Work Schedule Type */
+            work_schedule_type: string;
+            /** Employment Status */
+            employment_status: string;
+            /** Termination Date */
+            termination_date: string | null;
+            /** Leave Category */
+            leave_category: string | null;
+        };
+        /**
+         * EmployeeUpdate
+         * @description Правка карточки, включая способ входа (`T-M1-34`). Статус
+         *     занятости (`employment_status`) сюда не входит — меняется только
+         *     деактивацией (`T-M1-12`, ещё не реализована).
+         *
+         *     `auth_type` — обязательное поле, как и остальные (PUT — полная
+         *     замена, а не частичный PATCH): клиент всегда явно подтверждает
+         *     текущий способ входа, даже если не меняет его. Обязательность
+         *     `new_password` при переходе на `local` схема проверить не может —
+         *     это зависит от ТЕКУЩЕГО способа входа учётной записи, а не только от
+         *     тела запроса, — эту часть проверяет сервис.
+         */
+        EmployeeUpdate: {
+            /** Full Name */
+            full_name: string;
+            /** Personnel Number */
+            personnel_number: string;
+            /** Department Id */
+            department_id: number;
+            /** Position */
+            position: string;
+            /**
+             * Hire Date
+             * Format: date
+             */
+            hire_date: string;
+            /** Manager Id */
+            manager_id?: number | null;
+            /** Email */
+            email: string;
+            /**
+             * Work Schedule Type
+             * @enum {string}
+             */
+            work_schedule_type: "standard" | "shift";
+            /** Leave Category */
+            leave_category?: string | null;
+            /**
+             * Auth Type
+             * @enum {string}
+             */
+            auth_type: "ldap" | "local";
+            /** New Password */
+            new_password?: string | null;
+        };
         /** HTTPValidationError */
         HTTPValidationError: {
             /** Detail */
@@ -518,6 +732,224 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["MeResponse"];
+                };
+            };
+        };
+    };
+    get_departments_api_departments_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DepartmentOut"][];
+                };
+            };
+        };
+    };
+    create_department_api_departments_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DepartmentCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DepartmentOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_department_api_departments__department_id__put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                department_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DepartmentUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DepartmentOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_employees_api_employees_get: {
+        parameters: {
+            query?: {
+                include_terminated?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EmployeeOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_employee_api_employees_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EmployeeCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EmployeeOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_employee_api_employees__employee_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                employee_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EmployeeOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_employee_api_employees__employee_id__put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                employee_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EmployeeUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EmployeeOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

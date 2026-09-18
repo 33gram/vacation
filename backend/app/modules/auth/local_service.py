@@ -7,11 +7,10 @@
 
 from __future__ import annotations
 
-import datetime
-
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import verify_password
+from app.core.time_utils import utcnow
 from app.models.account import Account
 from app.models.employee import Employee
 from app.modules.auth.access_control import enforce_access
@@ -23,10 +22,6 @@ from app.modules.auth.repository import (
     get_employee_by_email,
 )
 from app.modules.auth.tokens import AuthResult, issue_tokens
-
-
-def _now() -> datetime.datetime:
-    return datetime.datetime.now(datetime.UTC)
 
 
 async def _resolve_local_account(
@@ -44,11 +39,16 @@ async def _resolve_local_account(
 async def _register_failed_attempt(session: AsyncSession, account: Account) -> None:
     account.failed_login_attempts += 1
     if account.failed_login_attempts >= DEFAULT_MAX_FAILED_ATTEMPTS:
-        account.locked_until = _now() + DEFAULT_LOCKOUT_DURATION
+        account.locked_until = utcnow() + DEFAULT_LOCKOUT_DURATION
     await session.commit()
 
 
 async def authenticate_local(session: AsyncSession, login: str, password: str) -> AuthResult:
+    if not password or not password.strip():
+        # Пустой/пробельный пароль отклоняется до любого обращения к БД или
+        # каталогу (FR-AUTH-004) — см. ldap_service.authenticate_via_ldap.
+        raise AuthenticationError("Invalid login or password")
+
     account, employee = await _resolve_local_account(session, login)
 
     if account is None or account.auth_type != "local":
@@ -56,7 +56,7 @@ async def authenticate_local(session: AsyncSession, login: str, password: str) -
         # перебор существующих логинов (FR-AUTH-002).
         raise AuthenticationError("Invalid login or password")
 
-    if account.locked_until is not None and account.locked_until > _now():
+    if account.locked_until is not None and account.locked_until > utcnow():
         raise AuthenticationError("Account temporarily locked, try again later")
 
     if account.local_password_hash is None or not verify_password(

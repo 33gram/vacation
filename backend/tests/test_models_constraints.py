@@ -31,3 +31,10 @@ async def test_department_head_employee_fk_accepts_real_employee(db_session) -> 
     await db_session.flush()
 
     assert department.id is not None
+
+
+async def test_employee_email_uniqueness_is_case_insensitive(db_session) -> None:
+    await make_employee(db_session, email="Ivanov@Company.Local")
+
+    with pytest.raises(IntegrityError):
+        await make_employee(db_session, email="ivanov@company.local")

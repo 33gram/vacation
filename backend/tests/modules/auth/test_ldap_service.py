@@ -1,8 +1,20 @@
 """Интеграционные тесты против тестового OpenLDAP из infra/docker-compose.yml
-(T-M1-06/07). Запускать через `make test-backend` (тот же docker-сеть, что
-и сервис `openldap`); в CI без этого сервиса модуль пропускается целиком.
+(T-M1-06/07). Хост/порт настраиваются через LDAP_TEST_HOST/LDAP_TEST_PORT:
+
+- локально через `make test-backend` — тесты выполняются внутри контейнера
+  `backend` в той же docker-сети, что и сервис `openldap`, значения по
+  умолчанию ("openldap", 1389 — внутренний порт образа bitnami) подходят
+  без переопределения;
+- в CI (.github/workflows/ci.yml) — `openldap` поднимается отдельным шагом
+  через `docker compose ... up -d openldap` на самом раннере, а не как
+  сосед по docker-сети, поэтому используются LDAP_TEST_HOST=localhost,
+  LDAP_TEST_PORT=389 (порт, который compose публикует наружу: `389:1389`).
+
+Модуль сам пропускает себя, если указанный хост недоступен, — например,
+при локальном запуске тестов без поднятого `docker compose`.
 """
 
+import os
 import socket
 
 import pytest
@@ -18,11 +30,8 @@ from app.modules.auth.exceptions import (
 from app.modules.auth.ldap_service import authenticate_via_ldap
 from tests.modules.auth.factories import make_account, make_employee
 
-# Совпадает с сервисом `openldap` в infra/docker-compose.yml: имя хоста —
-# внутри docker-сети, порт 1389 — внутренний порт образа bitnami (наружу
-# он проброшен как 389, но между контейнерами используется 1389 напрямую).
-LDAP_TEST_HOST = "openldap"
-LDAP_TEST_PORT = 1389
+LDAP_TEST_HOST = os.environ.get("LDAP_TEST_HOST", "openldap")
+LDAP_TEST_PORT = int(os.environ.get("LDAP_TEST_PORT", "1389"))
 LDAP_TEST_BASE_DN = "dc=company,dc=local"
 LDAP_TEST_ADMIN_DN = "cn=admin,dc=company,dc=local"
 LDAP_TEST_ADMIN_PASSWORD = "changeme"
@@ -92,6 +101,20 @@ async def test_unknown_ldap_user_raises_authentication_error(db_session) -> None
         await authenticate_via_ldap(
             db_session, "no-such-user@company.local", LDAP_TEST_USER_PASSWORD
         )
+
+
+async def test_empty_password_is_rejected_before_ldap_bind(db_session) -> None:
+    # RFC 4513: bind с пустым паролем — unauthenticated bind, некоторые
+    # каталоги вернут для него успех для любого существующего логина.
+    # Отклоняется до обращения к ldap_settings/каталогу (FR-AUTH-004),
+    # поэтому тест не создаёт активную запись ldap_settings.
+    with pytest.raises(AuthenticationError):
+        await authenticate_via_ldap(db_session, "ivanov@company.local", "")
+
+
+async def test_whitespace_only_password_is_rejected_before_ldap_bind(db_session) -> None:
+    with pytest.raises(AuthenticationError):
+        await authenticate_via_ldap(db_session, "ivanov@company.local", "   ")
 
 
 async def test_no_matching_employee_denies_access(db_session) -> None:

@@ -10,6 +10,7 @@ import bcrypt
 import jwt
 
 from app.core.config import get_settings
+from app.core.time_utils import utcnow
 
 
 def hash_password(password: str) -> str:
@@ -28,13 +29,9 @@ class TokenError(Exception):
     """JWT не прошёл декодирование/проверку подписи или срока действия."""
 
 
-def _now() -> datetime.datetime:
-    return datetime.datetime.now(datetime.UTC)
-
-
 def create_access_token(*, account_id: int, role: str) -> str:
     settings = get_settings()
-    now = _now()
+    now = utcnow()
     payload = {
         "sub": str(account_id),
         "role": role,
@@ -47,7 +44,7 @@ def create_access_token(*, account_id: int, role: str) -> str:
 
 def create_refresh_token(*, account_id: int) -> str:
     settings = get_settings()
-    now = _now()
+    now = utcnow()
     payload = {
         "sub": str(account_id),
         "type": "refresh",

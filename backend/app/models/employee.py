@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import datetime
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, func
+from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, func, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -22,6 +22,9 @@ class Employee(Base):
             "employment_status IN ('active', 'terminated')",
             name="ck_employees_employment_status",
         ),
+        # Уникальность по lower(email) — поиск сотрудника регистронезависим
+        # (plan.md §4), обычный unique на колонке этого не гарантирует.
+        Index("ix_employees_email_lower", text("lower(email)"), unique=True),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -31,7 +34,7 @@ class Employee(Base):
     position: Mapped[str] = mapped_column(nullable=False)
     hire_date: Mapped[datetime.date] = mapped_column(nullable=False)
     manager_id: Mapped[int | None] = mapped_column(ForeignKey("employees.id"), nullable=True)
-    email: Mapped[str] = mapped_column(unique=True, nullable=False)
+    email: Mapped[str] = mapped_column(nullable=False)
     work_schedule_type: Mapped[str] = mapped_column(nullable=False, default="standard")
     employment_status: Mapped[str] = mapped_column(nullable=False, default="active")
     termination_date: Mapped[datetime.date | None] = mapped_column(nullable=True)

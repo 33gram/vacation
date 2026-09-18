@@ -26,6 +26,12 @@ from app.modules.auth.tokens import AuthResult, issue_tokens
 
 
 async def authenticate_via_ldap(session: AsyncSession, login: str, password: str) -> AuthResult:
+    if not password or not password.strip():
+        # RFC 4513: bind с пустым паролем — unauthenticated bind, каталоги,
+        # допускающие его, вернут успех для любого существующего логина без
+        # проверки пароля. Отклоняем до обращения к каталогу (FR-AUTH-004).
+        raise AuthenticationError("Invalid LDAP login or password")
+
     ldap_settings = await get_active_ldap_settings(session)
     if ldap_settings is None:
         raise LdapNotConfiguredError(

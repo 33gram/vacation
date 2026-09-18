@@ -38,7 +38,7 @@ def upgrade() -> None:
             sa.ForeignKey("employees.id"),
             nullable=True,
         ),
-        sa.Column("email", sa.String(), nullable=False, unique=True),
+        sa.Column("email", sa.String(), nullable=False),
         sa.Column(
             "work_schedule_type", sa.String(), nullable=False, server_default="standard"
         ),
@@ -67,6 +67,16 @@ def upgrade() -> None:
             "employment_status IN ('active', 'terminated')",
             name="ck_employees_employment_status",
         ),
+    )
+
+    # Уникальность e-mail — по lower(email): поиск сотрудника
+    # регистронезависим (plan.md §4), обычный unique=True на колонке этого
+    # не гарантирует.
+    op.create_index(
+        "ix_employees_email_lower",
+        "employees",
+        [sa.text("lower(email)")],
+        unique=True,
     )
 
     # Циклическая связь departments.head_employee_id -> employees.id,

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import datetime
 
+# Переносятся в business_rules_config при реализации T-M2-09.
 DEFAULT_MIN_PASSWORD_LENGTH = 12
 DEFAULT_MAX_FAILED_ATTEMPTS = 5
 DEFAULT_LOCKOUT_DURATION = datetime.timedelta(minutes=15)

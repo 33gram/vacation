@@ -48,6 +48,42 @@ async def test_unknown_login_raises_authentication_error(db_session) -> None:
         await authenticate_local(db_session, "no-such-user@company.local", PASSWORD)
 
 
+async def test_empty_password_is_rejected(db_session) -> None:
+    employee = await make_employee(db_session, email="empty-pw@company.local")
+    await make_account(
+        db_session,
+        employee_id=employee.id,
+        auth_type="local",
+        role="employee",
+        password_hash=hash_password(PASSWORD),
+    )
+
+    with pytest.raises(AuthenticationError):
+        await authenticate_local(db_session, "empty-pw@company.local", "")
+
+
+async def test_whitespace_only_password_is_rejected(db_session) -> None:
+    employee = await make_employee(db_session, email="whitespace-pw@company.local")
+    await make_account(
+        db_session,
+        employee_id=employee.id,
+        auth_type="local",
+        role="employee",
+        password_hash=hash_password(PASSWORD),
+    )
+
+    with pytest.raises(AuthenticationError):
+        await authenticate_local(db_session, "whitespace-pw@company.local", "   ")
+
+
+async def test_empty_password_is_rejected_even_for_unknown_login(db_session) -> None:
+    # Проверка порядка: пустой пароль отклоняется независимо от того,
+    # существует ли логин (FR-AUTH-004) — не только когда пароль в БД есть
+    # с чем сравнить.
+    with pytest.raises(AuthenticationError):
+        await authenticate_local(db_session, "does-not-exist@company.local", "")
+
+
 async def test_wrong_password_raises_authentication_error(db_session) -> None:
     employee = await make_employee(db_session, email="petrov@company.local")
     await make_account(

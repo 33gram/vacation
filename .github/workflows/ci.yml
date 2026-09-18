@@ -70,6 +70,9 @@ jobs:
               sleep 1
             done
           '
+          # Первый цикл проверяет slapd изнутри контейнера, этот — тот же
+          # путь, которым пойдут тесты: опубликованный порт с хоста раннера.
+          timeout 30 bash -c 'until (exec 3<>/dev/tcp/localhost/389) 2>/dev/null; do sleep 1; done'
 
       - name: Run tests
         env:
@@ -80,6 +83,7 @@ jobs:
           ENVIRONMENT: test
           LDAP_TEST_HOST: localhost
           LDAP_TEST_PORT: "389"
+          LDAP_TEST_REQUIRED: "1"
         run: pytest --maxfail=1 --disable-warnings -q
 
   frontend-tests:

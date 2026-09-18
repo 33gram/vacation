@@ -11,7 +11,9 @@
   LDAP_TEST_PORT=389 (порт, который compose публикует наружу: `389:1389`).
 
 Модуль сам пропускает себя, если указанный хост недоступен, — например,
-при локальном запуске тестов без поднятого `docker compose`.
+при локальном запуске тестов без поднятого `docker compose`. В CI
+выставлен LDAP_TEST_REQUIRED=1, который отключает этот пропуск: если
+каталог там недоступен, тесты должны падать, а не молча пропускаться.
 """
 
 import os
@@ -36,18 +38,21 @@ LDAP_TEST_BASE_DN = "dc=company,dc=local"
 LDAP_TEST_ADMIN_DN = "cn=admin,dc=company,dc=local"
 LDAP_TEST_ADMIN_PASSWORD = "changeme"
 LDAP_TEST_USER_PASSWORD = "TestPass123!"
+# В CI пропуск этого модуля запрещён: молчаливый skip уже однажды
+# оставил FR-AUTH-001 без покрытия при зелёном CI (см. c6c3b69).
+LDAP_TEST_REQUIRED = os.environ.get("LDAP_TEST_REQUIRED") == "1"
 
 
 def _ldap_reachable() -> bool:
     try:
-        with socket.create_connection((LDAP_TEST_HOST, LDAP_TEST_PORT), timeout=1.0):
+        with socket.create_connection((LDAP_TEST_HOST, LDAP_TEST_PORT), timeout=5.0):
             return True
     except OSError:
         return False
 
 
 pytestmark = pytest.mark.skipif(
-    not _ldap_reachable(),
+    not LDAP_TEST_REQUIRED and not _ldap_reachable(),
     reason=(
         "Тестовый OpenLDAP (infra/docker-compose.yml, сервис openldap) "
         "недоступен — запускать через `make test-backend`"

@@ -58,13 +58,32 @@ jobs:
           DATABASE_URL: postgresql+asyncpg://vacation_app:test@localhost:5432/vacation_tracker_test
         run: alembic upgrade head
 
+      - name: Start test OpenLDAP
+        working-directory: .
+        run: |
+          cp .env.example .env
+          docker compose --env-file .env -f infra/docker-compose.yml up -d openldap
+          timeout 30 bash -c '
+            until docker compose --env-file .env -f infra/docker-compose.yml \
+                exec -T openldap ldapwhoami -x -H ldap://localhost:1389 \
+                -D "cn=admin,dc=company,dc=local" -w changeme >/dev/null 2>&1; do
+              sleep 1
+            done
+          '
+          # Первый цикл проверяет slapd изнутри контейнера, этот — тот же
+          # путь, которым пойдут тесты: опубликованный порт с хоста раннера.
+          timeout 30 bash -c 'until (exec 3<>/dev/tcp/localhost/389) 2>/dev/null; do sleep 1; done'
+
       - name: Run tests
         env:
           DATABASE_URL: postgresql+asyncpg://vacation_app:test@localhost:5432/vacation_tracker_test
           REDIS_URL: redis://localhost:6379/0
           JWT_SECRET_KEY: test-secret-key
-          FIELD_ENCRYPTION_KEY: test-encryption-key-32-bytes!!
+          LDAP_PASSWORD_ENCRYPTION_KEY: test-encryption-key-32-bytes!!
           ENVIRONMENT: test
+          LDAP_TEST_HOST: localhost
+          LDAP_TEST_PORT: "389"
+          LDAP_TEST_REQUIRED: "1"
         run: pytest --maxfail=1 --disable-warnings -q
 
   frontend-tests:

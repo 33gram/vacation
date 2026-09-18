@@ -9,7 +9,7 @@ def _clear_secret_env_vars(monkeypatch: pytest.MonkeyPatch) -> None:
     # Не даём переменным окружения CI/локального .env подменять значения
     # по умолчанию — тесты должны видеть их независимо от того, что задано
     # снаружи (см. .github/workflows/ci.yml, шаг Run tests).
-    for name in ("JWT_SECRET_KEY", "FIELD_ENCRYPTION_KEY", "BOOTSTRAP_ADMIN_PASSWORD"):
+    for name in ("JWT_SECRET_KEY", "LDAP_PASSWORD_ENCRYPTION_KEY", "BOOTSTRAP_ADMIN_PASSWORD"):
         monkeypatch.delenv(name, raising=False)
 
 
@@ -23,7 +23,7 @@ def test_production_with_real_secrets_starts() -> None:
         _env_file=None,
         environment="production",
         jwt_secret_key="real-secret",
-        field_encryption_key="real-encryption-key-32-bytes!!!",
+        ldap_password_encryption_key="real-encryption-key-32-bytes!!!",
         bootstrap_admin_password="real-password",
     )
 

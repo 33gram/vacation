@@ -30,7 +30,7 @@ class Settings(BaseSettings):
     jwt_access_token_ttl_minutes: int = 60
     jwt_refresh_token_ttl_days: int = 14
 
-    field_encryption_key: str = "changeme-32-byte-encryption-key"
+    ldap_password_encryption_key: str = "changeme-32-byte-encryption-key"
 
     bootstrap_admin_login: str = "admin"
     bootstrap_admin_password: str = "changeme"
@@ -45,7 +45,7 @@ class Settings(BaseSettings):
 
     # Поля, для которых нельзя стартовать со значением по умолчанию вне
     # development/test (NFR-SEC-001) — см. _forbid_default_secrets_outside_dev.
-    _SECRET_FIELDS = ("jwt_secret_key", "field_encryption_key", "bootstrap_admin_password")
+    _SECRET_FIELDS = ("jwt_secret_key", "ldap_password_encryption_key", "bootstrap_admin_password")
 
     @model_validator(mode="after")
     def _assemble_urls(self) -> "Settings":

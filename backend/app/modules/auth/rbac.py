@@ -41,8 +41,8 @@ async def get_current_account(
     if account is None:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Account not found or inactive")
 
-    # FR-AUTH-004 (PR #137 review): та же проверка, что и на входе
-    # (`local_service`/`ldap_service` вызывают `enforce_access` напрямую) —
+    # FR-AUTH-004: та же проверка, что и на входе (`local_service`/
+    # `ldap_service` вызывают `enforce_access` напрямую) —
     # деактивированная карточка сотрудника или отключённая учётная запись
     # перестают авторизовывать запросы немедленно, а не только после
     # истечения TTL access-токена. `AccessDeniedError` доходит до

@@ -47,10 +47,10 @@ async def test_get_current_account_rejects_refresh_token(db_session) -> None:
 
 
 async def test_get_current_account_rejects_inactive_account(db_session) -> None:
-    # FR-AUTH-004 (PR #137 review, круг 4): `enforce_access` заворачивает
-    # отключённую учётную запись в `AccessDeniedError` (403 через
-    # обработчик в `main.py`), а не в `HTTPException` — так и вход, и
-    # каждый следующий запрос отказывают одинаково.
+    # FR-AUTH-004: `enforce_access` заворачивает отключённую учётную
+    # запись в `AccessDeniedError` (403 через обработчик в `main.py`), а
+    # не в `HTTPException` — так и вход, и каждый следующий запрос
+    # отказывают одинаково.
     employee = await make_employee(db_session, email="smirnova@company.local")
     account = await make_account(
         db_session,
@@ -66,10 +66,9 @@ async def test_get_current_account_rejects_inactive_account(db_session) -> None:
 
 
 async def test_get_current_account_rejects_deactivated_employee_card(db_session) -> None:
-    # FR-AUTH-004 (PR #137 review, круг 4, замечание #1): токен остаётся
-    # валидным и `accounts.is_active` не трогали — деактивация именно
-    # карточки сотрудника должна отказывать на каждом запросе, а не
-    # только при следующем входе.
+    # FR-AUTH-004: токен остаётся валидным и `accounts.is_active` не
+    # трогали — деактивация именно карточки сотрудника должна отказывать
+    # на каждом запросе, а не только при следующем входе.
     employee = await make_employee(
         db_session, email="deactivated@company.local", employment_status="terminated"
     )
@@ -83,8 +82,8 @@ async def test_get_current_account_rejects_deactivated_employee_card(db_session)
 
 
 async def test_enforce_access_rejects_missing_employee_card(db_session) -> None:
-    # FR-AUTH-004 (PR #137 review, круг 4): карточка сотрудника отсутствует
-    # (не то же самое, что деактивирована) — доступ тоже должен отказать.
+    # FR-AUTH-004: карточка сотрудника отсутствует (не то же самое, что
+    # деактивирована) — доступ тоже должен отказать.
     # Через `get_current_account`/сохранённый `Account` эту ветку не
     # воспроизвести: `accounts.employee_id` защищён FK на `employees.id`
     # (`app/models/account.py`), так что персистентная запись физически

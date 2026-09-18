@@ -13,8 +13,8 @@ from tests.modules.auth.factories import bearer_header, make_account, make_emplo
 
 
 def test_ldap_test_request_marks_bind_password_write_only() -> None:
-    # PR #137 review, замечание #4: bind_password не должен уходить в
-    # OpenAPI-схему (и сгенерированный TS-клиент) как обычная строка.
+    # NFR-SEC-001: bind_password не должен уходить в OpenAPI-схему (и
+    # сгенерированный TS-клиент) как обычная строка.
     schema = app.openapi()["components"]["schemas"]["LdapTestRequest"]
     bind_password_schema = schema["properties"]["bind_password"]
     variants = bind_password_schema.get("anyOf", [bind_password_schema])
@@ -232,9 +232,8 @@ async def test_test_saved_settings_with_nothing_saved_returns_400(db_session, ap
 
 @requires_ldap
 async def test_test_adhoc_params_does_not_touch_saved_settings(db_session, api_client) -> None:
-    # FR-ADMIN-005/FR-AUTH-003 (PR #137 review): проверка черновых
-    # параметров, отличных от сохранённых, не должна помечать сохранённую
-    # запись проверенной.
+    # FR-ADMIN-005/FR-AUTH-003: проверка черновых параметров, отличных от
+    # сохранённых, не должна помечать сохранённую запись проверенной.
     account = await _make_admin(db_session)
     await api_client.put(
         "/api/admin/ldap-settings",
@@ -267,7 +266,7 @@ async def test_test_adhoc_params_does_not_touch_saved_settings(db_session, api_c
     assert row.last_test_status is None
 
 
-# --- POST /test с частичным телом (PR #137 review, круг 4, замечание #3) --
+# --- POST /test с частичным телом -----------------------------------------
 # Все тесты выше передают либо пустое тело, либо полное — ветка
 # "недостающие поля берутся из сохранённой записи" (включая расшифровку
 # сохранённого пароля) не была покрыта ничем.
@@ -312,9 +311,9 @@ async def test_test_draft_params_with_only_password_overrides_saved(
 ) -> None:
     # Сохранённый пароль — заведомо неверный. В теле запроса — только
     # верный пароль. Успех подтверждает, что тело победило сохранённое
-    # значение; `decrypt` не должен вызываться вовсе — сохранённый пароль
-    # не нужен и не должен расшифровываться, когда тело его не запрашивает
-    # (ленивая расшифровка, PR #137 review, круг 3, замечание #3).
+    # значение; `decrypt` не должен вызываться вовсе — ленивая
+    # расшифровка не должна трогать сохранённый пароль, когда тело
+    # запроса его не запрашивает.
     decrypt_calls: list[str] = []
     original_decrypt = ldap_settings_service.decrypt
 
@@ -439,8 +438,8 @@ async def test_test_saved_settings_persists_failure_and_keeps_embedded_mode(
 
 @requires_ldap
 async def test_editing_saved_settings_resets_verification_status(db_session, api_client) -> None:
-    # FR-AUTH-003 (PR #137 review): правка ранее подтверждённых параметров
-    # должна снова потребовать проверки, а не наследовать старый 'success'.
+    # FR-AUTH-003: правка ранее подтверждённых параметров должна снова
+    # потребовать проверки, а не наследовать старый 'success'.
     account = await _make_admin(db_session)
     await api_client.put(
         "/api/admin/ldap-settings",

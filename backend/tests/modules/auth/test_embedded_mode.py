@@ -23,8 +23,8 @@ async def test_embedded_mode_true_when_no_ldap_settings_exist(db_session) -> Non
 
 
 async def test_embedded_mode_true_when_active_but_not_yet_verified(db_session) -> None:
-    # FR-AUTH-003 (PR #137 review): сохранение (`is_active=true`) само по
-    # себе не выводит из режима внедрения — нужна ещё и успешная проверка.
+    # FR-AUTH-003: сохранение (`is_active=true`) само по себе не выводит
+    # из режима внедрения — нужна ещё и успешная проверка.
     db_session.add(_ldap_settings(is_active=True, last_test_status=None))
     await db_session.flush()
 

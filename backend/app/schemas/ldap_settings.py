@@ -36,7 +36,7 @@ class LdapSettingsIn(BaseModel):
 
 class LdapTestRequest(BaseModel):
     """Все поля необязательны и по умолчанию `None` — так эндпоинт
-    `/ldap-settings/test` различает два случая (PR #137 review):
+    `/ldap-settings/test` различает два случая:
 
     - тело пустое (все поля `None`) и параметры уже сохранены — проверяется
       именно сохранённая запись (её собственный расшифрованный пароль), и
@@ -49,13 +49,13 @@ class LdapTestRequest(BaseModel):
     port: int | None = None
     base_dn: str | None = None
     bind_dn: str | None = None
-    # SecretStr (PR #137 review, замечание #4): в OpenAPI-схеме backend'а
-    # это writeOnly-строка, а не обычная (TypeScript такого понятия не
-    # знает, openapi-typescript его не переносит — в сгенерированном
-    # клиенте поле остаётся обычным `string | null`, это ожидаемо). От
-    # утечки самого пароля защищает не тип клиента, а то, что его вообще
-    # нет в LdapSettingsOut; SecretStr здесь лишь маскирует repr()/str(),
-    # если это когда-нибудь случайно попадёт в лог.
+    # SecretStr: в OpenAPI-схеме backend'а это writeOnly-строка, а не
+    # обычная (TypeScript такого понятия не знает, openapi-typescript его
+    # не переносит — в сгенерированном клиенте поле остаётся обычным
+    # `string | null`, это ожидаемо). От утечки самого пароля защищает не
+    # тип клиента, а то, что его вообще нет в LdapSettingsOut; SecretStr
+    # здесь лишь маскирует repr()/str(), если это когда-нибудь случайно
+    # попадёт в лог.
     bind_password: SecretStr | None = None
     user_match_attribute: str | None = None
 

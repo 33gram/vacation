@@ -236,6 +236,26 @@ async def test_is_in_management_chain_terminates_on_cyclic_data(db_session) -> N
     assert result is False
 
 
+async def test_is_in_management_chain_false_for_self_with_cyclic_data(db_session) -> None:
+    # PR review: цепочка вверх от A при цикле A<->B возвращается к A уже
+    # на втором шаге, поэтому `is_in_management_chain(A, A)` без явной
+    # проверки self-reference дал бы `True` — сотрудник с зацикленной
+    # цепочкой мог бы «стать сам себе вышестоящим» и в M3 согласовать
+    # собственную заявку вопреки FR-APPR-002.
+    employee_a = await make_employee(db_session, email="chain-self-cycle-a@company.local")
+    employee_b = await make_employee(
+        db_session, email="chain-self-cycle-b@company.local", manager_id=employee_a.id
+    )
+    employee_a.manager_id = employee_b.id
+    await db_session.flush()
+
+    result = await asyncio.wait_for(
+        is_in_management_chain(db_session, employee_a.id, employee_a.id), timeout=10
+    )
+
+    assert result is False
+
+
 async def test_list_subordinate_employee_ids_returns_whole_subtree(db_session) -> None:
     top = await make_employee(db_session, email="subtree-top@company.local")
     middle = await make_employee(
@@ -268,4 +288,6 @@ async def test_list_subordinate_employee_ids_terminates_on_cyclic_data(db_sessio
         list_subordinate_employee_ids(db_session, employee_a.id), timeout=10
     )
 
-    assert set(subordinate_ids) == {employee_a.id, employee_b.id}
+    # `employee_a` — сам `manager_employee_id`, не подчинённый себе: цикл
+    # в данных не должен превращать его в собственного подчинённого.
+    assert set(subordinate_ids) == {employee_b.id}

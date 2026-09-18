@@ -108,12 +108,18 @@ async def is_in_management_chain(
     команда», `plan.md` §5.1), а не маршрут согласования — для этого
     есть отдельная, узкая `is_direct_manager_of`.
 
-    Сотрудник сам себе не «вышестоящий»: цепочка строится от
-    `target_employee_id` вверх и не включает его самого, поэтому
-    `manager_employee_id == target_employee_id` всегда даёт `False`.
+    Сотрудник сам себе не «вышестоящий»: гарантируется явной проверкой
+    ниже, а не тем, что обход цепочки вверх не может вернуться к
+    исходной точке — при цикле в данных (`A.manager_id = B`,
+    `B.manager_id = A`, запрет циклов при записи — первая, но не
+    единственная линия защиты) он ровно это и делает уже на втором шаге,
+    и без явной проверки `is_in_management_chain(A, A)` дал бы `True`.
 
     Один рекурсивный SQL-запрос (`WITH RECURSIVE` через `.cte(recursive=
     True)`), а не цикл с N обращениями к БД."""
+    if manager_employee_id == target_employee_id:
+        return False
+
     chain = (
         select(Employee.manager_id.label("current_manager_id"), literal(1).label("depth"))
         .where(Employee.id == target_employee_id)
@@ -142,7 +148,14 @@ async def list_subordinate_employee_ids(
     поддерево, без самого `manager_employee_id`) одним запросом —
     списку (`GET /api/employees`) для руководителя нужна ровно эта
     операция, а не проверка `is_in_management_chain` по каждой строке
-    (иначе N+1)."""
+    (иначе N+1).
+
+    Исключение `manager_employee_id` из результата гарантируется явным
+    фильтром в финальном `SELECT`, а не тем, что обход вниз по дереву не
+    может вернуться к исходной точке — при цикле в данных (запрет циклов
+    при записи — первая, но не единственная линия защиты) обход именно
+    это и делает, и без явного фильтра `manager_employee_id` попал бы в
+    результат."""
     subtree = (
         select(Employee.id.label("id"), literal(0).label("depth"))
         .where(Employee.manager_id == manager_employee_id)
@@ -155,5 +168,7 @@ async def list_subordinate_employee_ids(
         .join(child, child.manager_id == subtree.c.id)
         .where(subtree.c.depth < MAX_MANAGEMENT_CHAIN_DEPTH)
     )
-    result = await session.execute(select(subtree.c.id))
+    result = await session.execute(
+        select(subtree.c.id).where(subtree.c.id != manager_employee_id)
+    )
     return [row[0] for row in result.all()]

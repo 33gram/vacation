@@ -4,12 +4,12 @@ from logging.config import fileConfig
 from sqlalchemy import pool
 from sqlalchemy.ext.asyncio import AsyncEngine, async_engine_from_config
 
+# Импорт регистрирует все модели в Base.metadata (нужно для автогенерации
+# миграций); сами миграции в этом проекте пишутся вручную.
+import app.models  # noqa: F401,E402
 from alembic import context
 from app.core.config import get_settings
 from app.db.base import Base
-
-# Модели ORM импортируются здесь по мере появления (начиная с M1), чтобы
-# Base.metadata знал обо всех таблицах перед автогенерацией миграций.
 
 config = context.config
 

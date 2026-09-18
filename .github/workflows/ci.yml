@@ -63,7 +63,7 @@ jobs:
           DATABASE_URL: postgresql+asyncpg://vacation_app:test@localhost:5432/vacation_tracker_test
           REDIS_URL: redis://localhost:6379/0
           JWT_SECRET_KEY: test-secret-key
-          FIELD_ENCRYPTION_KEY: test-encryption-key-32-bytes!!
+          LDAP_PASSWORD_ENCRYPTION_KEY: test-encryption-key-32-bytes!!
           ENVIRONMENT: test
         run: pytest --maxfail=1 --disable-warnings -q
 

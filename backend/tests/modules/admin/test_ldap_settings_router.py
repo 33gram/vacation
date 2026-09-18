@@ -6,6 +6,7 @@ from sqlalchemy import select
 
 from app.main import app
 from app.models.ldap_settings import LdapSettings
+from app.modules.admin import ldap_settings_service
 from app.modules.auth.embedded_mode import is_embedded_mode
 from tests.ldap_guard import LDAP_TEST_HOST, LDAP_TEST_PORT, requires_ldap
 from tests.modules.auth.factories import bearer_header, make_account, make_employee
@@ -264,6 +265,106 @@ async def test_test_adhoc_params_does_not_touch_saved_settings(db_session, api_c
     row = (await db_session.execute(select(LdapSettings))).scalars().one()
     assert row.last_tested_at is None
     assert row.last_test_status is None
+
+
+# --- POST /test с частичным телом (PR #137 review, круг 4, замечание #3) --
+# Все тесты выше передают либо пустое тело, либо полное — ветка
+# "недостающие поля берутся из сохранённой записи" (включая расшифровку
+# сохранённого пароля) не была покрыта ничем.
+
+
+@requires_ldap
+async def test_test_draft_params_with_only_server_url_falls_back_to_saved(
+    db_session, api_client
+) -> None:
+    # Сохранённая запись — рабочие реквизиты тестового LDAP. В теле
+    # запроса — только `server_url` (совпадающий с сохранённым): порт,
+    # `base_dn`, `bind_dn` и пароль обязаны быть подставлены из
+    # сохранённой записи, иначе `_test_draft_ldap_params` не соберёт
+    # полный набор параметров и вернёт 400, а не 200 success=True.
+    account = await _make_admin(db_session)
+    await api_client.put(
+        "/api/admin/ldap-settings",
+        json={
+            "server_url": LDAP_TEST_HOST,
+            "port": LDAP_TEST_PORT,
+            "base_dn": "dc=company,dc=local",
+            "bind_dn": "cn=admin,dc=company,dc=local",
+            "bind_password": "changeme",
+            "is_active": True,
+        },
+        headers=bearer_header(account),
+    )
+
+    response = await api_client.post(
+        "/api/admin/ldap-settings/test",
+        json={"server_url": LDAP_TEST_HOST},
+        headers=bearer_header(account),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["success"] is True
+
+
+@requires_ldap
+async def test_test_draft_params_with_only_password_overrides_saved(
+    db_session, api_client, monkeypatch
+) -> None:
+    # Сохранённый пароль — заведомо неверный. В теле запроса — только
+    # верный пароль. Успех подтверждает, что тело победило сохранённое
+    # значение; `decrypt` не должен вызываться вовсе — сохранённый пароль
+    # не нужен и не должен расшифровываться, когда тело его не запрашивает
+    # (ленивая расшифровка, PR #137 review, круг 3, замечание #3).
+    decrypt_calls: list[str] = []
+    original_decrypt = ldap_settings_service.decrypt
+
+    def _tracking_decrypt(ciphertext: str, key: str) -> str:
+        decrypt_calls.append(ciphertext)
+        return original_decrypt(ciphertext, key)
+
+    monkeypatch.setattr(ldap_settings_service, "decrypt", _tracking_decrypt)
+
+    account = await _make_admin(db_session)
+    await api_client.put(
+        "/api/admin/ldap-settings",
+        json={
+            "server_url": LDAP_TEST_HOST,
+            "port": LDAP_TEST_PORT,
+            "base_dn": "dc=company,dc=local",
+            "bind_dn": "cn=admin,dc=company,dc=local",
+            "bind_password": "wrong-saved-password",
+            "is_active": True,
+        },
+        headers=bearer_header(account),
+    )
+    decrypt_calls.clear()  # сброс вызова из PUT (шифрование, не расшифровка, но на всякий случай)
+
+    response = await api_client.post(
+        "/api/admin/ldap-settings/test",
+        json={"bind_password": "changeme"},
+        headers=bearer_header(account),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["success"] is True
+    assert decrypt_calls == []
+
+
+async def test_test_draft_params_with_partial_body_and_nothing_saved_returns_400(
+    db_session, api_client
+) -> None:
+    # Ничего не сохранено, тело частичное (не пустое) — недостающие поля
+    # не из чего брать. Обязана быть внятная ошибка (400), а не падение
+    # (500) на `saved_row is None` в фолбэках `_test_draft_ldap_params`.
+    account = await _make_admin(db_session)
+
+    response = await api_client.post(
+        "/api/admin/ldap-settings/test",
+        json={"server_url": "ldap.company.local"},
+        headers=bearer_header(account),
+    )
+
+    assert response.status_code == 400
 
 
 @requires_ldap

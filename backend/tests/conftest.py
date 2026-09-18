@@ -3,10 +3,33 @@ from collections.abc import Iterator
 
 import pytest
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import get_settings
 from app.db.session import get_engine
 from app.main import app
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _require_test_database() -> None:
+    """T-M1-31, PR #136, замечание 2 оси спецификации: защищает инвариант
+    «тесты не работают на не-тестовой базе», а не одну точку входа.
+    `make test-backend` переопределяет `POSTGRES_DB`, но прямой
+    `docker compose exec backend pytest` о такой защите не знает и раньше
+    молча шёл в dev-базу. `database_url` разбирается через
+    `sqlalchemy.engine.make_url` — он корректен и для собранного из частей
+    URL, и для полного override (см. `app/core/config.py`).
+    """
+    db_name = make_url(get_settings().database_url).database
+    if db_name is None or not db_name.endswith("_test"):
+        pytest.exit(
+            f"Отказ: тесты пытаются подключиться к базе {db_name!r}, "
+            "не похожей на тестовую (имя должно оканчиваться на '_test', "
+            "как vacation_tracker_test у make test-backend и в CI). "
+            "См. README.md, раздел «Тестирование».",
+            returncode=1,
+        )
 
 
 @pytest.fixture(scope="session")

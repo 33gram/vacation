@@ -9,6 +9,7 @@ from app.core.config import get_settings
 from app.core.health import router as health_router
 from app.core.logging import configure_logging
 from app.db.session import get_session_factory
+from app.modules.admin.ldap_settings_router import router as ldap_settings_router
 from app.modules.auth.bootstrap import ensure_bootstrap_admin
 from app.modules.auth.exceptions import (
     AccessDeniedError,
@@ -41,6 +42,7 @@ app.add_middleware(
 
 app.include_router(health_router)
 app.include_router(auth_router)
+app.include_router(ldap_settings_router)
 
 
 @app.exception_handler(AuthenticationError)

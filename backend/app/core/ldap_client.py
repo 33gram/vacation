@@ -75,3 +75,21 @@ def authenticate(settings: LdapSettingsData, login: str, password: str) -> str:
         raise LdapAuthError("Invalid credentials") from exc
 
     return matched_value
+
+
+def test_connection(settings: LdapSettingsData) -> None:
+    """Проверяет bind сервисной записью и доступность `base_dn` — без
+    аутентификации конкретного пользователя (T-M1-16,
+    `POST /api/admin/ldap-settings/test`). Поднимает `LdapAuthError` при
+    неудаче; ничего не возвращает и не сохраняет."""
+    server = Server(settings.server_url, port=settings.port, use_ssl=settings.port == 636)
+    try:
+        with Connection(
+            server,
+            user=settings.bind_dn,
+            password=settings.bind_password,
+            auto_bind=True,
+        ) as conn:
+            conn.search(search_base=settings.base_dn, search_filter="(objectClass=*)", size_limit=1)
+    except LDAPException as exc:
+        raise LdapAuthError("Service bind or base DN search failed") from exc

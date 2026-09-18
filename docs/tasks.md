@@ -72,7 +72,7 @@
 - [x] **T-M1-13** `POST /api/auth/login`, `POST /api/auth/login/local`, `POST /api/auth/password/change`, `POST /api/auth/logout`, `GET /api/auth/me`. Эндпоинт `POST /api/auth/password/reset-request` исключён из задачи: он реализует критерий восстановления пароля FR-AUTH-002, вынесенный в `T-M1-30` (зависит от `T-M5-03`). Реализуется вместе с `T-M1-30`.
 - [ ] **T-M1-14** `GET/POST /api/departments`, `PUT /api/departments/{id}`.
 - [ ] **T-M1-15** `GET/POST /api/employees`, `GET/PUT /api/employees/{id}`, `POST /api/employees/import`, `POST /api/employees/{id}/deactivate`.
-- [ ] **T-M1-16** `GET/PUT /api/admin/ldap-settings`, `POST /api/admin/ldap-settings/test` (тестовое подключение без сохранения при ошибке). `FR-ADMIN-005`.
+- [x] **T-M1-16** `GET/PUT /api/admin/ldap-settings`, `POST /api/admin/ldap-settings/test` (тестовое подключение без сохранения при ошибке). `FR-ADMIN-005`.
 - [ ] **T-M1-17** `GET/PUT /api/admin/production-calendar/{year}`. `FR-ADMIN-003`.
 
 ### Frontend

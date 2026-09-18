@@ -13,6 +13,20 @@ from tests.modules.auth.factories import bearer_header, make_account, make_emplo
 PASSWORD = "CorrectHorseBatteryStaple"
 
 
+def _assert_denied_with_hr_message(response) -> None:
+    # FR-AUTH-004 требует показывать при отказе сообщение с указанием
+    # обратиться к HR-администратору — текст здесь и есть критерий
+    # приёмки, поэтому проверяется он, а не только код ответа.
+    assert response.status_code == 403
+    assert "HR-администратор" in response.json()["detail"]
+
+
+async def _get_me_and_admin_ldap_settings(api_client, headers):
+    me_response = await api_client.get("/api/auth/me", headers=headers)
+    admin_response = await api_client.get("/api/admin/ldap-settings", headers=headers)
+    return me_response, admin_response
+
+
 # --- POST /api/auth/login/local ---------------------------------------
 
 
@@ -90,8 +104,7 @@ async def test_login_local_deactivated_employee_returns_403_with_hr_message(
         "/api/auth/login/local", json={"login": "terminated@company.local", "password": PASSWORD}
     )
 
-    assert response.status_code == 403
-    assert "HR-администратор" in response.json()["detail"]
+    _assert_denied_with_hr_message(response)
 
 
 async def test_login_local_disabled_account_returns_403_with_hr_message(
@@ -111,8 +124,7 @@ async def test_login_local_disabled_account_returns_403_with_hr_message(
         "/api/auth/login/local", json={"login": "disabled@company.local", "password": PASSWORD}
     )
 
-    assert response.status_code == 403
-    assert "HR-администратор" in response.json()["detail"]
+    _assert_denied_with_hr_message(response)
 
 
 # --- POST /api/auth/login (FR-AUTH-003: embedded mode dispatch) -------
@@ -384,13 +396,10 @@ async def test_deactivated_employee_card_denies_every_request_not_only_login(
     employee.employment_status = "terminated"
     await db_session.flush()
 
-    me_response = await api_client.get("/api/auth/me", headers=headers)
-    admin_response = await api_client.get("/api/admin/ldap-settings", headers=headers)
+    me_response, admin_response = await _get_me_and_admin_ldap_settings(api_client, headers)
 
-    assert me_response.status_code == 403
-    assert "HR-администратор" in me_response.json()["detail"]
-    assert admin_response.status_code == 403
-    assert "HR-администратор" in admin_response.json()["detail"]
+    _assert_denied_with_hr_message(me_response)
+    _assert_denied_with_hr_message(admin_response)
 
 
 # Пропущенную карточку (`employee_id`, не указывающий ни на одну строку
@@ -411,8 +420,7 @@ async def test_bootstrap_admin_without_employee_card_is_not_denied(
     )
     headers = bearer_header(account)
 
-    me_response = await api_client.get("/api/auth/me", headers=headers)
-    admin_response = await api_client.get("/api/admin/ldap-settings", headers=headers)
+    me_response, admin_response = await _get_me_and_admin_ldap_settings(api_client, headers)
 
     assert me_response.status_code == 200
     assert admin_response.status_code == 200
@@ -426,8 +434,7 @@ async def test_active_employee_and_account_are_not_denied(db_session, api_client
     )
     headers = bearer_header(account)
 
-    me_response = await api_client.get("/api/auth/me", headers=headers)
-    admin_response = await api_client.get("/api/admin/ldap-settings", headers=headers)
+    me_response, admin_response = await _get_me_and_admin_ldap_settings(api_client, headers)
 
     assert me_response.status_code == 200
     assert admin_response.status_code == 200

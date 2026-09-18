@@ -365,6 +365,75 @@ async def test_me_requires_authentication(api_client) -> None:
     assert response.status_code == 401
 
 
+# --- FR-AUTH-004 on every request, not only at login (PR #137 review, ---
+# --- круг 4, замечание #1) ------------------------------------------------
+
+
+async def test_deactivated_employee_card_denies_every_request_not_only_login(
+    db_session, api_client
+) -> None:
+    # Токен валиден, `accounts.is_active` не трогали — только карточку
+    # сотрудника переводим в неактивный статус *после* выдачи токена, как
+    # при увольнении. И `GET /api/auth/me` (голый `get_current_account`),
+    # и эндпоинт за `require_roles` должны отказать одинаково.
+    employee = await make_employee(db_session, email="fired-mid-session@company.local")
+    account = await make_account(
+        db_session, employee_id=employee.id, auth_type="local", role="system_admin"
+    )
+    headers = bearer_header(account)
+
+    employee.employment_status = "terminated"
+    await db_session.flush()
+
+    me_response = await api_client.get("/api/auth/me", headers=headers)
+    admin_response = await api_client.get("/api/admin/ldap-settings", headers=headers)
+
+    assert me_response.status_code == 403
+    assert "HR-администратор" in me_response.json()["detail"]
+    assert admin_response.status_code == 403
+    assert "HR-администратор" in admin_response.json()["detail"]
+
+
+# Пропущенную карточку (`employee_id`, не указывающий ни на одну строку
+# `employees`) на этом уровне не воспроизвести: `accounts.employee_id`
+# защищён FK, так что персистентный `Account` физически не может на неё
+# ссылаться. Эта ветка `enforce_access` покрыта на уровне
+# `test_rbac.py::test_enforce_access_rejects_missing_employee_card`.
+
+
+async def test_bootstrap_admin_without_employee_card_is_not_denied(
+    db_session, api_client
+) -> None:
+    # Служебная запись без карточки сотрудника (FR-AUTH-005) не должна
+    # ломаться проверкой, которая теперь читает `employees` на каждом
+    # запросе, — нет ложных отказов.
+    account = await make_account(
+        db_session, employee_id=None, login="bootstrap-mid-session", role="system_admin"
+    )
+    headers = bearer_header(account)
+
+    me_response = await api_client.get("/api/auth/me", headers=headers)
+    admin_response = await api_client.get("/api/admin/ldap-settings", headers=headers)
+
+    assert me_response.status_code == 200
+    assert admin_response.status_code == 200
+
+
+async def test_active_employee_and_account_are_not_denied(db_session, api_client) -> None:
+    # Нет ложных отказов и для обычного активного случая.
+    employee = await make_employee(db_session, email="still-active@company.local")
+    account = await make_account(
+        db_session, employee_id=employee.id, auth_type="local", role="system_admin"
+    )
+    headers = bearer_header(account)
+
+    me_response = await api_client.get("/api/auth/me", headers=headers)
+    admin_response = await api_client.get("/api/admin/ldap-settings", headers=headers)
+
+    assert me_response.status_code == 200
+    assert admin_response.status_code == 200
+
+
 # --- POST /api/auth/logout ----------------------------------------------
 
 

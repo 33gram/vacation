@@ -17,6 +17,7 @@ from app.core.security import TokenError, decode_token
 from app.db.session import get_db_session
 from app.models.account import Account
 from app.models.employee import Employee
+from app.modules.auth.access_control import enforce_access
 
 bearer_scheme = HTTPBearer(auto_error=False)
 
@@ -37,8 +38,16 @@ async def get_current_account(
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid token type")
 
     account = await session.get(Account, int(payload["sub"]))
-    if account is None or not account.is_active:
+    if account is None:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Account not found or inactive")
+
+    # FR-AUTH-004 (PR #137 review): та же проверка, что и на входе
+    # (`local_service`/`ldap_service` вызывают `enforce_access` напрямую) —
+    # деактивированная карточка сотрудника или отключённая учётная запись
+    # перестают авторизовывать запросы немедленно, а не только после
+    # истечения TTL access-токена. `AccessDeniedError` доходит до
+    # обработчика в `main.py` и превращается в 403.
+    await enforce_access(session, account)
 
     return account
 

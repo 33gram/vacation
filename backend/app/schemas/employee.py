@@ -60,11 +60,16 @@ class EmployeeCreate(BaseModel):
 
 
 class EmployeeUpdate(BaseModel):
-    """Правка карточки: организационные и кадровые поля. Способ входа
-    (`auth_type`) и статус занятости (`employment_status`) сюда
-    намеренно не входят — первый меняется отдельным механизмом
-    (`T-M1-34`), второй меняется только деактивацией (`T-M1-12`, ещё не
-    реализована)."""
+    """Правка карточки, включая способ входа (`T-M1-34`). Статус
+    занятости (`employment_status`) сюда не входит — меняется только
+    деактивацией (`T-M1-12`, ещё не реализована).
+
+    `auth_type` — обязательное поле, как и остальные (PUT — полная
+    замена, а не частичный PATCH): клиент всегда явно подтверждает
+    текущий способ входа, даже если не меняет его. Обязательность
+    `new_password` при переходе на `local` схема проверить не может —
+    это зависит от ТЕКУЩЕГО способа входа учётной записи, а не только от
+    тела запроса, — эту часть проверяет сервис."""
 
     full_name: str
     personnel_number: str
@@ -75,3 +80,13 @@ class EmployeeUpdate(BaseModel):
     email: str
     work_schedule_type: WorkScheduleType
     leave_category: str | None = None
+    auth_type: EmployeeAuthType
+    # SecretStr — см. `EmployeeCreate.initial_password`; принимается
+    # только при переходе с `ldap` на `local` (проверяет сервис).
+    new_password: SecretStr | None = None
+
+    @model_validator(mode="after")
+    def _validate_new_password(self) -> EmployeeUpdate:
+        if self.auth_type == "ldap" and self.new_password is not None:
+            raise ValueError("new_password must not be set when auth_type is 'ldap'")
+        return self

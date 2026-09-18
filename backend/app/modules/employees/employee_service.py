@@ -23,6 +23,7 @@ from app.models.department import Department
 from app.models.employee import Employee
 from app.modules.auth.password_policy import validate_password_strength
 from app.modules.auth.rbac import is_in_management_chain, list_subordinate_employee_ids
+from app.modules.auth.repository import get_account_by_employee_id
 from app.schemas.employee import EmployeeCreate, EmployeeUpdate
 
 # Роли, видящие ЛЮБУЮ карточку (`plan.md` §5.1); `accountant` — только
@@ -166,12 +167,54 @@ async def create_employee(session: AsyncSession, payload: EmployeeCreate) -> Emp
     return employee
 
 
+def _apply_auth_type_change(account: Account, payload: EmployeeUpdate) -> None:
+    """T-M1-34: смена способа входа сотрудника. Мутирует `account` в
+    памяти — коммитится вместе с карточкой одним `session.commit()` в
+    `update_employee`, той же гарантией атомарности, что и создание
+    (`create_employee`)."""
+    if payload.auth_type == "local" and account.auth_type != "local":
+        # Переход LDAP -> локальный: обязателен первичный пароль,
+        # проходящий парольную политику, со сменой при первом входе —
+        # симметрично созданию карточки (`EmployeeCreate`, T-M1-25).
+        has_password = (
+            payload.new_password is not None and payload.new_password.get_secret_value().strip()
+        )
+        if not has_password:
+            raise ValueError("new_password is required when switching auth_type to 'local'")
+        assert payload.new_password is not None
+        validate_password_strength(payload.new_password.get_secret_value())
+        account.local_password_hash = hash_password(payload.new_password.get_secret_value())
+        account.must_change_password = True
+        account.auth_type = "local"
+    elif payload.auth_type == "ldap" and account.auth_type != "ldap":
+        # Переход локальный -> LDAP: удаляем сохранённый хэш пароля —
+        # дальше вход допускается только через каталог (T-M1-34).
+        account.local_password_hash = None
+        account.must_change_password = False
+        account.auth_type = "ldap"
+    elif payload.auth_type == "local" and payload.new_password is not None:
+        # Способ входа не меняется (остаётся локальным), но пароль всё
+        # равно прислан — это уже не смена способа входа, а сброс
+        # пароля, вне области T-M1-34 (для него — отдельный механизм,
+        # T-M1-30). Отклоняем явно, а не молча меняем пароль мимо него.
+        raise ValueError(
+            "new_password is only accepted when switching auth_type from 'ldap' to 'local'"
+        )
+
+
 async def update_employee(
     session: AsyncSession, employee_id: int, payload: EmployeeUpdate
 ) -> Employee:
     employee = await session.get(Employee, employee_id)
     if employee is None:
         raise EmployeeNotFoundError(f"Employee {employee_id} not found")
+
+    # Карточка и учётная запись существуют атомарно с момента создания
+    # (`create_employee`) — `None` здесь означало бы, что этот инвариант
+    # уже нарушен где-то ещё, а не штатный случай этого эндпоинта.
+    account = await get_account_by_employee_id(session, employee.id)
+    if account is None:
+        raise ValueError(f"Employee {employee_id} has no linked account")
 
     await _require_department_reference(session, payload.department_id)
     if payload.manager_id is not None:
@@ -188,6 +231,7 @@ async def update_employee(
         session, payload.personnel_number, exclude_employee_id=employee.id
     )
     await _require_email_free(session, payload.email, exclude_employee_id=employee.id)
+    _apply_auth_type_change(account, payload)
 
     employee.full_name = payload.full_name
     employee.personnel_number = payload.personnel_number

@@ -36,6 +36,17 @@ async def _resolve_local_account(
     return account, None
 
 
+async def uses_local_auth(session: AsyncSession, login: str) -> bool:
+    """Есть ли для `login` учётная запись с явно выбранным локальным
+    паролем (`accounts.auth_type = 'local'`) — диспетчер
+    `POST /api/auth/login` (T-M1-32) использует это, чтобы такие
+    сотрудники продолжали входить через основной эндпоинт, даже когда
+    LDAP настроен и подтверждён (FR-AUTH-003), а не только через
+    `/api/auth/login/local`."""
+    account, _ = await _resolve_local_account(session, login)
+    return account is not None and account.auth_type == "local"
+
+
 async def _register_failed_attempt(session: AsyncSession, account: Account) -> None:
     account.failed_login_attempts += 1
     if account.failed_login_attempts >= DEFAULT_MAX_FAILED_ATTEMPTS:

@@ -183,6 +183,46 @@ async def test_login_uses_ldap_when_active_settings_exist(db_session, api_client
     assert response.status_code == 200
 
 
+async def test_login_dispatches_to_local_for_local_auth_employee_even_with_ldap_active(
+    db_session, api_client
+) -> None:
+    # T-M1-32/FR-AUTH-003: LDAP настроен и подтверждён (`last_test_status
+    # = "success"`), но у этого сотрудника явно выбран локальный пароль
+    # — основной `/api/auth/login` обязан обслужить его локально, а не
+    # заставлять идти через `/api/auth/login/local`. Не требует
+    # `requires_ldap`/реального каталога: `authenticate_local` вообще не
+    # обращается к LDAP.
+    settings_row = LdapSettings(
+        server_url=LDAP_TEST_HOST,
+        port=LDAP_TEST_PORT,
+        base_dn="dc=company,dc=local",
+        bind_dn="cn=admin,dc=company,dc=local",
+        bind_password_encrypted=encrypt(
+            "changeme", key=get_settings().ldap_password_encryption_key
+        ),
+        user_match_attribute="mail",
+        is_active=True,
+        last_test_status="success",
+    )
+    db_session.add(settings_row)
+    await db_session.flush()
+    employee = await make_employee(db_session, email="local-despite-ldap@company.local")
+    await make_account(
+        db_session,
+        employee_id=employee.id,
+        auth_type="local",
+        role="employee",
+        password_hash=hash_password(PASSWORD),
+    )
+
+    response = await api_client.post(
+        "/api/auth/login",
+        json={"login": "local-despite-ldap@company.local", "password": PASSWORD},
+    )
+
+    assert response.status_code == 200
+
+
 async def test_login_stays_local_when_active_settings_not_yet_verified(
     db_session, api_client
 ) -> None:

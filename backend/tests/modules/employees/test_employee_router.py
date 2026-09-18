@@ -415,11 +415,12 @@ async def test_get_employee_accountant_sees_anyone_read_only(db_session, api_cli
 async def test_put_employee_accountant_cannot_edit(db_session, api_client) -> None:
     department = await make_department(db_session)
     other = await make_employee(db_session, email="acct-edit-target@company.local")
+    await make_account(db_session, employee_id=other.id, role="employee", auth_type="ldap")
     account = await _make_admin(db_session, role="accountant")
 
     response = await api_client.put(
         f"/api/employees/{other.id}",
-        json=_employee_payload(department_id=department.id),
+        json=_employee_payload(department_id=department.id, auth_type="ldap"),
         headers=bearer_header(account),
     )
 
@@ -484,11 +485,14 @@ async def test_get_employees_plain_employee_sees_only_self(db_session, api_clien
 async def test_put_employee_rejects_self_as_manager(db_session, api_client) -> None:
     department = await make_department(db_session)
     employee = await make_employee(db_session, email="self-manager@company.local")
+    await make_account(db_session, employee_id=employee.id, role="employee", auth_type="ldap")
     account = await _make_admin(db_session)
 
     response = await api_client.put(
         f"/api/employees/{employee.id}",
-        json=_employee_payload(department_id=department.id, manager_id=employee.id),
+        json=_employee_payload(
+            department_id=department.id, manager_id=employee.id, auth_type="ldap"
+        ),
         headers=bearer_header(account),
     )
 
@@ -498,6 +502,7 @@ async def test_put_employee_rejects_self_as_manager(db_session, api_client) -> N
 async def test_put_employee_rejects_chain_cycle(db_session, api_client) -> None:
     department = await make_department(db_session)
     top = await make_employee(db_session, email="cycle-top@company.local")
+    await make_account(db_session, employee_id=top.id, role="employee", auth_type="ldap")
     bottom = await make_employee(
         db_session, email="cycle-bottom@company.local", manager_id=top.id
     )
@@ -506,7 +511,9 @@ async def test_put_employee_rejects_chain_cycle(db_session, api_client) -> None:
     # top -> bottom уже существует; пытаемся сделать top подчинённым bottom.
     response = await api_client.put(
         f"/api/employees/{top.id}",
-        json=_employee_payload(department_id=department.id, manager_id=bottom.id),
+        json=_employee_payload(
+            department_id=department.id, manager_id=bottom.id, auth_type="ldap"
+        ),
         headers=bearer_header(account),
     )
 
@@ -527,6 +534,7 @@ async def test_put_employee_reassigns_department_keeps_head_employee_id(
     head = await make_employee(
         db_session, email="moving-head@company.local", department_id=old_department.id
     )
+    await make_account(db_session, employee_id=head.id, role="employee", auth_type="ldap")
     old_department.head_employee_id = head.id
     await db_session.flush()
     account = await _make_admin(db_session)
@@ -537,6 +545,7 @@ async def test_put_employee_reassigns_department_keeps_head_employee_id(
             department_id=new_department.id,
             personnel_number=head.personnel_number,
             email=head.email,
+            auth_type="ldap",
         ),
         headers=bearer_header(account),
     )
@@ -604,3 +613,143 @@ async def test_create_employee_does_not_log_personal_data(db_session, api_client
     assert full_name not in log_text
     assert personnel_number not in log_text
     assert email not in log_text
+
+
+# --- PUT /api/employees/{id}: switching the login method (T-M1-34) --------
+
+
+async def test_put_employee_switch_to_ldap_clears_local_password(db_session, api_client) -> None:
+    department = await make_department(db_session)
+    employee = await make_employee(db_session, email="switch-to-ldap@company.local")
+    await make_account(
+        db_session,
+        employee_id=employee.id,
+        role="employee",
+        auth_type="local",
+        password_hash="irrelevant-hash",
+    )
+    account = await _make_admin(db_session)
+
+    response = await api_client.put(
+        f"/api/employees/{employee.id}",
+        json=_employee_payload(
+            department_id=department.id,
+            personnel_number=employee.personnel_number,
+            email=employee.email,
+            auth_type="ldap",
+        ),
+        headers=bearer_header(account),
+    )
+
+    assert response.status_code == 200
+    updated_account = (
+        await db_session.execute(select(Account).where(Account.employee_id == employee.id))
+    ).scalar_one()
+    assert updated_account.auth_type == "ldap"
+    assert updated_account.local_password_hash is None
+    assert updated_account.must_change_password is False
+
+
+async def test_put_employee_switch_to_local_requires_password(db_session, api_client) -> None:
+    department = await make_department(db_session)
+    employee = await make_employee(db_session, email="switch-to-local-no-pw@company.local")
+    await make_account(db_session, employee_id=employee.id, role="employee", auth_type="ldap")
+    account = await _make_admin(db_session)
+
+    response = await api_client.put(
+        f"/api/employees/{employee.id}",
+        json=_employee_payload(
+            department_id=department.id,
+            personnel_number=employee.personnel_number,
+            email=employee.email,
+            auth_type="local",
+        ),
+        headers=bearer_header(account),
+    )
+
+    assert response.status_code == 400
+
+
+async def test_put_employee_switch_to_local_sets_password_and_forces_change(
+    db_session, api_client
+) -> None:
+    department = await make_department(db_session)
+    employee = await make_employee(db_session, email="switch-to-local@company.local")
+    await make_account(db_session, employee_id=employee.id, role="employee", auth_type="ldap")
+    account = await _make_admin(db_session)
+
+    response = await api_client.put(
+        f"/api/employees/{employee.id}",
+        json=_employee_payload(
+            department_id=department.id,
+            personnel_number=employee.personnel_number,
+            email=employee.email,
+            auth_type="local",
+            new_password=MIN_PASSWORD,
+        ),
+        headers=bearer_header(account),
+    )
+
+    assert response.status_code == 200
+    updated_account = (
+        await db_session.execute(select(Account).where(Account.employee_id == employee.id))
+    ).scalar_one()
+    assert updated_account.auth_type == "local"
+    assert updated_account.must_change_password is True
+    assert updated_account.local_password_hash is not None
+    assert verify_password(MIN_PASSWORD, updated_account.local_password_hash)
+
+
+async def test_put_employee_staying_local_with_new_password_is_rejected(
+    db_session, api_client
+) -> None:
+    # T-M1-34 меняет способ входа, а не сбрасывает пароль оставшемуся
+    # локальным сотруднику (это отдельный механизм, T-M1-30) — молча
+    # менять пароль мимо него нельзя.
+    department = await make_department(db_session)
+    employee = await make_employee(db_session, email="stay-local-reset@company.local")
+    await make_account(
+        db_session,
+        employee_id=employee.id,
+        role="employee",
+        auth_type="local",
+        password_hash="irrelevant-hash",
+    )
+    account = await _make_admin(db_session)
+
+    response = await api_client.put(
+        f"/api/employees/{employee.id}",
+        json=_employee_payload(
+            department_id=department.id,
+            personnel_number=employee.personnel_number,
+            email=employee.email,
+            auth_type="local",
+            new_password=MIN_PASSWORD,
+        ),
+        headers=bearer_header(account),
+    )
+
+    assert response.status_code == 400
+
+
+async def test_put_employee_switch_to_ldap_with_password_rejected_by_schema(
+    db_session, api_client
+) -> None:
+    department = await make_department(db_session)
+    employee = await make_employee(db_session, email="ldap-with-password@company.local")
+    await make_account(db_session, employee_id=employee.id, role="employee", auth_type="local")
+    account = await _make_admin(db_session)
+
+    response = await api_client.put(
+        f"/api/employees/{employee.id}",
+        json=_employee_payload(
+            department_id=department.id,
+            personnel_number=employee.personnel_number,
+            email=employee.email,
+            auth_type="ldap",
+            new_password=MIN_PASSWORD,
+        ),
+        headers=bearer_header(account),
+    )
+
+    assert response.status_code == 422

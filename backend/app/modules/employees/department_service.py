@@ -19,7 +19,7 @@
 
 from __future__ import annotations
 
-from sqlalchemy import literal, select
+from sqlalchemy import func, literal, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
@@ -32,6 +32,39 @@ from app.schemas.department import DepartmentCreate, DepartmentUpdate
 # защиты, а не единственная, а обход дерева — один рекурсивный запрос,
 # а не цикл с N обращениями к БД.
 MAX_DEPARTMENT_TREE_DEPTH = 1000
+
+# Константа, никак не связанная с id конкретных подразделений — общий
+# ключ на весь инвариант "дерево подразделений без циклов", а не на пару
+# правящихся строк (см. `_lock_department_tree`). Число выбрано
+# произвольно, лишь бы не совпадало с `MANAGEMENT_CHAIN_LOCK_KEY`
+# (`employee_service.py`) — деревья независимы, один ключ на оба не
+# нужен.
+DEPARTMENT_TREE_LOCK_KEY = 7_270_010_101
+
+
+async def _lock_department_tree(session: AsyncSession) -> None:
+    """PR review: под READ COMMITTED (по умолчанию) две конкурентные
+    транзакции, назначающие подразделения родителями друг друга, обе
+    читают состояние ДО правки другой, обе не видят будущего цикла — и
+    обе коммитят своё ребро (write skew). Повторная проверка цикла перед
+    записью этого не ловит: она читает то же самое согласованное, но
+    устаревшее состояние.
+
+    `pg_advisory_xact_lock` сериализует конкурентные правки дерева между
+    собой: снимается автоматически коммитом/откатом ТЕКУЩЕЙ транзакции,
+    поэтому взявший блокировку вторым увидит уже закоммиченное ребро
+    первого. Берётся здесь, ДО проверки цикла, — иначе окно гонки
+    остаётся.
+
+    Правки оргструктуры делает HR, они редки: сериализовать их между
+    собой дешевле и проще, чем ловить конфликты `SERIALIZABLE` с retry-
+    циклом на каждый запрос. Это НЕ защита на уровне БД — рекурсивный
+    `CHECK`, запрещающий цикл, в PostgreSQL невыразим, — а защита именно
+    конкурентных запросов через API; прямая правка таблицы в обход
+    приложения по-прежнему может создать цикл (для данных, пришедших
+    так, — вторая линия защиты, ограничение глубины обхода в
+    `_would_create_cycle`)."""
+    await session.execute(select(func.pg_advisory_xact_lock(DEPARTMENT_TREE_LOCK_KEY)))
 
 
 class DepartmentNotFoundError(Exception):
@@ -106,6 +139,7 @@ async def update_department(
     department = await _require_department(session, department_id)
 
     if payload.parent_id is not None:
+        await _lock_department_tree(session)
         await _require_parent_reference(session, payload.parent_id)
         if await _would_create_cycle(session, department_id, payload.parent_id):
             raise ValueError("Department cannot become a descendant of its own descendant")

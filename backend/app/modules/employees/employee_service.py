@@ -31,6 +31,22 @@ from app.schemas.employee import EmployeeCreate, EmployeeUpdate
 # а не эта проверка.
 PRIVILEGED_VIEW_ROLES = frozenset({"hr_admin", "system_admin", "accountant"})
 
+# Независимый ключ, симметричный `DEPARTMENT_TREE_LOCK_KEY`
+# (`department_service.py`) — цепочка подчинения и дерево подразделений
+# защищены независимо, общий ключ смешивал бы два разных инварианта.
+MANAGEMENT_CHAIN_LOCK_KEY = 7_270_010_102
+
+
+async def _lock_management_chain(session: AsyncSession) -> None:
+    """Та же гонка и то же решение, что и
+    `department_service._lock_department_tree` (см. её докстринг): под
+    READ COMMITTED два конкурентных `PUT`, назначающих сотрудников
+    руководителями друг друга, оба не видят цикла и оба коммитят своё
+    ребро. `pg_advisory_xact_lock` сериализует конкурентные правки
+    `manager_id` между собой; снимается коммитом/откатом текущей
+    транзакции."""
+    await session.execute(select(func.pg_advisory_xact_lock(MANAGEMENT_CHAIN_LOCK_KEY)))
+
 
 class EmployeeNotFoundError(Exception):
     """Карточка, которую правят (`PUT /api/employees/{id}`), отсутствует
@@ -220,6 +236,7 @@ async def update_employee(
     if payload.manager_id is not None:
         if payload.manager_id == employee.id:
             raise ValueError("manager_id: an employee cannot be their own manager")
+        await _lock_management_chain(session)
         await _require_active_manager_reference(session, payload.manager_id)
         # Цикл по цепочке подчинения: запрещаем, если сам сотрудник уже
         # стоит выше предлагаемого руководителя — иначе после правки он

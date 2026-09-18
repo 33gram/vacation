@@ -1,3 +1,23 @@
+"""Конфигурация тестов backend и защита от молчаливого пропуска в CI
+(PR #137 review, круг 3, замечание #2).
+
+Границу защиты (`PYTEST_FORBID_SKIPS=1`, см. `pytest_sessionfinish` ниже)
+нужно формулировать через собственный учёт pytest, а не через список
+случаев, — список уже дважды оказывался неполным. Механизм заваливает
+прогон ровно на том, что pytest сам считает пропуском, — включая пропуск
+на стадии сбора модуля (`pytest.skip(..., allow_module_level=True)`,
+`pytest.importorskip(...)`), не считая xfail. Он НЕ ловит исключение
+файла из сбора (`collect_ignore`, имя вне маски `test_*.py`, флаги
+`--ignore`/`-k`/`-m`) — pytest такие файлы пропусками не считает, и в
+отличие от пропуска это всегда видимая правка в диффе.
+
+Проверка по атрибуту `skipped` в `--junitxml` НЕ эквивалентна: junit-xml
+засчитывает xfail как skipped (проверено: 3 skipped + 1 xfailed у pytest
+против `skipped="4"` в отчёте), поэтому такая проверка ложно срабатывала
+бы на каждом xfail. Поэтому пропуски считаются напрямую через хуки
+`pytest_runtest_logreport`/`pytest_collectreport`, а не через `--junitxml`.
+"""
+
 import asyncio
 import os
 from collections.abc import AsyncIterator, Iterator
@@ -15,30 +35,22 @@ _forbidden_skips: list[pytest.TestReport | pytest.CollectReport] = []
 
 
 def pytest_runtest_logreport(report: pytest.TestReport) -> None:
-    """Собирает пропущенные тесты для `pytest_sessionfinish` (PR #137
-    review, узкое ревью): точечная защита конкретно LDAP-тестов
-    (`tests/ldap_guard.py`) не ловит пропуск теста, который стучится
-    в LDAP по-своему и её не импортирует. Здесь — инвариант уровнем выше,
-    общий для любого пропуска в любом файле, независимо от причины.
+    """Собирает пропуски, случившиеся на стадии выполнения теста
+    (`runtest`) — см. границу механизма в докстринге модуля выше.
 
     `xfail` тоже приходит сюда с `report.skipped=True` — исключаем его
     через `report.wasxfail` (см. `_pytest/skipping.py`), иначе первый же
-    ожидаемый xfail завалил бы прогон как «неожиданный пропуск».
-
-    Этот хук получает отчёты только по тестам, которые дошли до стадии
-    выполнения (`runtest`) — пропуск на стадии СБОРА модуля
-    (`pytest_collectreport` ниже) сюда не попадает."""
+    ожидаемый xfail завалил бы прогон как «неожиданный пропуск»."""
     if report.skipped and not hasattr(report, "wasxfail"):
         _forbidden_skips.append(report)
 
 
 def pytest_collectreport(report: pytest.CollectReport) -> None:
-    """PR #137 review, круг 3, замечание #1: `pytest.skip(...,
-    allow_module_level=True)` и `pytest.importorskip(...)` пропускают
-    модуль на стадии СБОРА — элемент теста не создаётся, и
-    `pytest_runtest_logreport` выше о таком пропуске никогда не узнаёт
-    (нет провалившегося/пропущенного теста — есть нераскрытая коллекция).
-    Без этого хука такой файл проходит CI молча, как будто его прогнали.
+    """Собирает пропуски, случившиеся на стадии СБОРА (`collect`), —
+    см. границу механизма в докстринге модуля выше. Без этого хука
+    `pytest.skip(..., allow_module_level=True)` и
+    `pytest.importorskip(...)` проходили бы CI молча: элемент теста не
+    создаётся, `pytest_runtest_logreport` о таком пропуске не узнаёт.
 
     `wasxfail` здесь не бывает — xfail — исход выполнения теста, а не
     сбора, поэтому фильтровать его не нужно."""
@@ -57,9 +69,11 @@ def _skip_reason(report: pytest.TestReport | pytest.CollectReport) -> str:
 
 
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
-    """С `PYTEST_FORBID_SKIPS=1` (выставлено в CI) любой пропущенный тест
-    заваливает прогон с ненулевым кодом возврата -- это осознанно жёстче,
-    чем локальная работа: без docker compose (LDAP, например, недоступен)
+    """С `PYTEST_FORBID_SKIPS=1` (выставлено в CI) любой пропуск,
+    собранный выше (тест или модуль), заваливает прогон с ненулевым
+    кодом возврата — граница того, что здесь считается пропуском,
+    описана в докстринге модуля. Это осознанно жёстче, чем локальная
+    работа: без docker compose (LDAP, например, недоступен)
     `make test-backend` должен по-прежнему уметь пропускать такие тесты,
     поэтому без этой переменной пропуски остаются разрешены."""
     if os.environ.get("PYTEST_FORBID_SKIPS") != "1" or not _forbidden_skips:

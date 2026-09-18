@@ -59,19 +59,86 @@ async def upsert_ldap_settings(session: AsyncSession, payload: LdapSettingsIn) -
     return settings_row
 
 
+def _settings_data_from_row(row: LdapSettings) -> LdapSettingsData:
+    return LdapSettingsData(
+        server_url=row.server_url,
+        port=row.port,
+        base_dn=row.base_dn,
+        bind_dn=row.bind_dn,
+        bind_password=decrypt(
+            row.bind_password_encrypted, get_settings().ldap_password_encryption_key
+        ),
+        user_match_attribute=row.user_match_attribute,
+    )
+
+
+async def _run_ldap_test(params: LdapSettingsData) -> tuple[bool, str]:
+    try:
+        await asyncio.to_thread(ldap_test_connection, params)
+    except LdapAuthError as exc:
+        return False, str(exc)
+    return True, "Соединение установлено"
+
+
+async def _verify_saved_ldap_settings(
+    session: AsyncSession, saved_row: LdapSettings
+) -> tuple[bool, str]:
+    """Пустое тело запроса (PR #137 review): проверяет именно сохранённую
+    запись её собственным расшифрованным паролем и фиксирует исход в
+    `last_tested_at`/`last_test_status` — это единственная проверка,
+    которая выводит систему из режима внедрения (`is_embedded_mode`),
+    поэтому в отличие от `_test_draft_ldap_params` она пишет в БД."""
+    success, detail = await _run_ldap_test(_settings_data_from_row(saved_row))
+    saved_row.last_tested_at = utcnow()
+    saved_row.last_test_status = "success" if success else "failure"
+    await session.commit()
+    return success, detail
+
+
+async def _test_draft_ldap_params(
+    payload: LdapTestRequest, saved_row: LdapSettings | None
+) -> tuple[bool, str]:
+    """Хотя бы одно поле в теле запроса (PR #137 review): проверяет
+    черновые/произвольные параметры — недостающие поля берутся из
+    сохранённой записи, как в `upsert_ldap_settings`, чтобы можно было
+    проверить только изменённое поле, не перепечатывая остальные. Ничего
+    не сохраняет: успех здесь не подтверждает, что сохранённая
+    конфигурация рабочая, — только что введённые значения годятся для
+    сохранения."""
+    saved = _settings_data_from_row(saved_row) if saved_row is not None else None
+
+    def pick(value: str | None, attr: str) -> str | None:
+        if value is not None:
+            return value
+        return getattr(saved, attr) if saved is not None else None
+
+    server_url = pick(payload.server_url, "server_url")
+    base_dn = pick(payload.base_dn, "base_dn")
+    bind_dn = pick(payload.bind_dn, "bind_dn")
+    bind_password = pick(
+        payload.bind_password.get_secret_value() if payload.bind_password is not None else None,
+        "bind_password",
+    )
+    if server_url is None or base_dn is None or bind_dn is None or bind_password is None:
+        raise ValueError("Укажите все параметры подключения для проверки")
+
+    port = payload.port if payload.port is not None else (saved.port if saved else None)
+    user_match_attribute = pick(payload.user_match_attribute, "user_match_attribute")
+    params = LdapSettingsData(
+        server_url=server_url,
+        port=port if port is not None else 389,
+        base_dn=base_dn,
+        bind_dn=bind_dn,
+        bind_password=bind_password,
+        user_match_attribute=user_match_attribute if user_match_attribute is not None else "mail",
+    )
+    return await _run_ldap_test(params)
+
+
 async def test_ldap_connection(session: AsyncSession, payload: LdapTestRequest) -> tuple[bool, str]:
-    """`POST /ldap-settings/test` (PR #137 review, FR-AUTH-003/FR-ADMIN-005).
-
-    Пустое тело (`payload` без единого поля) проверяет уже сохранённую
-    запись — своим собственным расшифрованным паролем — и фиксирует исход
-    в `last_tested_at`/`last_test_status`, поскольку именно эта проверка
-    выводит систему из режима внедрения (`is_embedded_mode`).
-
-    Любое переданное поле означает проверку черновых/произвольных
-    параметров (недостающие поля берутся из сохранённой записи, как в
-    `upsert_ldap_settings`) — такой вызов ничего не сохраняет: он не
-    подтверждает, что сохранённая конфигурация рабочая, а только помогает
-    администратору проверить значения перед сохранением."""
+    """`POST /ldap-settings/test` (FR-AUTH-003/FR-ADMIN-005): выбирает
+    между `_verify_saved_ldap_settings` и `_test_draft_ldap_params` по
+    тому, задано ли в запросе хоть одно поле — см. докстринги обеих."""
     saved_row = await get_ldap_settings(session)
     is_verifying_saved = all(
         value is None
@@ -88,63 +155,6 @@ async def test_ldap_connection(session: AsyncSession, payload: LdapTestRequest) 
     if is_verifying_saved:
         if saved_row is None:
             raise ValueError("Параметры LDAP ещё не сохранены — нечего проверять")
-        params = LdapSettingsData(
-            server_url=saved_row.server_url,
-            port=saved_row.port,
-            base_dn=saved_row.base_dn,
-            bind_dn=saved_row.bind_dn,
-            bind_password=decrypt(
-                saved_row.bind_password_encrypted, get_settings().ldap_password_encryption_key
-            ),
-            user_match_attribute=saved_row.user_match_attribute,
-        )
-    else:
-        server_url = payload.server_url if payload.server_url is not None else (
-            saved_row.server_url if saved_row else None
-        )
-        base_dn = payload.base_dn if payload.base_dn is not None else (
-            saved_row.base_dn if saved_row else None
-        )
-        bind_dn = payload.bind_dn if payload.bind_dn is not None else (
-            saved_row.bind_dn if saved_row else None
-        )
-        bind_password = (
-            payload.bind_password.get_secret_value()
-            if payload.bind_password is not None
-            else (
-                decrypt(
-                    saved_row.bind_password_encrypted, get_settings().ldap_password_encryption_key
-                )
-                if saved_row
-                else None
-            )
-        )
-        if server_url is None or base_dn is None or bind_dn is None or bind_password is None:
-            raise ValueError("Укажите все параметры подключения для проверки")
-        port = payload.port if payload.port is not None else (saved_row.port if saved_row else 389)
-        params = LdapSettingsData(
-            server_url=server_url,
-            port=port,
-            base_dn=base_dn,
-            bind_dn=bind_dn,
-            bind_password=bind_password,
-            user_match_attribute=(
-                payload.user_match_attribute
-                if payload.user_match_attribute is not None
-                else (saved_row.user_match_attribute if saved_row else "mail")
-            ),
-        )
+        return await _verify_saved_ldap_settings(session, saved_row)
 
-    try:
-        await asyncio.to_thread(ldap_test_connection, params)
-        success, detail = True, "Соединение установлено"
-    except LdapAuthError as exc:
-        success, detail = False, str(exc)
-
-    if is_verifying_saved:
-        assert saved_row is not None  # для mypy: проверено выше
-        saved_row.last_tested_at = utcnow()
-        saved_row.last_test_status = "success" if success else "failure"
-        await session.commit()
-
-    return success, detail
+    return await _test_draft_ldap_params(payload, saved_row)

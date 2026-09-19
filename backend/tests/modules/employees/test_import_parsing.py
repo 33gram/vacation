@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime
 import io
+import zipfile
 
 import pytest
 from openpyxl import Workbook
@@ -128,3 +129,65 @@ def test_parse_xlsx_missing_required_column_rejects_whole_file() -> None:
 
     with pytest.raises(ImportFileError, match="department"):
         parse_import_file("employees.xlsx", buffer.getvalue())
+
+
+def test_parse_xlsx_garbage_content_is_rejected_cleanly() -> None:
+    # Правильное расширение, но содержимое даже не ZIP-архив.
+    with pytest.raises(ImportFileError):
+        parse_import_file("employees.xlsx", b"this is not a zip file at all")
+
+
+def test_parse_xlsx_truncated_archive_is_rejected_cleanly() -> None:
+    content = _xlsx_bytes(("Иван Иванов", "P-1", "IT", "Инженер", "2024-01-15", "i@x.local"))
+    truncated = content[: len(content) // 2]
+
+    with pytest.raises(ImportFileError):
+        parse_import_file("employees.xlsx", truncated)
+
+
+def _xlsx_bytes_with_no_worksheets() -> bytes:
+    """`openpyxl` отказывается СОХРАНЯТЬ книгу без ни одного видимого
+    листа (`IndexError`) — единственный способ получить такой файл на
+    входе разбора — собрать архив вручную, ровно так, как это сделал бы
+    повреждённый или недобросовестно собранный файл."""
+    content_types = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+        '<Default Extension="rels" '
+        'ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+        '<Default Extension="xml" ContentType="application/xml"/>'
+        '<Override PartName="/xl/workbook.xml" ContentType='
+        '"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
+        "</Types>"
+    )
+    root_rels = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        '<Relationship Id="rId1" Type='
+        '"http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" '
+        'Target="xl/workbook.xml"/>'
+        "</Relationships>"
+    )
+    workbook_xml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+        "<sheets></sheets>"
+        "</workbook>"
+    )
+    workbook_rels = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        "</Relationships>"
+    )
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as zf:
+        zf.writestr("[Content_Types].xml", content_types)
+        zf.writestr("_rels/.rels", root_rels)
+        zf.writestr("xl/workbook.xml", workbook_xml)
+        zf.writestr("xl/_rels/workbook.xml.rels", workbook_rels)
+    return buffer.getvalue()
+
+
+def test_parse_xlsx_without_worksheets_is_rejected_cleanly() -> None:
+    with pytest.raises(ImportFileError, match="worksheet"):
+        parse_import_file("employees.xlsx", _xlsx_bytes_with_no_worksheets())

@@ -121,9 +121,23 @@ def _xlsx_cell_to_str(cell: object) -> str | None:
 
 
 def _parse_xlsx(content: bytes) -> list[ParsedRow]:
-    workbook = load_workbook(io.BytesIO(content), read_only=True, data_only=True)
+    """Любая ошибка разбора — отказ файлу (`ImportFileError`), а не
+    необработанное исключение (PR #139 review, замечание 2): `openpyxl`
+    поднимает разные типы на разных стадиях для разных видов поломки
+    (`zipfile.BadZipFile` на битом архиве, `KeyError`/`XMLSyntaxError`-
+    подобные на повреждённом XML внутри валидного архива), а не только
+    свой `InvalidFileException` — перечислять их поимённо означало бы
+    гарантированно забыть один. Собственный `ImportFileError` (например,
+    из `_require_expected_columns`) при этом не подменяется."""
+    try:
+        workbook = load_workbook(io.BytesIO(content), read_only=True, data_only=True)
+    except Exception as exc:
+        raise ImportFileError(f"Could not read XLSX file: {exc}") from exc
+
     try:
         sheet = workbook.active
+        if sheet is None:
+            raise ImportFileError("XLSX file has no worksheets")
         rows_iter = sheet.iter_rows(values_only=True)
         try:
             header_row = next(rows_iter)
@@ -140,5 +154,9 @@ def _parse_xlsx(content: bytes) -> list[ParsedRow]:
                 continue
             rows.append(ParsedRow(row_number=row_number, values=values))
         return rows
+    except ImportFileError:
+        raise
+    except Exception as exc:
+        raise ImportFileError(f"Could not read XLSX file: {exc}") from exc
     finally:
         workbook.close()

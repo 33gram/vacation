@@ -10,6 +10,7 @@ from __future__ import annotations
 import csv
 import datetime
 import io
+import zipfile
 from dataclasses import dataclass
 
 from openpyxl import load_workbook
@@ -33,12 +34,32 @@ EXPECTED_COLUMNS = (
     "leave_category",
 )
 
-# Жёсткие лимиты (NFR-SCALE-001: штат до 750 человек — запас с кратным
-# отрывом, не больше). Заодно снимают вопрос о zip-бомбах в XLSX: сколь
-# угодно сжатый файл всё равно должен пройти оба лимита на выходе, а
-# `read_only=True` не разворачивает лист в память целиком.
+# Жёсткие лимиты на загруженный файл (NFR-SCALE-001: штат до 750
+# человек — запас с кратным отрывом, не больше). `MAX_FILE_SIZE_BYTES`
+# меряет размер файла КАК ЗАГРУЖЕН — для XLSX это СЖАТЫЙ размер архива,
+# а `MAX_ROWS` считает строки ПОСЛЕ разбора — ни то, ни другое не
+# защищает от zip-бомбы: 293 КБ архива, разворачивающегося в ~600 МБ в
+# памяти на `load_workbook`, проходит оба лимита (проверено экспериментом,
+# не рассуждением — см. `CLAUDE.md`, правило 8). Собственно защита от
+# этого — `_reject_oversized_xlsx_archive` ниже, ДО вызова `openpyxl`.
 MAX_FILE_SIZE_BYTES = 5 * 1024 * 1024  # 5 MiB
 MAX_ROWS = 1000
+
+# Порог на СУММАРНЫЙ ЗАЯВЛЕННЫЙ (несжатый) размер записей архива —
+# десятки-сотни килобайт для 750 строк по 9 текстовых полей (даже с
+# многократной наценкой на разметку XML/служебные части XLSX) укладываются
+# на два порядка ниже этого порога; 20 МиБ — щедрый запас для легитимного
+# файла и одновременно на порядки меньше сотен мегабайт из сценария атаки.
+# Заявленный размер берётся из ЦЕНТРАЛЬНОГО КАТАЛОГА ZIP — до разворачивания
+# содержимого, поэтому дешева проверка не требует самой распаковки. Но это
+# заявление отправителя архива, а не факт: `zipfile`/`openpyxl` не проверяют
+# его достоверность при чтении, и вредоносный архив может указать заниженное
+# значение, а по факту развернуться в большее. Проверка — снижение риска
+# для типичных генераторов zip-бомб (актуальный сценарий: обычный HR,
+# `hr_admin`/`system_admin`, а не целенаправленная атака в обход, — DoS
+# силами своей же учётной записи), а не гарантия против намеренно
+# подделанных метаданных архива.
+MAX_XLSX_UNCOMPRESSED_BYTES = 20 * 1024 * 1024  # 20 MiB
 
 
 class ImportFileError(Exception):
@@ -120,6 +141,27 @@ def _xlsx_cell_to_str(cell: object) -> str | None:
     return str(cell).strip() or None
 
 
+def _reject_oversized_xlsx_archive(content: bytes) -> None:
+    """До передачи файла в `openpyxl` (PR #139 review, замечание 2 оси
+    стандартов) — читает ТОЛЬКО центральный каталог ZIP (список записей
+    с их размерами), не распаковывая содержимое, и отказывает, если
+    суммарный заявленный несжатый размер превышает `MAX_XLSX_
+    UNCOMPRESSED_BYTES`. См. обоснование порога и границы этой проверки
+    там же. Битый архив (не ZIP вовсе) здесь не отклоняется — эту
+    ошибку даёт `_parse_xlsx` при вызове `load_workbook`, с тем же
+    единообразным `ImportFileError`."""
+    try:
+        with zipfile.ZipFile(io.BytesIO(content)) as archive:
+            total_uncompressed = sum(info.file_size for info in archive.infolist())
+    except zipfile.BadZipFile:
+        return
+    if total_uncompressed > MAX_XLSX_UNCOMPRESSED_BYTES:
+        raise ImportFileError(
+            f"XLSX archive declares {total_uncompressed} uncompressed bytes, "
+            f"exceeding the {MAX_XLSX_UNCOMPRESSED_BYTES} byte limit"
+        )
+
+
 def _parse_xlsx(content: bytes) -> list[ParsedRow]:
     """Любая ошибка разбора — отказ файлу (`ImportFileError`), а не
     необработанное исключение (PR #139 review, замечание 2): `openpyxl`
@@ -129,6 +171,8 @@ def _parse_xlsx(content: bytes) -> list[ParsedRow]:
     свой `InvalidFileException` — перечислять их поимённо означало бы
     гарантированно забыть один. Собственный `ImportFileError` (например,
     из `_require_expected_columns`) при этом не подменяется."""
+    _reject_oversized_xlsx_archive(content)
+
     try:
         workbook = load_workbook(io.BytesIO(content), read_only=True, data_only=True)
     except Exception as exc:

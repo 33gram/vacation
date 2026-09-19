@@ -13,6 +13,7 @@ from app.modules.employees.import_parsing import (
     EXPECTED_COLUMNS,
     MAX_FILE_SIZE_BYTES,
     MAX_ROWS,
+    MAX_XLSX_UNCOMPRESSED_BYTES,
     ImportFileError,
     parse_import_file,
 )
@@ -191,3 +192,25 @@ def _xlsx_bytes_with_no_worksheets() -> bytes:
 def test_parse_xlsx_without_worksheets_is_rejected_cleanly() -> None:
     with pytest.raises(ImportFileError, match="worksheet"):
         parse_import_file("employees.xlsx", _xlsx_bytes_with_no_worksheets())
+
+
+def _zip_bomb_bytes(uncompressed_size: int) -> bytes:
+    """Реалистичной формы «бомба»: один сильно сжимаемый (повторяющийся
+    байт) член архива, компрессия которого занимает миллисекунды и даёт
+    файл в тысячи раз меньше заявленного размера — тот же принцип, что
+    и у настоящей zip-бомбы, без необходимости держать сотни мегабайт
+    в памяти самого теста."""
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
+        archive.writestr("bomb.xml", b"A" * uncompressed_size)
+    return buffer.getvalue()
+
+
+def test_parse_xlsx_rejects_zip_bomb_before_decompressing() -> None:
+    content = _zip_bomb_bytes(MAX_XLSX_UNCOMPRESSED_BYTES + 1024)
+    # Заведомо меньше MAX_FILE_SIZE_BYTES — иначе отказ дал бы лимит на
+    # размер ЗАГРУЖЕННОГО файла, а не именно проверка архива.
+    assert len(content) < MAX_FILE_SIZE_BYTES
+
+    with pytest.raises(ImportFileError, match="uncompressed"):
+        parse_import_file("employees.xlsx", content)

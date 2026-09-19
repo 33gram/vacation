@@ -51,6 +51,7 @@ from __future__ import annotations
 
 import datetime
 from dataclasses import dataclass
+from typing import Literal, NamedTuple
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -79,10 +80,33 @@ _REQUIRED_FIELDS = (
     "work_schedule_type",
 )
 
-# Разрешённый тип значения manager_target: ссылка на другую строку файла
-# (по personnel_number) или на уже существующего в БД сотрудника (по id);
-# `None` — вершина иерархии (пусто в файле).
-_ManagerTarget = tuple[str, str] | tuple[str, int] | None
+class ManagerTarget(NamedTuple):
+    """Разрешённая ссылка на руководителя: другая строка файла (по
+    `personnel_number`) или уже существующий в БД сотрудник (по id).
+    `None` (не значение этого типа, а отсутствие ссылки вовсе) —
+    вершина иерархии (пусто в файле).
+
+    PR #139 review, замечание 3 оси стандартов: тег ("file"/"existing")
+    раньше разбирался независимо в трёх функциях (`_find_file_cycles`,
+    `_reject_broken_chains`, `_write_accepted`) — три копии одного и
+    того же `if kind == "file" ... elif kind == "existing" ...`. Теперь
+    разбор тега — только здесь, в двух свойствах ниже; вызывающий код
+    спрашивает "это ссылка на строку файла?"/"на существующего
+    сотрудника?", а не сравнивает строковый тег."""
+
+    kind: Literal["file", "existing"]
+    value: str | int
+
+    @property
+    def file_personnel_number(self) -> str | None:
+        return self.value if self.kind == "file" else None
+
+    @property
+    def existing_employee_id(self) -> int | None:
+        return self.value if self.kind == "existing" else None
+
+
+_ManagerTarget = ManagerTarget | None
 
 
 @dataclass(frozen=True)
@@ -285,7 +309,7 @@ def _resolve_manager_targets(
         if ref is None:
             manager_target[pn] = None
         elif ref in candidates:
-            manager_target[pn] = ("file", ref)
+            manager_target[pn] = ManagerTarget("file", ref)
         elif ref in existing["id_by_personnel_number"]:
             existing_id = existing["id_by_personnel_number"][ref]
             if existing["status_by_id"].get(existing_id) != "active":
@@ -298,7 +322,7 @@ def _resolve_manager_targets(
                 )
                 del candidates[pn]
                 continue
-            manager_target[pn] = ("existing", existing_id)
+            manager_target[pn] = ManagerTarget("existing", existing_id)
         else:
             errors.append(
                 RowError(
@@ -338,9 +362,10 @@ def _find_file_cycles(
             state[pn] = VISITING
             path.append(pn)
             target = manager_target.get(pn)
-            if target is None or target[0] != "file":
+            next_pn = target.file_personnel_number if target is not None else None
+            if next_pn is None:
                 break
-            pn = target[1]
+            pn = next_pn
         for visited_pn in path:
             state[visited_pn] = DONE
 
@@ -406,24 +431,25 @@ def _reject_broken_chains(
             target = manager_target.get(pn)
             if target is None:
                 continue
-            kind, value = target
-            if kind == "file" and value in rejected:
+            file_ref = target.file_personnel_number
+            existing_ref = target.existing_employee_id
+            if file_ref is not None and file_ref in rejected:
                 rejected.add(pn)
                 errors.append(
                     RowError(
                         candidate.row_number,
                         "manager_personnel_number",
-                        f"'{value}' was rejected, so this row cannot reference it either",
+                        f"'{file_ref}' was rejected, so this row cannot reference it either",
                     )
                 )
                 changed = True
-            elif kind == "existing" and not existing_healthy(value):
+            elif existing_ref is not None and not existing_healthy(existing_ref):
                 rejected.add(pn)
                 errors.append(
                     RowError(
                         candidate.row_number,
                         "manager_personnel_number",
-                        f"management chain through existing employee id {value} "
+                        f"management chain through existing employee id {existing_ref} "
                         "contains a cycle or exceeds the maximum depth",
                     )
                 )
@@ -462,9 +488,13 @@ async def _write_accepted(
         target = manager_target.get(candidate.personnel_number)
         if target is None:
             continue
-        kind, value = target
         employee = employees_by_pn[candidate.personnel_number]
-        employee.manager_id = value if kind == "existing" else employees_by_pn[value].id
+        existing_ref = target.existing_employee_id
+        employee.manager_id = (
+            existing_ref
+            if existing_ref is not None
+            else employees_by_pn[target.file_personnel_number].id
+        )
 
     session.add_all(
         Account(

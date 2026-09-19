@@ -6,15 +6,38 @@ from __future__ import annotations
 
 import itertools
 
+import pytest
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from app.models.account import Account
 from app.models.employee import Employee
-from app.modules.employees.import_parsing import ParsedRow
+from app.modules.employees import import_service
+from app.modules.employees.import_parsing import ImportFileError, ParsedRow
 from app.modules.employees.import_service import import_employees
 from tests.modules.auth.factories import make_department, make_employee
 
 _seq = itertools.count(1)
+
+
+class _FakeCause(Exception):
+    def __init__(self, constraint_name: str) -> None:
+        super().__init__()
+        self.constraint_name = constraint_name
+
+
+class _FakeOrig(Exception):
+    def __init__(self, constraint_name: str) -> None:
+        super().__init__()
+        self.__cause__ = _FakeCause(constraint_name)
+
+
+def _fake_integrity_error(constraint_name: str) -> IntegrityError:
+    """`unique_violation_field` reads `exc.orig.__cause__.constraint_
+    name` — reproduces just enough of asyncpg's real shape to exercise
+    `import_employees`'s retry logic without needing a real DB
+    conflict."""
+    return IntegrityError("statement", {}, _FakeOrig(constraint_name))
 
 
 def _row(row_number: int, **overrides: str | None) -> ParsedRow:
@@ -279,3 +302,47 @@ async def test_import_rejects_manager_reference_to_terminated_existing_employee(
     assert result.accepted_count == 0
     assert result.errors[0].field == "manager_personnel_number"
     assert "terminated" in result.errors[0].reason
+
+
+async def test_import_reraises_unexpected_integrity_error_without_retry(
+    db_session, monkeypatch
+) -> None:
+    await make_department(db_session, name="IT")
+    rows = [_row(2)]
+    call_count = {"n": 0}
+
+    async def _fake_write_accepted(session, accepted, manager_target):
+        call_count["n"] += 1
+        raise _fake_integrity_error("some_unrelated_constraint")
+
+    monkeypatch.setattr(import_service, "_write_accepted", _fake_write_accepted)
+
+    with pytest.raises(IntegrityError):
+        await import_employees(db_session, rows)
+
+    assert call_count["n"] == 1
+
+
+async def test_import_raises_import_file_error_after_exhausting_retries(
+    db_session, monkeypatch
+) -> None:
+    await make_department(db_session, name="IT")
+    # Commit releases the savepoint the department was created under, so
+    # the retry loop's own `session.rollback()` calls below (triggered by
+    # the fake write failure) can't undo this arrange-time setup along
+    # the way — otherwise the second attempt would reject the row for a
+    # missing department instead of retrying the write.
+    await db_session.commit()
+    rows = [_row(2)]
+    call_count = {"n": 0}
+
+    async def _fake_write_accepted(session, accepted, manager_target):
+        call_count["n"] += 1
+        raise _fake_integrity_error("employees_personnel_number_key")
+
+    monkeypatch.setattr(import_service, "_write_accepted", _fake_write_accepted)
+
+    with pytest.raises(ImportFileError):
+        await import_employees(db_session, rows)
+
+    assert call_count["n"] == import_service._MAX_WRITE_ATTEMPTS

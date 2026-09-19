@@ -25,6 +25,7 @@ from app.models.employee import Employee
 from app.modules.auth.password_policy import validate_password_strength
 from app.modules.auth.rbac import is_in_management_chain, list_subordinate_employee_ids
 from app.modules.auth.repository import get_account_by_employee_id
+from app.modules.employees.unique_violations import translate_unique_violation
 from app.schemas.employee import (
     EmployeeCardFields,
     EmployeeCreate,
@@ -144,40 +145,6 @@ async def _require_email_free(
         raise ValueError(f"email: '{email}' is already in use")
 
 
-# Источник истины — ограничение БД, а не проверка выше: под конкурентной
-# нагрузкой два запроса могут пройти `_require_personnel_number_free`/
-# `_require_email_free` одновременно (TOCTOU — обе проверки читают
-# состояние до записи другого запроса), и тогда именно эта проверка при
-# `COMMIT` ловит нарушение. Поле определяется по ИМЕНИ ОГРАНИЧЕНИЯ из
-# диагностики asyncpg, а не разбором текста ошибки — имя не зависит от
-# локали/версии сервера, текст сообщения зависит.
-_UNIQUE_CONSTRAINT_FIELDS = {
-    "employees_personnel_number_key": "personnel_number",
-    "ix_employees_email_lower": "email",
-}
-
-
-def _translate_unique_violation(
-    exc: IntegrityError, payload: EmployeeCreate | EmployeeUpdate
-) -> Exception:
-    """`ValueError` с тем же текстом и тем же полем, что и опережающая
-    проверка (`_require_personnel_number_free`/`_require_email_free`) —
-    клиент не должен различать «поймали до записи» и «поймали на
-    гонке», поэтому оба пути дают один и тот же тип исключения (роутер
-    превращает `ValueError` в 400 одинаково для обоих) и один и тот же
-    текст. Ограничение, не входящее в карту (например, случайное
-    нарушение внешнего ключа), не подменяется — исходная ошибка
-    поднимается как есть, чтобы не маскировать неожиданный сбой под
-    штатный отказ 400."""
-    constraint_name = getattr(getattr(exc.orig, "__cause__", None), "constraint_name", None)
-    field = _UNIQUE_CONSTRAINT_FIELDS.get(constraint_name)
-    if field == "personnel_number":
-        return ValueError(f"personnel_number: '{payload.personnel_number}' is already in use")
-    if field == "email":
-        return ValueError(f"email: '{payload.email}' is already in use")
-    return exc
-
-
 def _apply_card_fields(employee: Employee, payload: EmployeeCardFields) -> None:
     """Копирует девять общих полей карточки (`_CARD_FIELD_NAMES`) из
     тела запроса в ORM-объект — общая для `create_employee` (на новый,
@@ -223,7 +190,9 @@ async def create_employee(session: AsyncSession, payload: EmployeeCreate) -> Emp
         # вставку карточки тоже, сбой не оставляет сотрудника, которого
         # нельзя ни авторизовать, ни дозавести повторным `POST`.
         await session.rollback()
-        raise _translate_unique_violation(exc, payload) from exc
+        raise translate_unique_violation(
+            exc, personnel_number=payload.personnel_number, email=payload.email
+        ) from exc
     except Exception:
         await session.rollback()
         raise
@@ -305,7 +274,9 @@ async def update_employee(
         await session.commit()
     except IntegrityError as exc:
         await session.rollback()
-        raise _translate_unique_violation(exc, payload) from exc
+        raise translate_unique_violation(
+            exc, personnel_number=payload.personnel_number, email=payload.email
+        ) from exc
 
     await session.refresh(employee)
     return employee

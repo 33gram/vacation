@@ -19,6 +19,27 @@
 `personnel_number`; подразделение — по имени, не создаётся; способ
 входа всегда LDAP; файл не сохраняется) — `plan.md` §6.
 
+КОНКУРЕНТНАЯ ЗАПИСЬ (PR #139 review, замечание 1): фаза 1 проверяет
+уникальность `personnel_number`/`email` по снимку БД, прочитанному ДО
+записи, — под конкурентной нагрузкой два импорта могут пройти эту
+проверку одновременно с общим значением (то же TOCTOU-окно, что и у
+`_require_personnel_number_free`/`_require_email_free` в
+`employee_service.py`). Проигравшая сторона узнаёт об этом только на
+`flush`/`COMMIT`, когда откатывать уже поздно менять решение по ОДНОЙ
+строке — вставка новых сотрудников идёт одним batched `INSERT`
+(SQLAlchemy 2.x insertmanyvalues), и по имени нарушенного ограничения
+нельзя определить, какая именно строка из пачки его нарушила (это и
+не проверка текста ошибки — см. `unique_violations.py`, — а то, что
+`IntegrityError` в принципе не привязан к конкретной строке batched
+`INSERT`). Поэтому при нарушении ОДНОГО из известных ограничений
+(`personnel_number`/`email`) фаза 1+2 повторяется целиком со свежим
+снимком БД — вторая попытка увидит уже закоммиченную строку конкурента
+как СУЩЕСТВУЮЩУЮ и штатно отклонит именно её через тот же путь, что и
+обычный (не гоночный) повтор загрузки того же файла, приняв всё
+остальное. Нарушение ограничения, не входящего в карту (`unique_
+violations.UNIQUE_CONSTRAINT_FIELDS`), — не гонка на известном поле, а
+неожиданный сбой; такое не повторяется и поднимается как есть.
+
 ПЕРСОНАЛЬНЫЕ ДАННЫЕ: отчёт (`ImportResult`) возвращается загрузившему
 его HR-администратору, которому эти данные и так доступны — значения
 полей в отчёте допустимы. Этот модуль ничего не логирует сам; вызывающий
@@ -32,13 +53,21 @@ import datetime
 from dataclasses import dataclass
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.account import Account
 from app.models.department import Department
 from app.models.employee import WORK_SCHEDULE_TYPES, Employee
 from app.modules.auth.rbac import MAX_MANAGEMENT_CHAIN_DEPTH
-from app.modules.employees.import_parsing import ParsedRow
+from app.modules.employees.import_parsing import ImportFileError, ParsedRow
+from app.modules.employees.unique_violations import unique_violation_field
+
+# Гонка на personnel_number/email (см. докстринг модуля) сходится за
+# одну повторную попытку почти всегда — второй снимок БД уже видит
+# конкурента. Второй запас — на случай, если конкурентов не два, а
+# больше; после исчерпания — явный отказ, а не бесконечный повтор.
+_MAX_WRITE_ATTEMPTS = 3
 
 _REQUIRED_FIELDS = (
     "full_name",
@@ -451,27 +480,45 @@ async def _write_accepted(
 
 
 async def import_employees(session: AsyncSession, rows: list[ParsedRow]) -> ImportResult:
-    existing = await _load_existing(session)
-    departments_by_name = await _load_departments_by_name(session)
+    for attempt in range(1, _MAX_WRITE_ATTEMPTS + 1):
+        existing = await _load_existing(session)
+        departments_by_name = await _load_departments_by_name(session)
 
-    candidates, errors = _validate_rows(
-        rows, existing=existing, departments_by_name=departments_by_name
-    )
-    manager_target = _resolve_manager_targets(candidates, existing, errors)
-    cycle_members = _find_file_cycles(candidates, manager_target)
-    rejected = _reject_broken_chains(
-        candidates, manager_target, cycle_members, existing["manager_by_id"], errors
-    )
+        candidates, errors = _validate_rows(
+            rows, existing=existing, departments_by_name=departments_by_name
+        )
+        manager_target = _resolve_manager_targets(candidates, existing, errors)
+        cycle_members = _find_file_cycles(candidates, manager_target)
+        rejected = _reject_broken_chains(
+            candidates, manager_target, cycle_members, existing["manager_by_id"], errors
+        )
 
-    accepted = [candidate for pn, candidate in candidates.items() if pn not in rejected]
-    if accepted:
-        await _write_accepted(session, accepted, manager_target)
+        accepted = [candidate for pn, candidate in candidates.items() if pn not in rejected]
 
-    accepted_row_numbers = {c.row_number for c in accepted}
-    rejected_count = len(rows) - len(accepted_row_numbers)
+        try:
+            if accepted:
+                await _write_accepted(session, accepted, manager_target)
+        except IntegrityError as exc:
+            await session.rollback()
+            field = unique_violation_field(exc)
+            if field is None:
+                # Не personnel_number/email — не гонка на известном
+                # поле, а неожиданный сбой; не маскировать его повтором.
+                raise
+            if attempt == _MAX_WRITE_ATTEMPTS:
+                raise ImportFileError(
+                    f"Import could not complete: repeated concurrent write "
+                    f"conflicts on '{field}' after {attempt} attempts, "
+                    "please retry the upload"
+                ) from exc
+            continue  # повторить фазу 1+2 со свежим снимком БД
 
-    return ImportResult(
-        accepted_count=len(accepted),
-        rejected_count=rejected_count,
-        errors=sorted(errors, key=lambda e: (e.row_number, e.field)),
-    )
+        accepted_row_numbers = {c.row_number for c in accepted}
+        rejected_count = len(rows) - len(accepted_row_numbers)
+        return ImportResult(
+            accepted_count=len(accepted),
+            rejected_count=rejected_count,
+            errors=sorted(errors, key=lambda e: (e.row_number, e.field)),
+        )
+
+    raise AssertionError("unreachable: loop above always returns or raises")

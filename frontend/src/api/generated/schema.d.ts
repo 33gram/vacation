@@ -181,6 +181,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/employees/import": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Import Employees Endpoint */
+        post: operations["import_employees_endpoint_api_employees_import_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/employees/{employee_id}": {
         parameters: {
             query?: never;
@@ -193,6 +210,23 @@ export interface paths {
         /** Update Employee */
         put: operations["update_employee_api_employees__employee_id__put"];
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/employees/{employee_id}/deactivate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Deactivate Employee */
+        post: operations["deactivate_employee_api_employees__employee_id__deactivate_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -256,6 +290,14 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** Body_import_employees_endpoint_api_employees_import_post */
+        Body_import_employees_endpoint_api_employees_import_post: {
+            /**
+             * File
+             * Format: binary
+             */
+            file: string;
+        };
         /** DepartmentCreate */
         DepartmentCreate: {
             /** Name */
@@ -317,6 +359,18 @@ export interface components {
             auth_type: "ldap" | "local";
             /** Initial Password */
             initial_password?: string | null;
+        };
+        /**
+         * EmployeeDeactivate
+         * @description `POST /api/employees/{id}/deactivate` (`T-M1-12`, `FR-EMP-004`,
+         *     без части про фиксацию остатка — см. `T-M1-37`).
+         */
+        EmployeeDeactivate: {
+            /**
+             * Termination Date
+             * Format: date
+             */
+            termination_date: string;
         };
         /** EmployeeOut */
         EmployeeOut: {
@@ -398,6 +452,31 @@ export interface components {
         HTTPValidationError: {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
+        };
+        /**
+         * ImportRowError
+         * @description `POST /api/employees/import` (`T-M1-11`, `FR-EMP-003`). Отчёт
+         *     возвращается загрузившему его HR-администратору, которому эти
+         *     данные и так доступны — значения полей (`reason` может содержать
+         *     само значение ячейки) в ответе допустимы; в логи они не попадают
+         *     (см. `employee_router.py`).
+         */
+        ImportRowError: {
+            /** Row Number */
+            row_number: number;
+            /** Field */
+            field: string;
+            /** Reason */
+            reason: string;
+        };
+        /** ImportSummary */
+        ImportSummary: {
+            /** Accepted Count */
+            accepted_count: number;
+            /** Rejected Count */
+            rejected_count: number;
+            /** Errors */
+            errors: components["schemas"]["ImportRowError"][];
         };
         /** LdapSettingsIn */
         LdapSettingsIn: {
@@ -888,6 +967,39 @@ export interface operations {
             };
         };
     };
+    import_employees_endpoint_api_employees_import_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": components["schemas"]["Body_import_employees_endpoint_api_employees_import_post"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ImportSummary"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     get_employee_api_employees__employee_id__get: {
         parameters: {
             query?: never;
@@ -931,6 +1043,41 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["EmployeeUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EmployeeOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    deactivate_employee_api_employees__employee_id__deactivate_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                employee_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EmployeeDeactivate"];
             };
         };
         responses: {

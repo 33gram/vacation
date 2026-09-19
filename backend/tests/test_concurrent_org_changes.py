@@ -7,26 +7,35 @@ COMMITTED).
 транзакцию (один SAVEPOINT) на тест, а гонка требует двух ПОДЛИННО
 независимых соединений/транзакций, как у двух настоящих одновременных
 HTTP-запросов. Тестовые строки создаются и удаляются вручную (реальный
-`commit`, не откатывается автоматически по завершении теста).
+`commit`, не откатывается автоматически по завершении теста); все
+естественные ключи несут уникальный для прогона суффикс, а очистка в
+`finally` ищет строки по этому суффиксу, а не по конкретным id — иначе
+остаток от упавшего посередине прогона ломает не только повторный
+запуск этого теста, но и соседние, которые считают строки в таблице.
 
-Чистое `asyncio.gather` не гарантирует, что обе транзакции успеют
-прочитать состояние ДО того, как одна из них запишет своё изменение —
-на быстром локальном Postgres обе стороны гонки иногда успевают
-выполниться настолько быстро, что фактически не пересекаются по
-времени, и тест был бы нестабильным (то красный, то зелёный на одном и
-том же коде). Поэтому обе гонки принудительно раздвигаются монки-
-патчем: сторона A выполняет проверку цикла, затем ждёт, отдавая
-управление стороне B, — гарантированное перекрытие вместо везения
-планировщика.
+Перекрытие сторон гонки обеспечивается барьером (`asyncio.Barrier`), а
+не фиксированной задержкой: обе стороны начинают выполнение строго в
+один и тот же тик event loop, поэтому дальнейшее чередование их
+запросов к БД зависит от кооперативного планирования, а не от того,
+успела ли одна сторона заснуть на заранее угаданное время. Фиксированная
+задержка была ложноположительной защитой: если под нагрузкой вторая
+сторона не успевала дойти до блокировки за отведённое время, первая
+сторона завершалась и коммитила раньше, чем вторая вообще начинала
+выполняться, — вторая сторона тогда просто читала уже применённое
+изменение и корректно отказывала САМА ПО СЕБЕ, без всякого участия
+блокировки. Тест в этом случае проходил, но не проверял ничего: тот же
+результат дал бы полностью последовательный вызов без блокировки вовсе.
 """
 
 from __future__ import annotations
 
 import asyncio
 import datetime
+import uuid
+from collections.abc import Awaitable
 from contextlib import AsyncExitStack, asynccontextmanager
 
-from sqlalchemy import delete
+from sqlalchemy import delete, or_
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
 from app.db.session import get_engine
@@ -36,8 +45,6 @@ from app.models.employee import Employee
 from app.modules.employees import department_service, employee_service
 from app.schemas.department import DepartmentUpdate
 from app.schemas.employee import EmployeeUpdate
-
-_OVERLAP_DELAY_SECONDS = 0.2
 
 
 @asynccontextmanager
@@ -53,46 +60,45 @@ async def _fresh_session(engine: AsyncEngine):
             await session.close()
 
 
-async def test_concurrent_department_parent_swap_rejects_one_and_avoids_cycle(
-    monkeypatch,
-) -> None:
+async def _run_racing_pair(coro_a: Awaitable, coro_b: Awaitable) -> list:
+    """Запускает обе стороны гонки через общий барьер (`parties=2`): обе
+    гарантированно НАЧИНАЮТ выполнение в один и тот же тик event loop —
+    ни одна не может уйти вперёд и завершиться до того, как вторая
+    вообще начала. Дальше это уже настоящая гонка двух независимых
+    подключений к Postgres, а не гонка с угаданным таймаутом."""
+    barrier = asyncio.Barrier(2)
+
+    async def _released(coro: Awaitable):
+        await barrier.wait()
+        return await coro
+
+    return await asyncio.gather(_released(coro_a), _released(coro_b), return_exceptions=True)
+
+
+async def test_concurrent_department_parent_swap_rejects_one_and_avoids_cycle() -> None:
     engine = get_engine()
+    marker = uuid.uuid4().hex[:12]
+    dept_a_name = f"Race Dept A {marker}"
+    dept_b_name = f"Race Dept B {marker}"
 
     async with _fresh_session(engine) as setup:
-        dept_a = Department(name="Race Dept A")
-        dept_b = Department(name="Race Dept B")
+        dept_a = Department(name=dept_a_name)
+        dept_b = Department(name=dept_b_name)
         setup.add_all([dept_a, dept_b])
         await setup.commit()
         dept_a_id, dept_b_id = dept_a.id, dept_b.id
 
     try:
-        original_would_create_cycle = department_service._would_create_cycle
-
-        async def _delayed_would_create_cycle(session, department_id, new_parent_id):
-            result = await original_would_create_cycle(session, department_id, new_parent_id)
-            if department_id == dept_a_id:
-                # Сторона A "читает и задумывается" — за это время сторона
-                # B должна успеть полностью прочитать и записать своё
-                # ребро (без блокировки), либо доехать до блокировки и
-                # встать в очередь на неё (с блокировкой).
-                await asyncio.sleep(_OVERLAP_DELAY_SECONDS)
-            return result
-
-        monkeypatch.setattr(
-            department_service, "_would_create_cycle", _delayed_would_create_cycle
-        )
-
         async with AsyncExitStack() as stack:
             session_1 = await stack.enter_async_context(_fresh_session(engine))
             session_2 = await stack.enter_async_context(_fresh_session(engine))
 
-            payload_1 = DepartmentUpdate(name="Race Dept A", parent_id=dept_b_id)
-            payload_2 = DepartmentUpdate(name="Race Dept B", parent_id=dept_a_id)
+            payload_1 = DepartmentUpdate(name=dept_a_name, parent_id=dept_b_id)
+            payload_2 = DepartmentUpdate(name=dept_b_name, parent_id=dept_a_id)
 
-            results = await asyncio.gather(
+            results = await _run_racing_pair(
                 department_service.update_department(session_1, dept_a_id, payload_1),
                 department_service.update_department(session_2, dept_b_id, payload_2),
-                return_exceptions=True,
             )
 
         successes = [r for r in results if not isinstance(r, Exception)]
@@ -110,36 +116,42 @@ async def test_concurrent_department_parent_swap_rejects_one_and_avoids_cycle(
     finally:
         async with _fresh_session(engine) as cleanup:
             await cleanup.execute(
-                delete(Department).where(Department.id.in_([dept_a_id, dept_b_id]))
+                delete(Department).where(
+                    or_(Department.name == dept_a_name, Department.name == dept_b_name)
+                )
             )
             await cleanup.commit()
 
 
-async def test_concurrent_employee_manager_swap_rejects_one_and_avoids_cycle(
-    monkeypatch,
-) -> None:
+async def test_concurrent_employee_manager_swap_rejects_one_and_avoids_cycle() -> None:
     engine = get_engine()
+    marker = uuid.uuid4().hex[:12]
+    department_name = f"Race Employees Dept {marker}"
+    personnel_number_a = f"RACE-A-{marker}"
+    personnel_number_b = f"RACE-B-{marker}"
+    email_a = f"race-employee-a-{marker}@company.local"
+    email_b = f"race-employee-b-{marker}@company.local"
 
     async with _fresh_session(engine) as setup:
-        department = Department(name="Race Employees Dept")
+        department = Department(name=department_name)
         setup.add(department)
         await setup.flush()
         employee_a = Employee(
             full_name="Race Employee A",
-            personnel_number="RACE-A",
+            personnel_number=personnel_number_a,
             department_id=department.id,
             position="Engineer",
             hire_date=datetime.date(2024, 1, 1),
-            email="race-employee-a@company.local",
+            email=email_a,
             work_schedule_type="standard",
         )
         employee_b = Employee(
             full_name="Race Employee B",
-            personnel_number="RACE-B",
+            personnel_number=personnel_number_b,
             department_id=department.id,
             position="Engineer",
             hire_date=datetime.date(2024, 1, 1),
-            email="race-employee-b@company.local",
+            email=email_b,
             work_schedule_type="standard",
         )
         setup.add_all([employee_a, employee_b])
@@ -155,51 +167,36 @@ async def test_concurrent_employee_manager_swap_rejects_one_and_avoids_cycle(
         department_id = department.id
 
     try:
-        original_is_in_management_chain = employee_service.is_in_management_chain
-
-        async def _delayed_is_in_management_chain(session, manager_employee_id, target_employee_id):
-            result = await original_is_in_management_chain(
-                session, manager_employee_id, target_employee_id
-            )
-            if target_employee_id == employee_a_id:
-                await asyncio.sleep(_OVERLAP_DELAY_SECONDS)
-            return result
-
-        monkeypatch.setattr(
-            employee_service, "is_in_management_chain", _delayed_is_in_management_chain
-        )
-
         async with AsyncExitStack() as stack:
             session_1 = await stack.enter_async_context(_fresh_session(engine))
             session_2 = await stack.enter_async_context(_fresh_session(engine))
 
             payload_1 = EmployeeUpdate(
                 full_name="Race Employee A",
-                personnel_number="RACE-A",
+                personnel_number=personnel_number_a,
                 department_id=department_id,
                 position="Engineer",
                 hire_date="2024-01-01",
-                email="race-employee-a@company.local",
+                email=email_a,
                 work_schedule_type="standard",
                 auth_type="ldap",
                 manager_id=employee_b_id,
             )
             payload_2 = EmployeeUpdate(
                 full_name="Race Employee B",
-                personnel_number="RACE-B",
+                personnel_number=personnel_number_b,
                 department_id=department_id,
                 position="Engineer",
                 hire_date="2024-01-01",
-                email="race-employee-b@company.local",
+                email=email_b,
                 work_schedule_type="standard",
                 auth_type="ldap",
                 manager_id=employee_a_id,
             )
 
-            results = await asyncio.gather(
+            results = await _run_racing_pair(
                 employee_service.update_employee(session_1, employee_a_id, payload_1),
                 employee_service.update_employee(session_2, employee_b_id, payload_2),
-                return_exceptions=True,
             )
 
         successes = [r for r in results if not isinstance(r, Exception)]
@@ -222,7 +219,12 @@ async def test_concurrent_employee_manager_swap_rejects_one_and_avoids_cycle(
                 delete(Account).where(Account.employee_id.in_([employee_a_id, employee_b_id]))
             )
             await cleanup.execute(
-                delete(Employee).where(Employee.id.in_([employee_a_id, employee_b_id]))
+                delete(Employee).where(
+                    or_(
+                        Employee.personnel_number == personnel_number_a,
+                        Employee.personnel_number == personnel_number_b,
+                    )
+                )
             )
-            await cleanup.execute(delete(Department).where(Department.id == department_id))
+            await cleanup.execute(delete(Department).where(Department.name == department_name))
             await cleanup.commit()

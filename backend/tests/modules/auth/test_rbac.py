@@ -1,3 +1,5 @@
+import asyncio
+
 import pytest
 from fastapi import HTTPException
 from fastapi.security import HTTPAuthorizationCredentials
@@ -6,7 +8,13 @@ from app.core.security import create_access_token, create_refresh_token
 from app.models.account import Account
 from app.modules.auth.access_control import enforce_access
 from app.modules.auth.exceptions import AccessDeniedError
-from app.modules.auth.rbac import get_current_account, is_manager_of, require_roles
+from app.modules.auth.rbac import (
+    get_current_account,
+    is_direct_manager_of,
+    is_in_management_chain,
+    list_subordinate_employee_ids,
+    require_roles,
+)
 from tests.modules.auth.factories import make_account, make_employee
 
 
@@ -138,17 +146,148 @@ async def test_require_roles_denies_non_matching_role(db_session) -> None:
     assert exc_info.value.status_code == 403
 
 
-async def test_is_manager_of_true_for_direct_manager(db_session) -> None:
+async def test_is_direct_manager_of_true_for_direct_manager(db_session) -> None:
     manager = await make_employee(db_session, email="manager@company.local")
     subordinate = await make_employee(
         db_session, email="report@company.local", manager_id=manager.id
     )
 
-    assert await is_manager_of(db_session, manager.id, subordinate.id) is True
+    assert await is_direct_manager_of(db_session, manager.id, subordinate.id) is True
 
 
-async def test_is_manager_of_false_for_unrelated_employee(db_session) -> None:
+async def test_is_direct_manager_of_false_for_unrelated_employee(db_session) -> None:
     manager = await make_employee(db_session, email="manager2@company.local")
     other = await make_employee(db_session, email="other@company.local")
 
-    assert await is_manager_of(db_session, manager.id, other.id) is False
+    assert await is_direct_manager_of(db_session, manager.id, other.id) is False
+
+
+# --- is_in_management_chain / list_subordinate_employee_ids -------------
+# «Своя команда» — весь путь вверх/вниз по цепочке `manager_id`, а не
+# только прямое подчинение (plan.md §5.1).
+
+
+async def test_is_in_management_chain_true_for_direct_manager(db_session) -> None:
+    manager = await make_employee(db_session, email="chain-direct-manager@company.local")
+    subordinate = await make_employee(
+        db_session, email="chain-direct-report@company.local", manager_id=manager.id
+    )
+
+    assert await is_in_management_chain(db_session, manager.id, subordinate.id) is True
+
+
+async def test_is_in_management_chain_true_for_two_levels_up(db_session) -> None:
+    top = await make_employee(db_session, email="chain-top@company.local")
+    middle = await make_employee(
+        db_session, email="chain-middle@company.local", manager_id=top.id
+    )
+    bottom = await make_employee(
+        db_session, email="chain-bottom@company.local", manager_id=middle.id
+    )
+
+    assert await is_in_management_chain(db_session, top.id, bottom.id) is True
+
+
+async def test_is_in_management_chain_false_for_sibling_branch(db_session) -> None:
+    top = await make_employee(db_session, email="chain-top2@company.local")
+    branch_a_manager = await make_employee(
+        db_session, email="chain-branch-a@company.local", manager_id=top.id
+    )
+    branch_b_manager = await make_employee(
+        db_session, email="chain-branch-b@company.local", manager_id=top.id
+    )
+    leaf_in_branch_b = await make_employee(
+        db_session, email="chain-leaf-b@company.local", manager_id=branch_b_manager.id
+    )
+
+    result = await is_in_management_chain(db_session, branch_a_manager.id, leaf_in_branch_b.id)
+    assert result is False
+
+
+async def test_is_in_management_chain_false_for_self(db_session) -> None:
+    employee = await make_employee(db_session, email="chain-self@company.local")
+
+    assert await is_in_management_chain(db_session, employee.id, employee.id) is False
+
+
+async def test_is_in_management_chain_terminates_on_cyclic_data(db_session) -> None:
+    # Цикл, вставленный напрямую в БД, в обход API: запрет циклов при
+    # записи (T-M1-10/T-M1-15) — первая линия защиты, а не единственная,
+    # потому что данные могут прийти иначе (например, будущий импорт,
+    # T-M1-11). Запрашиваем сотрудника, которого в цикле A↔B нет вовсе —
+    # `LIMIT 1` не может сработать на первой же строке (как сработал бы
+    # для A или B), поэтому без `MAX_MANAGEMENT_CHAIN_DEPTH` обход
+    # продолжался бы бесконечно (`UNION ALL` не схлопывает повторы —
+    # `depth` растёт, «новых строк больше нет» никогда не наступает).
+    # `asyncio.wait_for` превращает зависание в понятный красный тест
+    # вместо бесконечного ожидания.
+    employee_a = await make_employee(db_session, email="chain-cycle-a@company.local")
+    employee_b = await make_employee(
+        db_session, email="chain-cycle-b@company.local", manager_id=employee_a.id
+    )
+    employee_a.manager_id = employee_b.id
+    await db_session.flush()
+    unrelated = await make_employee(db_session, email="chain-cycle-unrelated@company.local")
+
+    result = await asyncio.wait_for(
+        is_in_management_chain(db_session, unrelated.id, employee_b.id), timeout=10
+    )
+
+    assert result is False
+
+
+async def test_is_in_management_chain_false_for_self_with_cyclic_data(db_session) -> None:
+    # PR review: цепочка вверх от A при цикле A<->B возвращается к A уже
+    # на втором шаге, поэтому `is_in_management_chain(A, A)` без явной
+    # проверки self-reference дал бы `True` — сотрудник с зацикленной
+    # цепочкой мог бы «стать сам себе вышестоящим» и в M3 согласовать
+    # собственную заявку вопреки FR-APPR-002.
+    employee_a = await make_employee(db_session, email="chain-self-cycle-a@company.local")
+    employee_b = await make_employee(
+        db_session, email="chain-self-cycle-b@company.local", manager_id=employee_a.id
+    )
+    employee_a.manager_id = employee_b.id
+    await db_session.flush()
+
+    result = await asyncio.wait_for(
+        is_in_management_chain(db_session, employee_a.id, employee_a.id), timeout=10
+    )
+
+    assert result is False
+
+
+async def test_list_subordinate_employee_ids_returns_whole_subtree(db_session) -> None:
+    top = await make_employee(db_session, email="subtree-top@company.local")
+    middle = await make_employee(
+        db_session, email="subtree-middle@company.local", manager_id=top.id
+    )
+    bottom = await make_employee(
+        db_session, email="subtree-bottom@company.local", manager_id=middle.id
+    )
+    unrelated = await make_employee(db_session, email="subtree-unrelated@company.local")
+
+    subordinate_ids = await list_subordinate_employee_ids(db_session, top.id)
+
+    assert set(subordinate_ids) == {middle.id, bottom.id}
+    assert top.id not in subordinate_ids
+    assert unrelated.id not in subordinate_ids
+
+
+async def test_list_subordinate_employee_ids_terminates_on_cyclic_data(db_session) -> None:
+    # Тот же риск бесконечной рекурсии, что и у `is_in_management_chain`
+    # (см. тест выше) — своя копия `MAX_MANAGEMENT_CHAIN_DEPTH` в этой
+    # функции, свой тест.
+    employee_a = await make_employee(db_session, email="subtree-cycle-a@company.local")
+    employee_b = await make_employee(
+        db_session, email="subtree-cycle-b@company.local", manager_id=employee_a.id
+    )
+    employee_a.manager_id = employee_b.id
+    await db_session.flush()
+
+    subordinate_ids = await asyncio.wait_for(
+        list_subordinate_employee_ids(db_session, employee_a.id), timeout=10
+    )
+
+    # `employee_a` — сам `manager_employee_id`, не подчинённый себе: цикл
+    # в данных не должен превращать его в собственного подчинённого.
+    assert set(subordinate_ids) == {employee_b.id}

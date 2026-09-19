@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import create_access_token
 from app.models.account import Account
+from app.models.department import Department
 from app.models.employee import Employee
 
 _personnel_number_seq = itertools.count(1)
@@ -62,6 +63,19 @@ async def make_account(
     session.add(account)
     await session.flush()
     return account
+
+
+async def make_department(
+    session: AsyncSession,
+    *,
+    name: str = "Тестовое подразделение",
+    parent_id: int | None = None,
+    head_employee_id: int | None = None,
+) -> Department:
+    department = Department(name=name, parent_id=parent_id, head_employee_id=head_employee_id)
+    session.add(department)
+    await session.flush()
+    return department
 
 
 def bearer_header(account: Account) -> dict[str, str]:

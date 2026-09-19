@@ -31,10 +31,17 @@ def _to_token_response(result: AuthResult) -> TokenResponse:
 async def login(
     payload: LoginRequest, session: AsyncSession = Depends(get_db_session)
 ) -> TokenResponse:
-    """FR-AUTH-001/003: LDAP, если в `ldap_settings` есть активная запись;
-    иначе — режим внедрения, вход тем же логином/паролем обслуживается
-    локально, как того требует FR-AUTH-003."""
-    if await is_embedded_mode(session):
+    """FR-AUTH-001/003: LDAP, если в `ldap_settings` есть активная и
+    подтверждённая запись; иначе — режим внедрения, вход тем же
+    логином/паролем обслуживается локально (FR-AUTH-003).
+
+    Сотрудники с явно выбранным локальным паролем (`accounts.auth_type =
+    'local'`) продолжают входить локально и при настроенном LDAP —
+    диспетчеризация смотрит на способ входа из карточки, а не только на
+    режим внедрения (T-M1-32)."""
+    if await is_embedded_mode(session) or await local_service.uses_local_auth(
+        session, payload.login
+    ):
         result = await local_service.authenticate_local(session, payload.login, payload.password)
     else:
         result = await ldap_service.authenticate_via_ldap(

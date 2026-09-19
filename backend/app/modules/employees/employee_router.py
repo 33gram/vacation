@@ -16,7 +16,7 @@ from app.models.account import Account
 from app.modules.auth.password_policy import WeakPasswordError
 from app.modules.auth.rbac import get_current_account, require_roles
 from app.modules.employees import employee_service
-from app.schemas.employee import EmployeeCreate, EmployeeOut, EmployeeUpdate
+from app.schemas.employee import EmployeeCreate, EmployeeDeactivate, EmployeeOut, EmployeeUpdate
 
 router = APIRouter(prefix="/api/employees", tags=["employees"])
 
@@ -73,6 +73,22 @@ async def update_employee(
 ) -> EmployeeOut:
     try:
         employee = await employee_service.update_employee(session, employee_id, payload)
+    except employee_service.EmployeeNotFoundError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    return EmployeeOut.model_validate(employee)
+
+
+@router.post("/{employee_id}/deactivate", response_model=EmployeeOut)
+async def deactivate_employee(
+    employee_id: int,
+    payload: EmployeeDeactivate,
+    session: AsyncSession = Depends(get_db_session),
+    _: Account = Depends(_require_employee_admin),
+) -> EmployeeOut:
+    try:
+        employee = await employee_service.deactivate_employee(session, employee_id, payload)
     except employee_service.EmployeeNotFoundError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
     except ValueError as exc:

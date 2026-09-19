@@ -25,7 +25,12 @@ from app.models.employee import Employee
 from app.modules.auth.password_policy import validate_password_strength
 from app.modules.auth.rbac import is_in_management_chain, list_subordinate_employee_ids
 from app.modules.auth.repository import get_account_by_employee_id
-from app.schemas.employee import EmployeeCardFields, EmployeeCreate, EmployeeUpdate
+from app.schemas.employee import (
+    EmployeeCardFields,
+    EmployeeCreate,
+    EmployeeDeactivate,
+    EmployeeUpdate,
+)
 
 # Имена полей — из `EmployeeCardFields` (schemas/employee.py), а не
 # отдельный список здесь: раньше эти девять полей были перечислены
@@ -302,5 +307,80 @@ async def update_employee(
         await session.rollback()
         raise _translate_unique_violation(exc, payload) from exc
 
+    await session.refresh(employee)
+    return employee
+
+
+async def deactivate_employee(
+    session: AsyncSession, employee_id: int, payload: EmployeeDeactivate
+) -> Employee:
+    """T-M1-12, FR-EMP-004 (без фиксации остатка — `T-M1-37`).
+
+    Отказывает, если у сотрудника есть активные ПРЯМЫЕ подчинённые
+    (`Employee.manager_id`) или он назначен руководителем подразделения
+    (`departments.head_employee_id`) — симметрично тому, что
+    `_require_active_manager_reference` уже запрещает НАЗНАЧАТЬ
+    уволенного руководителем (`T-M1-15`): оставлять подчинённых висеть
+    на уволенном — то же противоречие с другой стороны. Не проверяет
+    всё поддерево (`list_subordinate_employee_ids`) — переподчинение
+    прямых подчинённых уже разрывает цепочку до уволенного для всех,
+    кто ниже них."""
+    employee = await session.get(Employee, employee_id)
+    if employee is None:
+        raise EmployeeNotFoundError(f"Employee {employee_id} not found")
+    if employee.employment_status == "terminated":
+        raise ValueError(f"Employee {employee_id} is already terminated")
+
+    account = await get_account_by_employee_id(session, employee.id)
+    if account is None:
+        raise ValueError(f"Employee {employee_id} has no linked account")
+
+    direct_reports = (
+        (
+            await session.execute(
+                select(Employee.id)
+                .where(Employee.manager_id == employee.id)
+                .where(Employee.employment_status == "active")
+                .order_by(Employee.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    headed_department_ids = (
+        (
+            await session.execute(
+                select(Department.id)
+                .where(Department.head_employee_id == employee.id)
+                .order_by(Department.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    problems = []
+    if direct_reports:
+        problems.append(
+            f"reassign manager_id for active direct report(s) {list(direct_reports)} first"
+        )
+    if headed_department_ids:
+        problems.append(
+            "reassign head_employee_id for department(s) "
+            f"{list(headed_department_ids)} first"
+        )
+    if problems:
+        raise ValueError("cannot deactivate: " + "; ".join(problems))
+
+    employee.employment_status = "terminated"
+    employee.termination_date = payload.termination_date
+    # Доступ и так закрыт статусом карточки через `enforce_access`
+    # (T-M1-27), но два источника истины о том, работает ли человек, со
+    # временем расходятся — `accounts.is_active` держится в согласии с
+    # `employees.employment_status` явно, а не по выводу из него на
+    # каждой проверке.
+    account.is_active = False
+
+    await session.commit()
     await session.refresh(employee)
     return employee

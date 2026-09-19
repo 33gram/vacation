@@ -69,6 +69,13 @@ class EmployeeCreate(EmployeeCardFields):
         return self
 
 
+class EmployeeDeactivate(BaseModel):
+    """`POST /api/employees/{id}/deactivate` (`T-M1-12`, `FR-EMP-004`,
+    без части про фиксацию остатка — см. `T-M1-37`)."""
+
+    termination_date: datetime.date
+
+
 class EmployeeUpdate(EmployeeCardFields):
     """Правка карточки, включая способ входа (`T-M1-34`). Статус
     занятости (`employment_status`) сюда не входит — меняется только

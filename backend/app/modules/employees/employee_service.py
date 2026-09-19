@@ -282,30 +282,20 @@ async def update_employee(
     return employee
 
 
-async def deactivate_employee(
-    session: AsyncSession, employee_id: int, payload: EmployeeDeactivate
-) -> Employee:
-    """T-M1-12, FR-EMP-004 (без фиксации остатка — `T-M1-37`).
-
-    Отказывает, если у сотрудника есть активные ПРЯМЫЕ подчинённые
-    (`Employee.manager_id`) или он назначен руководителем подразделения
-    (`departments.head_employee_id`) — симметрично тому, что
-    `_require_active_manager_reference` уже запрещает НАЗНАЧАТЬ
+async def _require_no_active_dependents(session: AsyncSession, employee: Employee) -> None:
+    """Отказывает деактивации, если у `employee` есть активные ПРЯМЫЕ
+    подчинённые (`Employee.manager_id`) или он назначен руководителем
+    подразделения (`departments.head_employee_id`) — симметрично тому,
+    что `_require_active_manager_reference` уже запрещает НАЗНАЧАТЬ
     уволенного руководителем (`T-M1-15`): оставлять подчинённых висеть
     на уволенном — то же противоречие с другой стороны. Не проверяет
     всё поддерево (`list_subordinate_employee_ids`) — переподчинение
     прямых подчинённых уже разрывает цепочку до уволенного для всех,
-    кто ниже них."""
-    employee = await session.get(Employee, employee_id)
-    if employee is None:
-        raise EmployeeNotFoundError(f"Employee {employee_id} not found")
-    if employee.employment_status == "terminated":
-        raise ValueError(f"Employee {employee_id} is already terminated")
+    кто ниже них.
 
-    account = await get_account_by_employee_id(session, employee.id)
-    if account is None:
-        raise ValueError(f"Employee {employee_id} has no linked account")
-
+    Вызывающая сторона обязана взять `_lock_management_chain` ДО этой
+    проверки — иначе она сама подвержена гонке, см. `deactivate_
+    employee`."""
     direct_reports = (
         (
             await session.execute(
@@ -342,6 +332,35 @@ async def deactivate_employee(
         )
     if problems:
         raise ValueError("cannot deactivate: " + "; ".join(problems))
+
+
+async def deactivate_employee(
+    session: AsyncSession, employee_id: int, payload: EmployeeDeactivate
+) -> Employee:
+    """T-M1-12, FR-EMP-004 (без фиксации остатка — `T-M1-37`). Критерий
+    отказа при активных зависимостях — `_require_no_active_dependents`."""
+    employee = await session.get(Employee, employee_id)
+    if employee is None:
+        raise EmployeeNotFoundError(f"Employee {employee_id} not found")
+    if employee.employment_status == "terminated":
+        raise ValueError(f"Employee {employee_id} is already terminated")
+
+    account = await get_account_by_employee_id(session, employee.id)
+    if account is None:
+        raise ValueError(f"Employee {employee_id} has no linked account")
+
+    # PR #139 review, verification item 4: same write skew PR #138 closed
+    # for manager_id cycles, on a different pair of paths. Under READ
+    # COMMITTED, a concurrent PUT assigning employee.id as someone's
+    # manager_id reads "employee is active" before this transaction's
+    # commit, while this transaction's dependents check reads "no active
+    # reports yet" before that PUT's commit — both pass, leaving a
+    # terminated employee with an active direct report. Taking the same
+    # lock update_employee's manager-assignment path already takes,
+    # BEFORE the dependents check, serializes the two: whichever commits
+    # first is seen by the other.
+    await _lock_management_chain(session)
+    await _require_no_active_dependents(session, employee)
 
     employee.employment_status = "terminated"
     employee.termination_date = payload.termination_date

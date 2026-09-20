@@ -116,5 +116,5 @@ async def _handle_unexpected_integrity_error(request: Request, exc: IntegrityErr
     )
     return JSONResponse(
         status_code=409,
-        content={"detail": "The request conflicts with existing data. Please retry."},
+        content={"detail": "Конфликт с уже существующими данными. Попробуйте ещё раз."},
     )

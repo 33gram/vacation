@@ -15,29 +15,10 @@ from app.models.employee import Employee
 from app.modules.employees import import_service
 from app.modules.employees.import_parsing import ImportFileError, ParsedRow
 from app.modules.employees.import_service import import_employees
+from tests.fake_integrity_error import fake_integrity_error
 from tests.modules.auth.factories import make_department, make_employee
 
 _seq = itertools.count(1)
-
-
-class _FakeCause(Exception):
-    def __init__(self, constraint_name: str) -> None:
-        super().__init__()
-        self.constraint_name = constraint_name
-
-
-class _FakeOrig(Exception):
-    def __init__(self, constraint_name: str) -> None:
-        super().__init__()
-        self.__cause__ = _FakeCause(constraint_name)
-
-
-def _fake_integrity_error(constraint_name: str) -> IntegrityError:
-    """`unique_violation_field` reads `exc.orig.__cause__.constraint_
-    name` — reproduces just enough of asyncpg's real shape to exercise
-    `import_employees`'s retry logic without needing a real DB
-    conflict."""
-    return IntegrityError("statement", {}, _FakeOrig(constraint_name))
 
 
 def _row(row_number: int, **overrides: str | None) -> ParsedRow:
@@ -313,7 +294,7 @@ async def test_import_reraises_unexpected_integrity_error_without_retry(
 
     async def _fake_write_accepted(session, accepted, manager_target):
         call_count["n"] += 1
-        raise _fake_integrity_error("some_unrelated_constraint")
+        raise fake_integrity_error("some_unrelated_constraint")
 
     monkeypatch.setattr(import_service, "_write_accepted", _fake_write_accepted)
 
@@ -338,7 +319,7 @@ async def test_import_raises_import_file_error_after_exhausting_retries(
 
     async def _fake_write_accepted(session, accepted, manager_target):
         call_count["n"] += 1
-        raise _fake_integrity_error("employees_personnel_number_key")
+        raise fake_integrity_error("employees_personnel_number_key")
 
     monkeypatch.setattr(import_service, "_write_accepted", _fake_write_accepted)
 

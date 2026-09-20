@@ -10,7 +10,9 @@ import logging
 from sqlalchemy import select
 
 from app.models.employee import Employee
+from app.modules.employees import import_service
 from app.modules.employees.import_parsing import EXPECTED_COLUMNS
+from tests.fake_integrity_error import fake_integrity_error
 from tests.modules.auth.factories import bearer_header, make_account, make_department, make_employee
 
 _seq = itertools.count(1)
@@ -145,6 +147,50 @@ async def test_import_does_not_log_personal_data(db_session, api_client, caplog)
     assert body["rejected_count"] == 1
     # Значение реально попало в ОТВЕТ (иначе тест ничего не значил бы).
     assert personnel_number in body["errors"][0]["reason"]
+
+    log_text = "\n".join(record.getMessage() for record in caplog.records)
+    assert full_name not in log_text
+    assert personnel_number not in log_text
+    assert email not in log_text
+
+
+async def test_import_exhausted_write_retries_returns_400_not_500(
+    db_session, api_client, monkeypatch, caplog
+) -> None:
+    """PR #139 review, коммит 1, п. 4: `import_employees` поднимает
+    `ImportFileError`, исчерпав `_MAX_WRITE_ATTEMPTS` — раньше вызов
+    `import_employees` был вне `try` в роутере, и это доходило до
+    клиента как 500."""
+    await make_department(db_session, name="IT")
+    admin = await _make_admin(db_session)
+    # Коммит освобождает SAVEPOINT, под которым созданы подразделение и
+    # админ, — иначе `session.rollback()` в цикле повторов
+    # `import_employees` (см. его докстринг) откатит и это тоже, и
+    # вторая попытка не найдёт подразделение "IT".
+    await db_session.commit()
+    seq = next(_seq)
+    full_name = "Секретный Импортированный Сотрудник 2"
+    personnel_number = f"PII-IMP-RETRY-{seq}"
+    email = f"pii-imp-retry-{seq}@company.local"
+
+    async def _always_conflicts(*_args: object, **_kwargs: object) -> None:
+        raise fake_integrity_error("employees_personnel_number_key")
+
+    monkeypatch.setattr(import_service, "_write_accepted", _always_conflicts)
+
+    with caplog.at_level(logging.DEBUG):
+        response = await api_client.post(
+            "/api/employees/import",
+            files={
+                "file": _csv_file(
+                    f"{full_name},{personnel_number},IT,Инженер,2024-01-15,{email},standard,,"
+                )
+            },
+            headers=bearer_header(admin),
+        )
+
+    assert response.status_code == 400
+    assert "repeated concurrent write conflicts" in response.json()["detail"]
 
     log_text = "\n".join(record.getMessage() for record in caplog.records)
     assert full_name not in log_text

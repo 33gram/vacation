@@ -85,10 +85,16 @@ async def import_employees_endpoint(
     content = await file.read()
     try:
         rows = parse_import_file(file.filename or "", content)
+        result = await import_employees(session, rows)
     except ImportFileError as exc:
+        # PR #139 review, коммит 1, п. 4: раньше `try` покрывал только
+        # разбор файла — исчерпание повторов записи (`import_employees`)
+        # поднимает тот же `ImportFileError`, но снаружи блока, поэтому
+        # доходило до клиента как 500. Локальный отлов здесь и
+        # `main.py`'s обработчик того же типа — оба дают один и тот же
+        # ответ; локальный явно называет намерение на месте вызова,
+        # `main.py` — сетка на путь, который его забудет.
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
-
-    result = await import_employees(session, rows)
 
     # NFR-SEC-001/002: ни одно значение поля файла (ФИО, e-mail,
     # табельный номер) сюда не попадает — только количества и номера

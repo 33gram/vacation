@@ -45,6 +45,33 @@ violations.UNIQUE_CONSTRAINT_FIELDS`), — не гонка на известно
 полей в отчёте допустимы. Этот модуль ничего не логирует сам; вызывающий
 код (`employee_router.py`) обязан логировать только количества и номера
 строк, не значения полей (см. его докстринг).
+
+БЛОКИРОВКА `manager_id`/`head_employee_id` (PR #139 review, замечание
+C): `_load_existing` читает `employment_status` существующих
+сотрудников СНИМКОМ, а `_write_accepted` проставляет `manager_id`
+принятым строкам по этому снимку, не перечитывая его перед записью —
+тот же write skew, что уже закрыт `lock_management_chain` для
+`update_employee` (назначение руководителя), `deactivate_employee` и
+`update_department` (назначение руководителя подразделения), просто на
+третьем/четвёртом пути: конкурентная деактивация сотрудника, снимок
+которого импорт уже прочитал как "активен", может закоммитить
+увольнение ПОСЛЕ чтения, но ДО записи импортом строки, ссылающейся на
+него как на руководителя.
+
+Блокировка берётся на всю фазу 1+2 текущей попытки (от `_load_existing`
+до `_write_accepted` включительно), а не только вокруг проверки графа
+подчинения: сама проблема — в том, что снимок статусов, прочитанный ДО
+блокировки, устареет к моменту записи, если блокировка не накрывает и
+чтение снимка тоже. Проверка графа (`_find_file_cycles`/`_reject_
+broken_chains`) работает над данными, уже загруженными в память, — её
+одной обернуть недостаточно, устаревшим остаётся сам снимок. Цена —
+импорт (нечастая, HR-инициированная пакетная операция, как и правки
+оргструктуры, которые эта блокировка уже сериализует) держит блокировку
+дольше одного `PUT`, что здесь приемлемо по той же причине, что и для
+них: сериализовать редкие операции дешевле, чем ловить конфликты
+`SERIALIZABLE` с повтором на каждый запрос. Блокировка снимается
+`COMMIT`/`ROLLBACK` текущей транзакции — на повторную попытку (см.
+`_MAX_WRITE_ATTEMPTS` выше) берётся заново.
 """
 
 from __future__ import annotations
@@ -61,6 +88,7 @@ from app.models.account import Account
 from app.models.department import Department
 from app.models.employee import WORK_SCHEDULE_TYPES, Employee
 from app.modules.auth.rbac import MAX_MANAGEMENT_CHAIN_DEPTH
+from app.modules.employees.employee_service import lock_management_chain
 from app.modules.employees.import_parsing import ImportFileError, ParsedRow
 from app.modules.employees.unique_violations import unique_violation_field
 
@@ -511,6 +539,12 @@ async def _write_accepted(
 
 async def import_employees(session: AsyncSession, rows: list[ParsedRow]) -> ImportResult:
     for attempt in range(1, _MAX_WRITE_ATTEMPTS + 1):
+        # PR #139 review, замечание C: на всю фазу 1+2 этой попытки, а не
+        # только вокруг проверки графа, — снимок employment_status,
+        # прочитанный `_load_existing`, должен оставаться свежим вплоть
+        # до записи (см. докстринг модуля). Снимается COMMIT/ROLLBACK
+        # текущей транзакции, поэтому на повторную попытку берётся заново.
+        await lock_management_chain(session)
         existing = await _load_existing(session)
         departments_by_name = await _load_departments_by_name(session)
 

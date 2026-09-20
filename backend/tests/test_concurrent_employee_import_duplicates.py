@@ -11,15 +11,22 @@ e-mail проигравшей строки.
 FastAPI-зависимость с независимыми соединениями — обязательное условие
 для настоящей гонки (см. `test_concurrent_employee_duplicates.py`).
 
-Синхронизация — не фиксированной задержкой и не барьером на старт
-запроса (см. обоснование в `test_concurrent_org_changes.py`), а
-рандеву по счётчику вызовов `import_service._load_existing`: ровно
-ПЕРВЫЕ два вызова (по одному от каждой стороны) ждут друг друга, все
-последующие (повторные попытки после отката — см. докстринг
-`import_service.py`) проходят немедленно. Обычный `asyncio.Barrier`
-здесь не подходит: если одна из сторон уйдёт на повторную попытку, а
-другая — нет, повторный `barrier.wait()` от одной стороны ждал бы
-второго участника вечно.
+Синхронизация — простой одновременный старт запросов (`asyncio.
+gather`), БЕЗ рандеву внутри `import_service._load_existing`: после PR
+#139 review, замечания C (`import_employees` теперь берёт `lock_
+management_chain` на всю фазу 1+2, см. докстринг `import_service.py`)
+такое рандеву внутри `_load_existing` привело бы к взаимной блокировке
+— сторона, выигравшая замок, дошла бы до `_load_existing` первой и
+ждала бы вторую строго внутри него, а вторая сторона в это время сама
+блокирована на `pg_advisory_xact_lock`, ожидая, пока первая не
+закоммитит (проверено прогоном: именно так и произошло — deadlock,
+видимый как зависшая `idle in transaction` строка в `pg_stat_
+activity`). Простой одновременный старт этого не требует: блокировка
+теперь сама гарантирует правильный результат при любом порядке
+планирования, а не только при специально форсированном перекрытии, —
+разница с гонками в `test_concurrent_org_changes.py`, где блокировки
+на ОБЕИХ проверяемых путях нет по определению (это и есть отрицательный
+контроль) и синхронизация нужна, чтобы гонка вообще проявилась.
 
 Маркер на прогон во всех естественных ключах; очистка в `finally` по
 маркеру, а не по конкретным id.
@@ -40,7 +47,6 @@ from app.db.session import get_engine
 from app.models.account import Account
 from app.models.department import Department
 from app.models.employee import Employee
-from app.modules.employees import import_service
 
 
 async def _make_hr_admin_token(marker: str) -> tuple[int, int]:
@@ -104,7 +110,7 @@ def _csv_bytes(department_name: str, personnel_number: str, full_name: str, emai
 
 
 async def test_concurrent_import_with_colliding_personnel_number_never_500(
-    client, monkeypatch, caplog
+    client, caplog
 ) -> None:
     marker = uuid.uuid4().hex[:12]
     account_id, department_id = await _make_hr_admin_token(marker)
@@ -120,23 +126,6 @@ async def test_concurrent_import_with_colliding_personnel_number_never_500(
 
     file_a = _csv_bytes(department_name, shared_personnel_number, full_name_a, email_a)
     file_b = _csv_bytes(department_name, shared_personnel_number, full_name_b, email_b)
-
-    # Рандеву по счётчику вызовов _load_existing (см. докстринг модуля):
-    # ровно первые два вызова ждут друг друга, дальнейшие (повторные
-    # попытки после отката) проходят немедленно.
-    rendezvous = asyncio.Event()
-    call_count = {"n": 0}
-    original_load_existing = import_service._load_existing
-
-    async def _synced_load_existing(session):
-        call_count["n"] += 1
-        if call_count["n"] >= 2:
-            rendezvous.set()
-        else:
-            await rendezvous.wait()
-        return await original_load_existing(session)
-
-    monkeypatch.setattr(import_service, "_load_existing", _synced_load_existing)
 
     try:
         with caplog.at_level(logging.DEBUG):

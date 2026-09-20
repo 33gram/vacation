@@ -50,14 +50,22 @@ PRIVILEGED_VIEW_ROLES = frozenset({"hr_admin", "system_admin", "accountant"})
 MANAGEMENT_CHAIN_LOCK_KEY = 7_270_010_102
 
 
-async def _lock_management_chain(session: AsyncSession) -> None:
+async def lock_management_chain(session: AsyncSession) -> None:
     """Та же гонка и то же решение, что и
     `department_service._lock_department_tree` (см. её докстринг): под
-    READ COMMITTED два конкурентных `PUT`, назначающих сотрудников
-    руководителями друг друга, оба не видят цикла и оба коммитят своё
-    ребро. `pg_advisory_xact_lock` сериализует конкурентные правки
-    `manager_id` между собой; снимается коммитом/откатом текущей
-    транзакции."""
+    READ COMMITTED конкурентные операции, которые читают или меняют
+    `employees.manager_id`/`employment_status`/`departments.head_
+    employee_id`, могут разойтись на устаревших снимках друг друга.
+    `pg_advisory_xact_lock` сериализует их между собой; снимается
+    коммитом/откатом текущей транзакции.
+
+    Публичная (без `_`): вызывается не только из этого модуля, но и из
+    `department_service.update_department` (PR #139 review, замечание
+    B) и `import_service.import_employees` (замечание C) — назначение
+    руководителя подразделения и импорт трогают тот же инвариант
+    («активен ли сотрудник сейчас»), что и назначение прямого
+    руководителя и деактивация, поэтому все четыре пути сериализуются
+    ОДНИМ ключом, а не отдельными."""
     await session.execute(select(func.pg_advisory_xact_lock(MANAGEMENT_CHAIN_LOCK_KEY)))
 
 
@@ -254,7 +262,7 @@ async def update_employee(
     if payload.manager_id is not None:
         if payload.manager_id == employee.id:
             raise ValueError("manager_id: an employee cannot be their own manager")
-        await _lock_management_chain(session)
+        await lock_management_chain(session)
         await _require_active_manager_reference(session, payload.manager_id)
         # Цикл по цепочке подчинения: запрещаем, если сам сотрудник уже
         # стоит выше предлагаемого руководителя — иначе после правки он
@@ -293,7 +301,7 @@ async def _require_no_active_dependents(session: AsyncSession, employee: Employe
     прямых подчинённых уже разрывает цепочку до уволенного для всех,
     кто ниже них.
 
-    Вызывающая сторона обязана взять `_lock_management_chain` ДО этой
+    Вызывающая сторона обязана взять `lock_management_chain` ДО этой
     проверки — иначе она сама подвержена гонке, см. `deactivate_
     employee`."""
     direct_reports = (
@@ -359,7 +367,7 @@ async def deactivate_employee(
     # lock update_employee's manager-assignment path already takes,
     # BEFORE the dependents check, serializes the two: whichever commits
     # first is seen by the other.
-    await _lock_management_chain(session)
+    await lock_management_chain(session)
     await _require_no_active_dependents(session, employee)
 
     employee.employment_status = "terminated"

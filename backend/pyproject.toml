@@ -19,6 +19,7 @@ dependencies = [
   "cryptography>=42,<44",
   "python-multipart>=0.0.9",
   "aiosmtplib>=3.0,<4",
+  "openpyxl>=3.1,<4",
 ]
 
 [project.optional-dependencies]
@@ -46,4 +47,12 @@ select = ["E", "F", "I", "UP"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
-addopts = "-rs"
+# `-rs` — причины пропусков (нужно PYTEST_FORBID_SKIPS, conftest.py).
+# `-rf` — короткая сводка `FAILED <nodeid>` в конце ВСЕГДА, а не только
+# при просмотре полного лога. `--tb=short` держит трассировку каждого
+# падения компактной. Оба добавлены после PR #139 review (третий
+# круг): полный `make test-backend` один раз дал «3 failed» без единого
+# имени — длинный вывод обрезался раньше, чем до сводки. Имя упавшего
+# теста обязано переживать обрезание вывода независимо от того, кто и
+# как запускает прогон.
+addopts = "-rfs --tb=short"

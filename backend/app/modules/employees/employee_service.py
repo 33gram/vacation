@@ -25,7 +25,13 @@ from app.models.employee import Employee
 from app.modules.auth.password_policy import validate_password_strength
 from app.modules.auth.rbac import is_in_management_chain, list_subordinate_employee_ids
 from app.modules.auth.repository import get_account_by_employee_id
-from app.schemas.employee import EmployeeCardFields, EmployeeCreate, EmployeeUpdate
+from app.modules.employees.unique_violations import translate_unique_violation
+from app.schemas.employee import (
+    EmployeeCardFields,
+    EmployeeCreate,
+    EmployeeDeactivate,
+    EmployeeUpdate,
+)
 
 # Имена полей — из `EmployeeCardFields` (schemas/employee.py), а не
 # отдельный список здесь: раньше эти девять полей были перечислены
@@ -44,14 +50,22 @@ PRIVILEGED_VIEW_ROLES = frozenset({"hr_admin", "system_admin", "accountant"})
 MANAGEMENT_CHAIN_LOCK_KEY = 7_270_010_102
 
 
-async def _lock_management_chain(session: AsyncSession) -> None:
+async def lock_management_chain(session: AsyncSession) -> None:
     """Та же гонка и то же решение, что и
     `department_service._lock_department_tree` (см. её докстринг): под
-    READ COMMITTED два конкурентных `PUT`, назначающих сотрудников
-    руководителями друг друга, оба не видят цикла и оба коммитят своё
-    ребро. `pg_advisory_xact_lock` сериализует конкурентные правки
-    `manager_id` между собой; снимается коммитом/откатом текущей
-    транзакции."""
+    READ COMMITTED конкурентные операции, которые читают или меняют
+    `employees.manager_id`/`employment_status`/`departments.head_
+    employee_id`, могут разойтись на устаревших снимках друг друга.
+    `pg_advisory_xact_lock` сериализует их между собой; снимается
+    коммитом/откатом текущей транзакции.
+
+    Публичная (без `_`): вызывается не только из этого модуля, но и из
+    `department_service.update_department` (PR #139 review, замечание
+    B) и `import_service.import_employees` (замечание C) — назначение
+    руководителя подразделения и импорт трогают тот же инвариант
+    («активен ли сотрудник сейчас»), что и назначение прямого
+    руководителя и деактивация, поэтому все четыре пути сериализуются
+    ОДНИМ ключом, а не отдельными."""
     await session.execute(select(func.pg_advisory_xact_lock(MANAGEMENT_CHAIN_LOCK_KEY)))
 
 
@@ -139,40 +153,6 @@ async def _require_email_free(
         raise ValueError(f"email: '{email}' is already in use")
 
 
-# Источник истины — ограничение БД, а не проверка выше: под конкурентной
-# нагрузкой два запроса могут пройти `_require_personnel_number_free`/
-# `_require_email_free` одновременно (TOCTOU — обе проверки читают
-# состояние до записи другого запроса), и тогда именно эта проверка при
-# `COMMIT` ловит нарушение. Поле определяется по ИМЕНИ ОГРАНИЧЕНИЯ из
-# диагностики asyncpg, а не разбором текста ошибки — имя не зависит от
-# локали/версии сервера, текст сообщения зависит.
-_UNIQUE_CONSTRAINT_FIELDS = {
-    "employees_personnel_number_key": "personnel_number",
-    "ix_employees_email_lower": "email",
-}
-
-
-def _translate_unique_violation(
-    exc: IntegrityError, payload: EmployeeCreate | EmployeeUpdate
-) -> Exception:
-    """`ValueError` с тем же текстом и тем же полем, что и опережающая
-    проверка (`_require_personnel_number_free`/`_require_email_free`) —
-    клиент не должен различать «поймали до записи» и «поймали на
-    гонке», поэтому оба пути дают один и тот же тип исключения (роутер
-    превращает `ValueError` в 400 одинаково для обоих) и один и тот же
-    текст. Ограничение, не входящее в карту (например, случайное
-    нарушение внешнего ключа), не подменяется — исходная ошибка
-    поднимается как есть, чтобы не маскировать неожиданный сбой под
-    штатный отказ 400."""
-    constraint_name = getattr(getattr(exc.orig, "__cause__", None), "constraint_name", None)
-    field = _UNIQUE_CONSTRAINT_FIELDS.get(constraint_name)
-    if field == "personnel_number":
-        return ValueError(f"personnel_number: '{payload.personnel_number}' is already in use")
-    if field == "email":
-        return ValueError(f"email: '{payload.email}' is already in use")
-    return exc
-
-
 def _apply_card_fields(employee: Employee, payload: EmployeeCardFields) -> None:
     """Копирует девять общих полей карточки (`_CARD_FIELD_NAMES`) из
     тела запроса в ORM-объект — общая для `create_employee` (на новый,
@@ -218,7 +198,9 @@ async def create_employee(session: AsyncSession, payload: EmployeeCreate) -> Emp
         # вставку карточки тоже, сбой не оставляет сотрудника, которого
         # нельзя ни авторизовать, ни дозавести повторным `POST`.
         await session.rollback()
-        raise _translate_unique_violation(exc, payload) from exc
+        raise translate_unique_violation(
+            exc, personnel_number=payload.personnel_number, email=payload.email
+        ) from exc
     except Exception:
         await session.rollback()
         raise
@@ -280,7 +262,7 @@ async def update_employee(
     if payload.manager_id is not None:
         if payload.manager_id == employee.id:
             raise ValueError("manager_id: an employee cannot be their own manager")
-        await _lock_management_chain(session)
+        await lock_management_chain(session)
         await _require_active_manager_reference(session, payload.manager_id)
         # Цикл по цепочке подчинения: запрещаем, если сам сотрудник уже
         # стоит выше предлагаемого руководителя — иначе после правки он
@@ -300,7 +282,123 @@ async def update_employee(
         await session.commit()
     except IntegrityError as exc:
         await session.rollback()
-        raise _translate_unique_violation(exc, payload) from exc
+        raise translate_unique_violation(
+            exc, personnel_number=payload.personnel_number, email=payload.email
+        ) from exc
 
+    await session.refresh(employee)
+    return employee
+
+
+async def _require_no_active_dependents(session: AsyncSession, employee: Employee) -> None:
+    """Отказывает деактивации, если у `employee` есть активные ПРЯМЫЕ
+    подчинённые (`Employee.manager_id`) или он назначен руководителем
+    подразделения (`departments.head_employee_id`) — симметрично тому,
+    что `_require_active_manager_reference` уже запрещает НАЗНАЧАТЬ
+    уволенного руководителем (`T-M1-15`): оставлять подчинённых висеть
+    на уволенном — то же противоречие с другой стороны. Не проверяет
+    всё поддерево (`list_subordinate_employee_ids`) — переподчинение
+    прямых подчинённых уже разрывает цепочку до уволенного для всех,
+    кто ниже них.
+
+    Проверяет ДВА независимых предмета, и у каждого своя история
+    защиты от гонки с этой проверкой (PR #139 review, замечание 2 оси
+    стандартов — этот докстринг раньше выдавал `lock_management_chain`
+    за проверку целиком, хотя блокировка тогда закрывала только
+    первый):
+    - `manager_id` — `update_employee` берёт `lock_management_chain`
+      перед назначением руководителя с самого начала (PR #138);
+    - `head_employee_id` — `update_department` стал брать ту же
+      блокировку перед назначением руководителя подразделения только
+      в PR #139 review (замечание B); до этого назначить уже
+      уволенного сотрудника руководителем подразделения не мешало
+      ничто, включая эту проверку.
+
+    С обоими путями под одной блокировкой (плюс `import_service.
+    import_employees`, замечание C — третий писатель `manager_id`)
+    вызывающая сторона обязана взять `lock_management_chain` ДО этой
+    проверки, как и делает `deactivate_employee`, — тогда гонка с ЛЮБЫМ
+    из трёх писателей закрыта. Остаётся не закрытым только то, что не
+    может закрыть ни один замок на уровне приложения: прямая правка
+    `employees`/`departments` в обход API (например, будущий импорт
+    остатков или ручной SQL) не берёт эту блокировку и может оставить
+    то же противоречие — тот же класс ограничения, что и у проверки
+    циклов в `department_service._would_create_cycle`."""
+    direct_reports = (
+        (
+            await session.execute(
+                select(Employee.id)
+                .where(Employee.manager_id == employee.id)
+                .where(Employee.employment_status == "active")
+                .order_by(Employee.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    headed_department_ids = (
+        (
+            await session.execute(
+                select(Department.id)
+                .where(Department.head_employee_id == employee.id)
+                .order_by(Department.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    problems = []
+    if direct_reports:
+        problems.append(
+            f"reassign manager_id for active direct report(s) {list(direct_reports)} first"
+        )
+    if headed_department_ids:
+        problems.append(
+            "reassign head_employee_id for department(s) "
+            f"{list(headed_department_ids)} first"
+        )
+    if problems:
+        raise ValueError("cannot deactivate: " + "; ".join(problems))
+
+
+async def deactivate_employee(
+    session: AsyncSession, employee_id: int, payload: EmployeeDeactivate
+) -> Employee:
+    """T-M1-12, FR-EMP-004 (без фиксации остатка — `T-M1-37`). Критерий
+    отказа при активных зависимостях — `_require_no_active_dependents`."""
+    employee = await session.get(Employee, employee_id)
+    if employee is None:
+        raise EmployeeNotFoundError(f"Employee {employee_id} not found")
+    if employee.employment_status == "terminated":
+        raise ValueError(f"Employee {employee_id} is already terminated")
+
+    account = await get_account_by_employee_id(session, employee.id)
+    if account is None:
+        raise ValueError(f"Employee {employee_id} has no linked account")
+
+    # PR #139 review, verification item 4: same write skew PR #138 closed
+    # for manager_id cycles, on a different pair of paths. Under READ
+    # COMMITTED, a concurrent PUT assigning employee.id as someone's
+    # manager_id reads "employee is active" before this transaction's
+    # commit, while this transaction's dependents check reads "no active
+    # reports yet" before that PUT's commit — both pass, leaving a
+    # terminated employee with an active direct report. Taking the same
+    # lock update_employee's manager-assignment path already takes,
+    # BEFORE the dependents check, serializes the two: whichever commits
+    # first is seen by the other.
+    await lock_management_chain(session)
+    await _require_no_active_dependents(session, employee)
+
+    employee.employment_status = "terminated"
+    employee.termination_date = payload.termination_date
+    # Доступ и так закрыт статусом карточки через `enforce_access`
+    # (T-M1-27), но два источника истины о том, работает ли человек, со
+    # временем расходятся — `accounts.is_active` держится в согласии с
+    # `employees.employment_status` явно, а не по выводу из него на
+    # каждой проверке.
+    account.is_active = False
+
+    await session.commit()
     await session.refresh(employee)
     return employee

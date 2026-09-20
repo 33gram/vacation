@@ -177,6 +177,30 @@ async def test_put_departments_rejects_nonexistent_head(db_session, api_client) 
     assert response.status_code == 400
 
 
+async def test_put_departments_rejects_terminated_head(db_session, api_client) -> None:
+    # PR #139 review, замечание B: раньше проверялось только
+    # существование сотрудника, не его employment_status.
+    department = await make_department(db_session)
+    terminated = await make_employee(
+        db_session, email="terminated-head@company.local", employment_status="terminated"
+    )
+    account = await _make_admin(db_session)
+
+    response = await api_client.put(
+        f"/api/departments/{department.id}",
+        json={"name": "Renamed", "head_employee_id": terminated.id},
+        headers=bearer_header(account),
+    )
+
+    assert response.status_code == 400
+    assert "head_employee_id" in response.json()["detail"]
+
+    row = (
+        await db_session.execute(select(Department).where(Department.id == department.id))
+    ).scalar_one()
+    assert row.head_employee_id is None
+
+
 # --- Циклы запрещены (T-M1-10/T-M1-14) --------------------------------------
 
 

@@ -25,6 +25,7 @@ from sqlalchemy.orm import aliased
 
 from app.models.department import Department
 from app.models.employee import Employee
+from app.modules.employees.employee_service import lock_management_chain
 from app.schemas.department import DepartmentCreate, DepartmentUpdate
 
 # Тот же принцип, что и у `MAX_MANAGEMENT_CHAIN_DEPTH`
@@ -92,6 +93,24 @@ async def _require_parent_reference(session: AsyncSession, parent_id: int) -> No
         raise ValueError(f"Parent department {parent_id} not found")
 
 
+async def _require_active_head_reference(session: AsyncSession, head_employee_id: int) -> None:
+    """PR #139 review, замечание B: раньше проверялось только
+    существование сотрудника — `PUT /api/departments/{id}` с id
+    уволенного отвечал 200. Симметрично `employee_service._require_
+    active_manager_reference` (назначение уволенного НЕПОСРЕДСТВЕННЫМ
+    руководителем уже запрещено) — оставлять уволенного руководителем
+    подразделения было второй, незакрытой половиной того же
+    противоречия. Вызывающая сторона обязана взять `lock_management_
+    chain` ДО этой проверки — иначе гонка с конкурентной деактивацией
+    (проверка читает сотрудника активным, деактивация коммитит
+    увольнение, обе стороны проходят)."""
+    head = await session.get(Employee, head_employee_id)
+    if head is None:
+        raise ValueError(f"Employee {head_employee_id} not found")
+    if head.employment_status != "active":
+        raise ValueError("head_employee_id: a terminated employee cannot be a department head")
+
+
 async def _would_create_cycle(
     session: AsyncSession, department_id: int, new_parent_id: int
 ) -> bool:
@@ -145,9 +164,8 @@ async def update_department(
             raise ValueError("Department cannot become a descendant of its own descendant")
 
     if payload.head_employee_id is not None:
-        head = await session.get(Employee, payload.head_employee_id)
-        if head is None:
-            raise ValueError(f"Employee {payload.head_employee_id} not found")
+        await lock_management_chain(session)
+        await _require_active_head_reference(session, payload.head_employee_id)
 
     department.name = payload.name
     department.parent_id = payload.parent_id

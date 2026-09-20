@@ -35,7 +35,7 @@ import uuid
 from collections.abc import Awaitable
 from contextlib import AsyncExitStack, asynccontextmanager
 
-from sqlalchemy import delete, or_
+from sqlalchemy import delete, or_, update
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
 from app.db.session import get_engine
@@ -44,7 +44,7 @@ from app.models.department import Department
 from app.models.employee import Employee
 from app.modules.employees import department_service, employee_service
 from app.schemas.department import DepartmentUpdate
-from app.schemas.employee import EmployeeUpdate
+from app.schemas.employee import EmployeeDeactivate, EmployeeUpdate
 
 
 @asynccontextmanager
@@ -225,6 +225,239 @@ async def test_concurrent_employee_manager_swap_rejects_one_and_avoids_cycle() -
                         Employee.personnel_number == personnel_number_b,
                     )
                 )
+            )
+            await cleanup.execute(delete(Department).where(Department.name == department_name))
+            await cleanup.commit()
+
+
+async def test_concurrent_deactivate_and_assign_subordinate_never_leaves_bad_state() -> None:
+    """PR #139 review, verification item 4: the review flagged this as
+    unchecked — same write skew as the manager-swap race above, on a
+    different pair of paths (`deactivate_employee` vs. `update_employee`
+    assigning a subordinate). Concurrently: deactivate manager A, and
+    assign employee B to report to A. Neither ordering may leave A
+    terminated with B still reporting to them — exactly one of the two
+    operations must succeed, whichever loses the race must see the
+    other's already-committed state and refuse cleanly."""
+    engine = get_engine()
+    marker = uuid.uuid4().hex[:12]
+    department_name = f"Race Deactivate Dept {marker}"
+    personnel_number_a = f"RACE-DEACT-A-{marker}"
+    personnel_number_b = f"RACE-DEACT-B-{marker}"
+    email_a = f"race-deact-a-{marker}@company.local"
+    email_b = f"race-deact-b-{marker}@company.local"
+
+    async with _fresh_session(engine) as setup:
+        department = Department(name=department_name)
+        setup.add(department)
+        await setup.flush()
+        employee_a = Employee(
+            full_name="Race Deactivate A",
+            personnel_number=personnel_number_a,
+            department_id=department.id,
+            position="Engineer",
+            hire_date=datetime.date(2024, 1, 1),
+            email=email_a,
+            work_schedule_type="standard",
+        )
+        employee_b = Employee(
+            full_name="Race Deactivate B",
+            personnel_number=personnel_number_b,
+            department_id=department.id,
+            position="Engineer",
+            hire_date=datetime.date(2024, 1, 1),
+            email=email_b,
+            work_schedule_type="standard",
+        )
+        setup.add_all([employee_a, employee_b])
+        await setup.flush()
+        setup.add_all(
+            [
+                Account(employee_id=employee_a.id, auth_type="ldap", role="employee"),
+                Account(employee_id=employee_b.id, auth_type="ldap", role="employee"),
+            ]
+        )
+        await setup.commit()
+        employee_a_id, employee_b_id = employee_a.id, employee_b.id
+        department_id = department.id
+
+    try:
+        async with AsyncExitStack() as stack:
+            session_1 = await stack.enter_async_context(_fresh_session(engine))
+            session_2 = await stack.enter_async_context(_fresh_session(engine))
+
+            deactivate_payload = EmployeeDeactivate(termination_date=datetime.date(2024, 6, 1))
+            assign_payload = EmployeeUpdate(
+                full_name="Race Deactivate B",
+                personnel_number=personnel_number_b,
+                department_id=department_id,
+                position="Engineer",
+                hire_date="2024-01-01",
+                email=email_b,
+                work_schedule_type="standard",
+                auth_type="ldap",
+                manager_id=employee_a_id,
+            )
+
+            results = await _run_racing_pair(
+                employee_service.deactivate_employee(session_1, employee_a_id, deactivate_payload),
+                employee_service.update_employee(session_2, employee_b_id, assign_payload),
+            )
+
+        successes = [r for r in results if not isinstance(r, Exception)]
+        failures = [r for r in results if isinstance(r, Exception)]
+
+        assert len(successes) == 1, f"expected exactly one success, got {results!r}"
+        assert len(failures) == 1, f"expected exactly one rejection, got {results!r}"
+        assert isinstance(failures[0], ValueError), failures[0]
+
+        async with _fresh_session(engine) as verify:
+            employee_a_row = await verify.get(Employee, employee_a_id)
+            employee_b_row = await verify.get(Employee, employee_b_id)
+        assert not (
+            employee_a_row.employment_status == "terminated"
+            and employee_b_row.manager_id == employee_a_id
+            and employee_b_row.employment_status == "active"
+        )
+    finally:
+        async with _fresh_session(engine) as cleanup:
+            await cleanup.execute(
+                delete(Account).where(Account.employee_id.in_([employee_a_id, employee_b_id]))
+            )
+            await cleanup.execute(
+                delete(Employee).where(
+                    or_(
+                        Employee.personnel_number == personnel_number_a,
+                        Employee.personnel_number == personnel_number_b,
+                    )
+                )
+            )
+            await cleanup.execute(delete(Department).where(Department.name == department_name))
+            await cleanup.commit()
+
+
+async def test_concurrent_deactivate_and_assign_department_head_never_leaves_bad_state(
+    monkeypatch,
+) -> None:
+    """PR #139 review, замечание B: та же гонка как между деактивацией и
+    назначением подчинённого (`test_concurrent_deactivate_and_assign_
+    subordinate_never_leaves_bad_state`), только на паре путей
+    `deactivate_employee` / `department_service.update_department`
+    (`head_employee_id`), закрытых общим `lock_management_chain`.
+
+    Барьер только на СТАРТ (`_run_racing_pair`) здесь недостаточен: у
+    `update_department` до захвата блокировки меньше промежуточных
+    `await` (одно чтение подразделения), чем у `deactivate_employee`
+    (чтение сотрудника плюс чтение учётной записи), и при простом
+    старте в один тик более короткий путь надёжно доходит до блокировки
+    и коммитит первым — блокировка тогда ни разу не встречает
+    конкурента, а вторая сторона своей проверкой видит уже применённое
+    изменение и отказывает САМА ПО СЕБЕ (проверено прогоном: с барьером
+    только на старт тест зелёный даже при закомментированной блокировке
+    — тот же ложноположительный сценарий, который описан в докстринге
+    модуля выше, только обнаруженный не рассуждением, а прогоном —
+    правило 8).
+
+    Барьер здесь — ПЕРЕД захватом блокировки (после обязательного
+    предварительного чтения каждой стороны, `_require_department`/
+    `get_account_by_employee_id`), а не после проверки, которая идёт
+    ПОСЛЕ блокировки: под настоящей блокировкой до этой более поздней
+    точки одновременно доходит только ОДНА сторона (в этом и есть
+    смысл блокировки), поэтому барьер там ждал бы вторую сторону,
+    которая в это время сама ждёт снятия блокировки, — взаимная
+    блокировка (deadlock). Синхронизация ДО захвата уравнивает разницу в
+    длине пути, не мешая последующей настоящей гонке за блокировку в
+    Postgres."""
+    barrier = asyncio.Barrier(2)
+    original_department_check = department_service._require_department
+    original_account_lookup = employee_service.get_account_by_employee_id
+
+    async def _synced_department_check(*args: object, **kwargs: object):
+        result = await original_department_check(*args, **kwargs)
+        await barrier.wait()
+        return result
+
+    async def _synced_account_lookup(*args: object, **kwargs: object):
+        result = await original_account_lookup(*args, **kwargs)
+        await barrier.wait()
+        return result
+
+    monkeypatch.setattr(department_service, "_require_department", _synced_department_check)
+    monkeypatch.setattr(employee_service, "get_account_by_employee_id", _synced_account_lookup)
+
+    engine = get_engine()
+    marker = uuid.uuid4().hex[:12]
+    department_name = f"Race Head Dept {marker}"
+    personnel_number_a = f"RACE-HEAD-A-{marker}"
+    email_a = f"race-head-a-{marker}@company.local"
+
+    async with _fresh_session(engine) as setup:
+        department = Department(name=department_name)
+        setup.add(department)
+        await setup.flush()
+        employee_a = Employee(
+            full_name="Race Head A",
+            personnel_number=personnel_number_a,
+            department_id=department.id,
+            position="Engineer",
+            hire_date=datetime.date(2024, 1, 1),
+            email=email_a,
+            work_schedule_type="standard",
+        )
+        setup.add(employee_a)
+        await setup.flush()
+        setup.add(Account(employee_id=employee_a.id, auth_type="ldap", role="employee"))
+        await setup.commit()
+        employee_a_id = employee_a.id
+        department_id = department.id
+
+    try:
+        async with AsyncExitStack() as stack:
+            session_1 = await stack.enter_async_context(_fresh_session(engine))
+            session_2 = await stack.enter_async_context(_fresh_session(engine))
+
+            deactivate_payload = EmployeeDeactivate(termination_date=datetime.date(2024, 6, 1))
+            assign_head_payload = DepartmentUpdate(
+                name=department_name, head_employee_id=employee_a_id
+            )
+
+            results = await _run_racing_pair(
+                employee_service.deactivate_employee(session_1, employee_a_id, deactivate_payload),
+                department_service.update_department(
+                    session_2, department_id, assign_head_payload
+                ),
+            )
+
+        successes = [r for r in results if not isinstance(r, Exception)]
+        failures = [r for r in results if isinstance(r, Exception)]
+
+        assert len(successes) == 1, f"expected exactly one success, got {results!r}"
+        assert len(failures) == 1, f"expected exactly one rejection, got {results!r}"
+        assert isinstance(failures[0], ValueError), failures[0]
+
+        async with _fresh_session(engine) as verify:
+            employee_a_row = await verify.get(Employee, employee_a_id)
+            department_row = await verify.get(Department, department_id)
+        assert not (
+            employee_a_row.employment_status == "terminated"
+            and department_row.head_employee_id == employee_a_id
+        )
+    finally:
+        async with _fresh_session(engine) as cleanup:
+            await cleanup.execute(delete(Account).where(Account.employee_id == employee_a_id))
+            # Взаимная ссылка (employees.department_id -> departments.id
+            # И, если гонку выиграло назначение руководителя, departments.
+            # head_employee_id -> employees.id) — ни одну из двух строк
+            # нельзя удалить первой без ошибки внешнего ключа. Разрываем
+            # ссылку подразделения на сотрудника явно, потом обе строки
+            # можно удалять в любом порядке.
+            await cleanup.execute(
+                update(Department)
+                .where(Department.name == department_name)
+                .values(head_employee_id=None)
+            )
+            await cleanup.execute(
+                delete(Employee).where(Employee.personnel_number == personnel_number_a)
             )
             await cleanup.execute(delete(Department).where(Department.name == department_name))
             await cleanup.commit()

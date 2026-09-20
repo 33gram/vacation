@@ -69,6 +69,31 @@ class EmployeeCreate(EmployeeCardFields):
         return self
 
 
+class EmployeeDeactivate(BaseModel):
+    """`POST /api/employees/{id}/deactivate` (`T-M1-12`, `FR-EMP-004`,
+    без части про фиксацию остатка — см. `T-M1-37`)."""
+
+    termination_date: datetime.date
+
+
+class ImportRowError(BaseModel):
+    """`POST /api/employees/import` (`T-M1-11`, `FR-EMP-003`). Отчёт
+    возвращается загрузившему его HR-администратору, которому эти
+    данные и так доступны — значения полей (`reason` может содержать
+    само значение ячейки) в ответе допустимы; в логи они не попадают
+    (см. `employee_router.py`)."""
+
+    row_number: int
+    field: str
+    reason: str
+
+
+class ImportSummary(BaseModel):
+    accepted_count: int
+    rejected_count: int
+    errors: list[ImportRowError]
+
+
 class EmployeeUpdate(EmployeeCardFields):
     """Правка карточки, включая способ входа (`T-M1-34`). Статус
     занятости (`employment_status`) сюда не входит — меняется только

@@ -448,6 +448,11 @@ export interface components {
             /** New Password */
             new_password?: string | null;
         };
+        /** ErrorDetail */
+        ErrorDetail: {
+            /** Detail */
+            detail: string | string[];
+        };
         /** HTTPValidationError */
         HTTPValidationError: {
             /** Detail */
@@ -766,6 +771,15 @@ export interface operations {
                 };
                 content?: never;
             };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
             /** @description Validation Error */
             422: {
                 headers: {
@@ -956,6 +970,15 @@ export interface operations {
                     "application/json": components["schemas"]["EmployeeOut"];
                 };
             };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
             /** @description Validation Error */
             422: {
                 headers: {
@@ -1053,6 +1076,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["EmployeeOut"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
             /** @description Validation Error */

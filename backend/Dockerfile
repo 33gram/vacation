@@ -9,6 +9,7 @@ COPY pyproject.toml ./
 COPY app ./app
 COPY alembic ./alembic
 COPY alembic.ini ./
+COPY scripts ./scripts
 
 ARG INSTALL_DEV=false
 RUN if [ "$INSTALL_DEV" = "true" ]; then \

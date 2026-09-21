@@ -320,6 +320,60 @@ async def test_password_change_rejects_weak_new_password(db_session, api_client)
     )
 
     assert response.status_code == 400
+    violations = response.json()["detail"]
+    assert isinstance(violations, list)
+    assert len(violations) > 1
+
+
+async def test_password_change_rejects_password_containing_employee_full_name(
+    db_session, api_client
+) -> None:
+    """T-M1-38, точка подключения 3 (`auth/router.change_password`):
+    контекст берётся у ТЕКУЩЕЙ учётной записи через её карточку
+    сотрудника (`_identity_context`), а не передаётся вызывающим."""
+    employee = await make_employee(
+        db_session, email="ivanov@company.local", full_name="Иванов Иван Иванович"
+    )
+    account = await make_account(
+        db_session,
+        employee_id=employee.id,
+        auth_type="local",
+        role="employee",
+        password_hash=hash_password(PASSWORD),
+    )
+
+    response = await api_client.post(
+        "/api/auth/password/change",
+        json={"current_password": PASSWORD, "new_password": "Ivanov2026!"},
+        headers=bearer_header(account),
+    )
+
+    assert response.status_code == 400
+    assert any("name" in v for v in response.json()["detail"])
+
+
+async def test_password_change_rejects_password_containing_service_account_login(
+    db_session, api_client
+) -> None:
+    """Симметрично тесту выше, для второй ветки `_identity_context`:
+    служебная запись без карточки (`employee_id is None`) сверяется по
+    `login`, а не по e-mail/ФИО, которых у неё нет."""
+    account = await make_account(
+        db_session,
+        login="svc-import",
+        auth_type="local",
+        role="hr_admin",
+        password_hash=hash_password(PASSWORD),
+    )
+
+    response = await api_client.post(
+        "/api/auth/password/change",
+        json={"current_password": PASSWORD, "new_password": "Svc-import1!"},
+        headers=bearer_header(account),
+    )
+
+    assert response.status_code == 400
+    assert any("name" in v for v in response.json()["detail"])
 
 
 async def test_password_change_rejects_ldap_only_account(db_session, api_client) -> None:

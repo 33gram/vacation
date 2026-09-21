@@ -41,6 +41,7 @@ from app.schemas.employee import (
     ImportRowError,
     ImportSummary,
 )
+from app.schemas.errors import ErrorDetail
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +62,12 @@ async def get_employees(
     return [EmployeeOut.model_validate(e) for e in employees]
 
 
-@router.post("", response_model=EmployeeOut, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "",
+    response_model=EmployeeOut,
+    status_code=status.HTTP_201_CREATED,
+    responses={400: {"model": ErrorDetail}},
+)
 async def create_employee(
     payload: EmployeeCreate,
     session: AsyncSession = Depends(get_db_session),
@@ -70,7 +76,7 @@ async def create_employee(
     try:
         employee = await employee_service.create_employee(session, payload)
     except WeakPasswordError as exc:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, exc.violations) from exc
     except ValueError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
     return EmployeeOut.model_validate(employee)
@@ -130,7 +136,7 @@ async def get_employee(
     return EmployeeOut.model_validate(employee)
 
 
-@router.put("/{employee_id}", response_model=EmployeeOut)
+@router.put("/{employee_id}", response_model=EmployeeOut, responses={400: {"model": ErrorDetail}})
 async def update_employee(
     employee_id: int,
     payload: EmployeeUpdate,
@@ -141,6 +147,12 @@ async def update_employee(
         employee = await employee_service.update_employee(session, employee_id, payload)
     except employee_service.EmployeeNotFoundError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+    except WeakPasswordError as exc:
+        # T-M1-38, PR review: до этой правки эндпоинт не ловил
+        # `WeakPasswordError` вовсе (только `create_employee` ловил) —
+        # переключение на локальный вход (`_apply_auth_type_change`,
+        # T-M1-34) со слабым паролем уходило клиенту как 500, не 400.
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, exc.violations) from exc
     except ValueError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
     return EmployeeOut.model_validate(employee)

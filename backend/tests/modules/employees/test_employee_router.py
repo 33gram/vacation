@@ -269,6 +269,34 @@ async def test_create_employee_local_auth_rejects_weak_password(db_session, api_
     )
 
     assert response.status_code == 400
+    # T-M1-38: "short" нарушает и длину, и состав символов, и входит в
+    # common_passwords.txt — тело ответа обязано перечислить их все
+    # (FR-AUTH-002 v1.8), а не только первое найденное нарушение.
+    violations = response.json()["detail"]
+    assert isinstance(violations, list)
+    assert len(violations) > 1
+
+
+async def test_create_employee_local_auth_rejects_password_containing_full_name(
+    db_session, api_client
+) -> None:
+    # T-M1-38, точка подключения 1 (`employee_service.create_employee`):
+    # контекст ФИО берётся из ТЕЛА запроса (карточка ещё не существует),
+    # а не из уже сохранённых данных — `_employee_payload`'s
+    # full_name по умолчанию — "Тестовый Сотрудник".
+    department = await make_department(db_session)
+    account = await _make_admin(db_session)
+
+    response = await api_client.post(
+        "/api/employees",
+        json=_employee_payload(
+            department_id=department.id, auth_type="local", initial_password="Тестовый1!"
+        ),
+        headers=bearer_header(account),
+    )
+
+    assert response.status_code == 400
+    assert any("name" in v for v in response.json()["detail"])
 
 
 async def test_create_employee_ldap_auth_rejects_password(db_session, api_client) -> None:
@@ -718,6 +746,40 @@ async def test_put_employee_switch_to_local_sets_password_and_forces_change(
     assert updated_account.must_change_password is True
     assert updated_account.local_password_hash is not None
     assert verify_password(MIN_PASSWORD, updated_account.local_password_hash)
+
+
+async def test_put_employee_switch_to_local_rejects_password_containing_full_name(
+    db_session, api_client
+) -> None:
+    """T-M1-38, точка подключения 2 (`_apply_auth_type_change`). До этой
+    задачи роутер не ловил `WeakPasswordError` на этом пути вовсе (ловил
+    только `create_employee`) — переключение на локальный вход со слабым
+    паролем уходило клиенту как необработанное исключение (500), а не
+    400. Отрицательный контроль на это выполнен вручную (временный
+    откат `except WeakPasswordError` в `employee_router.update_employee`
+    и повторный прогон этого теста показали 500 — см. тело коммита)."""
+    department = await make_department(db_session)
+    employee = await make_employee(
+        db_session, email="switch-to-local-name@company.local", full_name="Тестовый Сотрудник"
+    )
+    await make_account(db_session, employee_id=employee.id, role="employee", auth_type="ldap")
+    account = await _make_admin(db_session)
+
+    response = await api_client.put(
+        f"/api/employees/{employee.id}",
+        json=_employee_payload(
+            department_id=department.id,
+            personnel_number=employee.personnel_number,
+            email=employee.email,
+            full_name=employee.full_name,
+            auth_type="local",
+            new_password="Тестовый1!",
+        ),
+        headers=bearer_header(account),
+    )
+
+    assert response.status_code == 400
+    assert any("name" in v for v in response.json()["detail"])
 
 
 async def test_put_employee_staying_local_with_new_password_is_rejected(

@@ -75,6 +75,11 @@ services:
       - ../backend/app:/app/app
       - ../backend/alembic:/app/alembic
       - ../backend/tests:/app/tests
+      # `make openapi-client` (`scripts/export_openapi.py`) writes this
+      # file inside the container; `frontend`'s codegen step then reads
+      # it from the HOST. Without this mount the two see different
+      # files and the client silently regenerates from a stale schema.
+      - ../backend/openapi.json:/app/openapi.json
     ports:
       - "8000:8000"
 

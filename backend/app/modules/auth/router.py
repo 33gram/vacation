@@ -8,12 +8,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.security import hash_password, verify_password
 from app.db.session import get_db_session
 from app.models.account import Account
+from app.models.employee import Employee
 from app.modules.auth import ldap_service, local_service
 from app.modules.auth.embedded_mode import is_embedded_mode
 from app.modules.auth.password_policy import WeakPasswordError, validate_password_strength
 from app.modules.auth.rbac import get_current_account
 from app.modules.auth.tokens import AuthResult
 from app.schemas.auth import LoginRequest, MeResponse, PasswordChangeRequest, TokenResponse
+from app.schemas.errors import ErrorDetail
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
@@ -60,7 +62,28 @@ async def login_local(
     return _to_token_response(result)
 
 
-@router.post("/password/change", status_code=status.HTTP_204_NO_CONTENT, response_model=None)
+async def _identity_context(
+    session: AsyncSession, account: Account
+) -> dict[str, str | None]:
+    """Контекст для `validate_password_strength` берётся у ТЕКУЩЕЙ
+    учётной записи (T-M1-38). Ровно одно из `employee_id`/`login`
+    задано (`ck_accounts_employee_or_login`): служебная запись без
+    карточки сотрудника не имеет ни e-mail, ни ФИО, и правило про них
+    для неё просто не проверяется — явно, веткой ниже, а не потому что
+    `Employee` окажется `None` и исключение случайно не поднимется."""
+    if account.employee_id is None:
+        return {"login": account.login, "email": None, "full_name": None}
+    employee = await session.get(Employee, account.employee_id)
+    assert employee is not None, "accounts.employee_id без карточки — нарушен инвариант"
+    return {"login": None, "email": employee.email, "full_name": employee.full_name}
+
+
+@router.post(
+    "/password/change",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_model=None,
+    responses={400: {"model": ErrorDetail}},
+)
 async def change_password(
     payload: PasswordChangeRequest,
     account: Account = Depends(get_current_account),
@@ -77,9 +100,11 @@ async def change_password(
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid current password")
 
     try:
-        validate_password_strength(payload.new_password)
+        validate_password_strength(
+            payload.new_password, **await _identity_context(session, account)
+        )
     except WeakPasswordError as exc:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, exc.violations) from exc
 
     account.local_password_hash = hash_password(payload.new_password)
     account.must_change_password = False

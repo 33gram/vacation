@@ -6,6 +6,7 @@ from __future__ import annotations
 from app.core.config import get_settings
 from app.core.crypto import encrypt
 from app.core.security import hash_password
+from app.main import app
 from app.models.ldap_settings import LdapSettings
 from tests.ldap_guard import LDAP_TEST_HOST, LDAP_TEST_PORT, requires_ldap
 from tests.modules.auth.factories import bearer_header, make_account, make_employee
@@ -19,6 +20,16 @@ def _assert_denied_with_hr_message(response) -> None:
     # приёмки, поэтому проверяется он, а не только код ответа.
     assert response.status_code == 403
     assert "HR-администратор" in response.json()["detail"]
+
+
+def test_password_change_fields_are_marked_write_only() -> None:
+    # NFR-SEC-001, симметрично `test_employee_password_fields_are_
+    # marked_write_only` (PR #140 review, п. 1 коммита 5): пароль не
+    # должен уходить в OpenAPI-схему (и сгенерированный TS-клиент) как
+    # обычная строка.
+    schema = app.openapi()["components"]["schemas"]["PasswordChangeRequest"]["properties"]
+    for field_name in ("current_password", "new_password"):
+        assert schema[field_name].get("writeOnly") is True
 
 
 async def _get_me_and_admin_ldap_settings(api_client, headers):

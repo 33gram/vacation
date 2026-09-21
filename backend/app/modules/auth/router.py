@@ -96,17 +96,19 @@ async def change_password(
             status.HTTP_400_BAD_REQUEST,
             "Only local accounts have a password to change",
         )
-    if not verify_password(payload.current_password, account.local_password_hash):
+    if not verify_password(
+        payload.current_password.get_secret_value(), account.local_password_hash
+    ):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid current password")
 
     try:
         validate_password_strength(
-            payload.new_password, **await _identity_context(session, account)
+            payload.new_password.get_secret_value(), **await _identity_context(session, account)
         )
     except WeakPasswordError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, exc.violations) from exc
 
-    account.local_password_hash = hash_password(payload.new_password)
+    account.local_password_hash = hash_password(payload.new_password.get_secret_value())
     account.must_change_password = False
     await session.commit()
 

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, SecretStr
 
 from app.modules.auth.password_policy import MAX_PASSWORD_LENGTH_CHARS
 
@@ -36,5 +36,9 @@ class MeResponse(BaseModel):
 
 
 class PasswordChangeRequest(BaseModel):
-    current_password: str = Field(max_length=MAX_PASSWORD_LENGTH_CHARS)
-    new_password: str = Field(max_length=MAX_PASSWORD_LENGTH_CHARS)
+    # SecretStr — симметрично `EmployeeCreate.initial_password`/
+    # `EmployeeUpdate.new_password` (T-M1-33, PR #140 review, п. 1
+    # коммита 5): маскирует repr()/str(), чтобы случайный `logger.info
+    # (payload)` не утёк пароль в лог целиком.
+    current_password: SecretStr = Field(max_length=MAX_PASSWORD_LENGTH_CHARS)
+    new_password: SecretStr = Field(max_length=MAX_PASSWORD_LENGTH_CHARS)

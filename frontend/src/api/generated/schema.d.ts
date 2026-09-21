@@ -589,9 +589,15 @@ export interface components {
         };
         /** PasswordChangeRequest */
         PasswordChangeRequest: {
-            /** Current Password */
+            /**
+             * Current Password
+             * Format: password
+             */
             current_password: string;
-            /** New Password */
+            /**
+             * New Password
+             * Format: password
+             */
             new_password: string;
         };
         /** ProductionCalendarDayIn */

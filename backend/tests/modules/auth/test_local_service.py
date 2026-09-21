@@ -5,7 +5,7 @@ import pytest
 from app.core.security import hash_password
 from app.modules.auth.exceptions import AccessDeniedError, AuthenticationError
 from app.modules.auth.local_service import authenticate_local
-from app.modules.auth.password_policy import DEFAULT_MAX_FAILED_ATTEMPTS
+from app.modules.auth.password_policy import DEFAULT_MAX_FAILED_ATTEMPTS, MAX_PASSWORD_BYTES
 from tests.modules.auth.factories import make_account, make_employee
 
 PASSWORD = "CorrectHorseBatteryStaple"
@@ -82,6 +82,66 @@ async def test_empty_password_is_rejected_even_for_unknown_login(db_session) -> 
     # с чем сравнить.
     with pytest.raises(AuthenticationError):
         await authenticate_local(db_session, "does-not-exist@company.local", "")
+
+
+async def test_oversized_password_is_rejected_before_verifying_the_hash(
+    db_session, monkeypatch
+) -> None:
+    # PR #140 review (второй круг), замечание 1: `MAX_PASSWORD_BYTES`
+    # раньше проверялся только в `validate_password_strength` (задание/
+    # смена пароля), которую вход не вызывает — `authenticate_local` шёл
+    # прямо в `bcrypt.checkpw` (через `verify_password`). Патчим
+    # `verify_password` так, чтобы падать, если его вообще вызвали:
+    # обычный неверный пароль тоже поднял бы `AuthenticationError`, не
+    # отличая этот случай от отклонения по длине — тест должен
+    # доказывать именно «не дошло до сравнения хэшей», а не просто
+    # «не совпало». См. также
+    # `test_boundary_password_with_appended_tail_is_rejected` ниже —
+    # закрываемая этой правкой живая коллизия.
+    def _fail_if_called(*_args: object, **_kwargs: object) -> bool:
+        raise AssertionError("verify_password must not run for an oversized password")
+
+    monkeypatch.setattr("app.modules.auth.local_service.verify_password", _fail_if_called)
+
+    employee = await make_employee(db_session, email="oversized-pw@company.local")
+    await make_account(
+        db_session,
+        employee_id=employee.id,
+        auth_type="local",
+        role="employee",
+        password_hash=hash_password(PASSWORD),
+    )
+    oversized = "a" * (MAX_PASSWORD_BYTES + 1)
+
+    with pytest.raises(AuthenticationError):
+        await authenticate_local(db_session, "oversized-pw@company.local", oversized)
+
+
+async def test_boundary_password_with_appended_tail_is_rejected(db_session) -> None:
+    # PR #140 review (второй круг), замечание 1, живая коллизия: пароль
+    # РОВНО на 72-байтовой границе легален и должен пройти как есть. До
+    # этой правки тот же пароль с ЛЮБЫМ хвостом после байта 72 тоже
+    # успешно аутентифицировал ту же учётную запись, потому что
+    # `bcrypt.checkpw` усекает вход так же, как `bcrypt.hashpw` при
+    # хэшировании — два разных по тексту пароля открывали один аккаунт.
+    boundary_password = "Aa1!" * 18  # ровно 72 ASCII-байта
+    assert len(boundary_password.encode("utf-8")) == MAX_PASSWORD_BYTES
+    employee = await make_employee(db_session, email="boundary-pw@company.local")
+    await make_account(
+        db_session,
+        employee_id=employee.id,
+        auth_type="local",
+        role="employee",
+        password_hash=hash_password(boundary_password),
+    )
+
+    result = await authenticate_local(db_session, "boundary-pw@company.local", boundary_password)
+    assert result.access_token
+
+    with pytest.raises(AuthenticationError):
+        await authenticate_local(
+            db_session, "boundary-pw@company.local", boundary_password + "EXTRA_TAIL"
+        )
 
 
 async def test_wrong_password_raises_authentication_error(db_session) -> None:

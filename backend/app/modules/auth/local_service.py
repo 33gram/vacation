@@ -15,7 +15,11 @@ from app.models.account import Account
 from app.models.employee import Employee
 from app.modules.auth.access_control import enforce_access
 from app.modules.auth.exceptions import AccessDeniedError, AuthenticationError
-from app.modules.auth.password_policy import DEFAULT_LOCKOUT_DURATION, DEFAULT_MAX_FAILED_ATTEMPTS
+from app.modules.auth.password_policy import (
+    DEFAULT_LOCKOUT_DURATION,
+    DEFAULT_MAX_FAILED_ATTEMPTS,
+    MAX_PASSWORD_BYTES,
+)
 from app.modules.auth.repository import (
     get_account_by_employee_id,
     get_account_by_login,
@@ -58,6 +62,18 @@ async def authenticate_local(session: AsyncSession, login: str, password: str) -
     if not password or not password.strip():
         # Пустой/пробельный пароль отклоняется до любого обращения к БД или
         # каталогу (FR-AUTH-004) — см. ldap_service.authenticate_via_ldap.
+        raise AuthenticationError("Invalid login or password")
+
+    if len(password.encode("utf-8")) > MAX_PASSWORD_BYTES:
+        # PR #140 review (второй круг), FR-AUTH-002 (раздел 13, п. 20):
+        # `MAX_PASSWORD_BYTES` раньше проверялся только при задании/смене
+        # пароля (`validate_password_strength`), которую вход не
+        # вызывает — `verify_password`/`bcrypt.checkpw` ниже усекает вход
+        # так же, как хэширование усекает пароль при задании. Без этой
+        # проверки легальный пароль ровно на границе плюс произвольный
+        # хвост после неё аутентифицировал бы ту же учётную запись.
+        # Отказ — тем же сообщением и до обращения к БД/хэшу, чтобы не
+        # подсказывать подбирающему, что именно превышено.
         raise AuthenticationError("Invalid login or password")
 
     account, employee = await _resolve_local_account(session, login)

@@ -8,6 +8,7 @@ from app.core.crypto import encrypt
 from app.core.security import hash_password
 from app.main import app
 from app.models.ldap_settings import LdapSettings
+from app.modules.auth.password_policy import MAX_PASSWORD_BYTES
 from tests.ldap_guard import LDAP_TEST_HOST, LDAP_TEST_PORT, requires_ldap
 from tests.modules.auth.factories import bearer_header, make_account, make_employee
 
@@ -136,6 +137,77 @@ async def test_login_local_disabled_account_returns_403_with_hr_message(
     )
 
     _assert_denied_with_hr_message(response)
+
+
+async def test_login_local_rejects_boundary_password_with_appended_tail(
+    db_session, api_client
+) -> None:
+    """PR #140 review (второй круг), замечание 1, живым HTTP: пароль
+    РОВНО на 72-байтовой границе легален и проходит вход как есть. До
+    этой правки тот же пароль с ЛЮБЫМ хвостом после байта 72 тоже
+    возвращал 200 и токен на ту же учётную запись — `LoginRequest.
+    password`'s `max_length=128` ограничивает символы, не байты, а
+    `authenticate_local` уходил прямо в `bcrypt.checkpw`, который
+    усекает вход так же, как хэширование."""
+    boundary_password = "Aa1!" * 18  # ровно 72 ASCII-байта
+    employee = await make_employee(db_session, email="boundary-http@company.local")
+    await make_account(
+        db_session,
+        employee_id=employee.id,
+        auth_type="local",
+        role="employee",
+        password_hash=hash_password(boundary_password),
+    )
+
+    legal = await api_client.post(
+        "/api/auth/login/local",
+        json={"login": "boundary-http@company.local", "password": boundary_password},
+    )
+    assert legal.status_code == 200
+
+    with_tail = await api_client.post(
+        "/api/auth/login/local",
+        json={
+            "login": "boundary-http@company.local",
+            "password": boundary_password + "EXTRA_TAIL",
+        },
+    )
+    assert with_tail.status_code == 401
+
+
+async def test_login_local_rejects_cyrillic_password_over_the_byte_boundary(
+    db_session, api_client
+) -> None:
+    # Кириллица — 2 байта на символ в UTF-8: граница в 72 байта достигается
+    # на 36 символах, а не на 128 (символьный лимит схемы `LoginRequest.
+    # password`). 37-символьный пароль легко проходит символьный лимит, но
+    # уже превышает байтовую границу — без байтовой проверки на входе это
+    # был бы обход именно для кириллических/многобайтовых паролей.
+    boundary_password = "п" * 36  # ровно 72 байта в UTF-8
+    assert len(boundary_password.encode("utf-8")) == MAX_PASSWORD_BYTES
+    employee = await make_employee(db_session, email="cyrillic-boundary@company.local")
+    await make_account(
+        db_session,
+        employee_id=employee.id,
+        auth_type="local",
+        role="employee",
+        password_hash=hash_password(boundary_password),
+    )
+
+    legal = await api_client.post(
+        "/api/auth/login/local",
+        json={"login": "cyrillic-boundary@company.local", "password": boundary_password},
+    )
+    assert legal.status_code == 200
+
+    with_tail = await api_client.post(
+        "/api/auth/login/local",
+        json={
+            "login": "cyrillic-boundary@company.local",
+            "password": boundary_password + "х",  # +2 байта, 37 символов — всё ещё «короткий»
+        },
+    )
+    assert with_tail.status_code == 401
 
 
 # --- POST /api/auth/login (FR-AUTH-003: embedded mode dispatch) -------

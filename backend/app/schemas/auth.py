@@ -14,7 +14,11 @@ class LoginRequest(BaseModel):
     # запас поверх точной границы в 72 БАЙТА (`password_policy.
     # MAX_PASSWORD_BYTES`), а не сама эта граница: здесь только символы
     # отсекаются до бизнес-логики, точная проверка в байтах — в ней.
-    password: str = Field(max_length=MAX_PASSWORD_LENGTH_CHARS)
+    # SecretStr (PR #140 review, третий круг) — маскирует repr()/str(),
+    # симметрично `PasswordChangeRequest` и схемам карточки сотрудника;
+    # коммит 4b47556 объявил эту асимметрию закрытой, пропустив именно
+    # это поле — самое массовое из всех (каждый `/api/auth/login*`).
+    password: SecretStr = Field(max_length=MAX_PASSWORD_LENGTH_CHARS)
 
 
 class TokenResponse(BaseModel):

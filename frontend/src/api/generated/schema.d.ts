@@ -567,7 +567,10 @@ export interface components {
         LoginRequest: {
             /** Login */
             login: string;
-            /** Password */
+            /**
+             * Password
+             * Format: password
+             */
             password: string;
         };
         /** MeResponse */

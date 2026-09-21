@@ -33,6 +33,16 @@ def test_password_change_fields_are_marked_write_only() -> None:
         assert schema[field_name].get("writeOnly") is True
 
 
+def test_login_password_field_is_marked_write_only() -> None:
+    # PR #140 review, третий круг: `LoginRequest.password` — единственное
+    # парольное поле, пропущенное коммитом 4b47556, когда тот объявил
+    # асимметрию между схемами закрытой. Проверяется именно схема
+    # OpenAPI (`writeOnly`), а не тип в Python — тип мог смениться на
+    # `SecretStr` и всё равно не попасть в схему без `Field(...)`.
+    schema = app.openapi()["components"]["schemas"]["LoginRequest"]["properties"]
+    assert schema["password"].get("writeOnly") is True
+
+
 async def _get_me_and_admin_ldap_settings(api_client, headers):
     me_response = await api_client.get("/api/auth/me", headers=headers)
     admin_response = await api_client.get("/api/admin/ldap-settings", headers=headers)

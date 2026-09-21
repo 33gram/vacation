@@ -44,10 +44,12 @@ async def login(
     if await is_embedded_mode(session) or await local_service.uses_local_auth(
         session, payload.login
     ):
-        result = await local_service.authenticate_local(session, payload.login, payload.password)
+        result = await local_service.authenticate_local(
+            session, payload.login, payload.password.get_secret_value()
+        )
     else:
         result = await ldap_service.authenticate_via_ldap(
-            session, payload.login, payload.password
+            session, payload.login, payload.password.get_secret_value()
         )
     return _to_token_response(result)
 
@@ -58,7 +60,9 @@ async def login_local(
 ) -> TokenResponse:
     """FR-AUTH-002: всегда локальный вход, независимо от состояния LDAP —
     служебные записи и сотрудники с явно выбранным локальным паролем."""
-    result = await local_service.authenticate_local(session, payload.login, payload.password)
+    result = await local_service.authenticate_local(
+        session, payload.login, payload.password.get_secret_value()
+    )
     return _to_token_response(result)
 
 

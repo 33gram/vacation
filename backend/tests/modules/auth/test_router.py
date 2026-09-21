@@ -155,6 +155,21 @@ async def test_login_rejects_empty_password_before_ldap_bind(db_session, api_cli
     assert response.status_code == 401
 
 
+async def test_login_rejects_oversized_password_before_hashing(api_client) -> None:
+    """PR #140 review, ПРОВЕРКА п. 2: запрос с мегабайтным паролем
+    отсекается схемой (`LoginRequest.password`'s `max_length`) до
+    диспетчеризации на LDAP/локальную аутентификацию — не доходит до
+    bcrypt-хэширования вовсе. Нет `db_session`: запрос отклоняется на
+    уровне валидации, до первого обращения к БД."""
+    oversized_password = "A" * (2 * 1024 * 1024)
+
+    response = await api_client.post(
+        "/api/auth/login", json={"login": "ivanov@company.local", "password": oversized_password}
+    )
+
+    assert response.status_code == 422
+
+
 @requires_ldap
 async def test_login_uses_ldap_when_active_settings_exist(db_session, api_client) -> None:
     settings_row = LdapSettings(

@@ -8,6 +8,12 @@ FR-AUTH-002, NFR-SEC-004).
 поднимает их одним `WeakPasswordError` (FR-AUTH-002 v1.8: «показывать
 все невыполненные требования сразу, а не первое из них») — не
 возвращается после первого найденного нарушения.
+
+Верхняя граница длины (FR-AUTH-002 v1.9, `MAX_PASSWORD_BYTES`) не
+косметическая: bcrypt хэширует только первые 72 БАЙТА пароля, дальше
+молча обрезает — без этой проверки два разных пароля с общим
+72-байтовым началом открывали бы одну и ту же учётную запись (см.
+докстринг `MAX_PASSWORD_BYTES`).
 """
 
 from __future__ import annotations
@@ -19,6 +25,28 @@ from pathlib import Path
 DEFAULT_MIN_PASSWORD_LENGTH = 8
 DEFAULT_MAX_FAILED_ATTEMPTS = 5
 DEFAULT_LOCKOUT_DURATION = datetime.timedelta(minutes=15)
+
+# PR #140 review: bcrypt (`core/security.py`, NFR-SEC-004) hashes only
+# the first 72 BYTES of its input — a longer password is silently
+# truncated there, not rejected, so two different passwords sharing a
+# 72-byte UTF-8 prefix open the same account. Confirmed live before
+# this fix: a 5003-character password, its 72-byte prefix, and that
+# prefix with a different tail all satisfied `verify_password` against
+# the same hash. Checked in BYTES, not characters (`len(password) <
+# min_length` above is correct in characters for the LOWER bound, but
+# wrong here — the 72-byte ceiling is about bcrypt's input size, and a
+# character is 1-4 UTF-8 bytes depending on script; ~36 characters for
+# Cyrillic, not 72).
+MAX_PASSWORD_BYTES = 72
+
+# pydantic `max_length` on password fields in `schemas/*.py` — a coarse
+# guard so a request with a multi-megabyte password is rejected by
+# validation before it ever reaches hashing, not the authoritative
+# 72-byte rule itself (that's `MAX_PASSWORD_BYTES`, checked in bytes,
+# above). Deliberately well above 72: a tight character bound would
+# risk rejecting a byte-valid multi-byte-script password before the
+# byte check even runs.
+MAX_PASSWORD_LENGTH_CHARS = 128
 
 # Токены ФИО короче этого не проверяются: короткие фамилии/инициалы
 # («Ли», «О.») иначе блокировали бы огромную часть словаря паролей
@@ -113,6 +141,13 @@ def validate_password_strength(
 
     if len(password) < min_length:
         violations.append(f"Password must be at least {min_length} characters long")
+
+    if len(password.encode("utf-8")) > MAX_PASSWORD_BYTES:
+        violations.append(
+            f"Password must not exceed {MAX_PASSWORD_BYTES} bytes when UTF-8 encoded "
+            "(bcrypt only hashes the first 72 bytes of a password; for Cyrillic text "
+            "this is roughly 36 characters, not 72)"
+        )
 
     class_count = sum(
         [

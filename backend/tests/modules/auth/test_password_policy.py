@@ -1,10 +1,11 @@
 """`password_policy.validate_password_strength` (T-M1-25/T-M1-38,
-FR-AUTH-002 v1.8)."""
+FR-AUTH-002 v1.9)."""
 
 from __future__ import annotations
 
 import pytest
 
+from app.core.security import hash_password, verify_password
 from app.modules.auth import password_policy
 from app.modules.auth.password_policy import WeakPasswordError, validate_password_strength
 
@@ -25,6 +26,82 @@ def test_password_below_minimum_length_is_rejected_with_only_that_violation() ->
 
     assert len(exc_info.value.violations) == 1
     assert "8 characters" in exc_info.value.violations[0]
+
+
+# --- Верхняя граница длины: усечение bcrypt (PR #140 review) ----------------
+
+
+def test_password_exceeding_72_bytes_is_rejected_in_isolation() -> None:
+    # 76 ASCII-байт (= 76 символов), все четыре класса, не в списке —
+    # изолирует именно правило верхней границы от остальных.
+    password = "Aa1!" * 19
+    assert len(password.encode("utf-8")) == 76
+
+    with pytest.raises(WeakPasswordError) as exc_info:
+        validate_password_strength(password)
+
+    assert len(exc_info.value.violations) == 1
+    assert "72 bytes" in exc_info.value.violations[0]
+
+
+def test_password_of_exactly_72_bytes_is_accepted() -> None:
+    # Граница включительно: 72 байта — ещё ПОЛНОСТЬЮ участвуют в
+    # хэше bcrypt, отклонять их нечего.
+    password = "Aa1!" * 18
+    assert len(password.encode("utf-8")) == 72
+
+    validate_password_strength(password)
+
+
+def test_cyrillic_password_under_72_characters_can_still_exceed_72_bytes() -> None:
+    """Кириллица — 2 байта на символ в UTF-8: 42 символа здесь дают 84
+    байта, хотя формально «меньше 72» по количеству СИМВОЛОВ. Проверка
+    в символах эту находку ревью пропустила бы — граница именно в
+    байтах (см. `MAX_PASSWORD_BYTES`)."""
+    password = "Иванов" * 7
+    assert len(password) == 42
+    assert len(password.encode("utf-8")) == 84
+
+    with pytest.raises(WeakPasswordError) as exc_info:
+        validate_password_strength(password)
+
+    assert any("72 bytes" in v for v in exc_info.value.violations)
+
+
+def test_length_upper_bound_is_required_to_reject_the_overlong_password(monkeypatch) -> None:
+    """Отрицательный контроль для трёх тестов выше: без проверки
+    (`MAX_PASSWORD_BYTES` эффективно снят) 76-байтовый пароль, который
+    больше ничего не нарушает, проходит — то есть закрывает находку
+    именно эта проверка, а не какое-то из уже существующих правил."""
+    monkeypatch.setattr(password_policy, "MAX_PASSWORD_BYTES", 10**6)
+
+    validate_password_strength("Aa1!" * 19)  # не поднимает — без проверки принят
+
+
+def test_overlong_password_that_would_collide_under_bcrypt_is_rejected() -> None:
+    """ГЛАВНОЕ (PR #140 review, ПРОВЕРКА п. 1). bcrypt сам по себе
+    остаётся усекающим — это неизменное поведение библиотеки
+    (`core/security.py`), не то, что политика паролей может починить;
+    альтернатива («предварительно хэшировать SHA-256») рассмотрена и
+    отклонена (`requirements.md` §13, п. 17). Первая часть теста
+    показывает: коллизия реальна на уровне bcrypt как таковом —
+    5003-символьный пароль, его 72-байтовый префикс и тот же префикс с
+    другим хвостом аутентифицируют один и тот же хэш. Вторая часть —
+    почему это больше не эксплуатируется через приложение: длиннее
+    72 байт пароль теперь нельзя ЗАДАТЬ вовсе (T-M1-38 подключает эту
+    проверку на всех точках входа), а не только «неудобно менять»."""
+    long_password = "A" * 5003
+    password_hash = hash_password(long_password)
+    prefix_72_bytes = long_password.encode("utf-8")[:72].decode("utf-8")
+    prefix_with_different_tail = prefix_72_bytes + "DIFFERENT_TAIL_XYZ"
+
+    assert verify_password(long_password, password_hash)
+    assert verify_password(prefix_72_bytes, password_hash)
+    assert verify_password(prefix_with_different_tail, password_hash)
+
+    with pytest.raises(WeakPasswordError) as exc_info:
+        validate_password_strength(long_password)
+    assert any("72 bytes" in v for v in exc_info.value.violations)
 
 
 # --- Состав символов (FR-AUTH-002 v1.8) -------------------------------------

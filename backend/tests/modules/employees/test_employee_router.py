@@ -22,7 +22,10 @@ from tests.modules.auth.factories import (
     make_employee,
 )
 
-MIN_PASSWORD = "CorrectHorseBatteryStaple"
+# FR-AUTH-002 v1.8: минимум 8 символов и три из четырёх классов —
+# оригинальный "CorrectHorseBatteryStaple" (только строчные+заглавные)
+# больше не проходит состав символов.
+MIN_PASSWORD = "Zqx9!Trvb"
 
 
 def test_employee_password_fields_are_marked_write_only() -> None:

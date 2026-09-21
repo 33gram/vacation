@@ -149,12 +149,29 @@ def validate_password_strength(
             "this is roughly 36 characters, not 72)"
         )
 
+    # PR #140 review: пробел (в т.ч. неразрывный — прилетает при
+    # копировании из офисных редакторов) запрещён отдельным критерием,
+    # а не молча учитывается как «специальный символ» в составе ниже —
+    # `str.isspace()` покрывает пробел, табуляцию, перевод строки и
+    # неразрывный пробел (U+00A0) одним вызовом.
+    if any(c.isspace() for c in password):
+        violations.append("Password must not contain whitespace characters")
+
+    # Специальный символ определяется через отрицание («не буква, не
+    # цифра, не пробел»), а не перечнем допустимых символов (PR #140
+    # review): перечень пришлось бы показывать в подсказке интерфейса,
+    # и он лишал бы статуса спецсимвола всё, что в него не попало
+    # («№», «±», «€», …). Без вычитания пробела из этого класса пароль
+    # вида "abcdefg1 " (строчные буквы, цифра, завершающий пробел)
+    # набирал бы три класса из четырёх, не содержа ни одного НАСТОЯЩЕГО
+    # спецсимвола — пробел уже наказан отдельным критерием выше, здесь
+    # он просто не в счёт.
     class_count = sum(
         [
             any(c.islower() for c in password),
             any(c.isupper() for c in password),
             any(c.isdigit() for c in password),
-            any(not c.isalnum() for c in password),
+            any(not c.isalnum() and not c.isspace() for c in password),
         ]
     )
     if class_count < 3:

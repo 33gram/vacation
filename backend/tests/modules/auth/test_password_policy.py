@@ -104,7 +104,7 @@ def test_overlong_password_that_would_collide_under_bcrypt_is_rejected() -> None
     assert any("72 bytes" in v for v in exc_info.value.violations)
 
 
-# --- Состав символов (FR-AUTH-002 v1.8) -------------------------------------
+# --- Состав символов (FR-AUTH-002 v1.9) -------------------------------------
 
 
 def test_password_with_only_lowercase_letters_is_rejected() -> None:
@@ -112,6 +112,48 @@ def test_password_with_only_lowercase_letters_is_rejected() -> None:
         validate_password_strength("qwertyui")
 
     assert any("three of" in v for v in exc_info.value.violations)
+
+
+def test_password_with_trailing_space_is_rejected_by_composition() -> None:
+    """PR #140 review: до правки пробел засчитывался как «специальный
+    символ» («не буква и не цифра»), и "abcdefg1 " набирал три класса
+    из четырёх (строчные, цифра, «спецсимвол» = пробел) без единого
+    настоящего спецсимвола. Теперь пробел не в счёт — остаются только
+    строчные буквы и цифра, два класса, состав не пройден. Отдельно
+    от этого пароль нарушает и новый критерий «без пробелов» —
+    показывать оба нарушения сразу и есть цель FR-AUTH-002 v1.8."""
+    with pytest.raises(WeakPasswordError) as exc_info:
+        validate_password_strength("abcdefg1 ")
+
+    violations = exc_info.value.violations
+    assert any("three of" in v for v in violations)
+    assert any("whitespace" in v for v in violations)
+
+
+def test_password_with_tab_is_rejected() -> None:
+    with pytest.raises(WeakPasswordError) as exc_info:
+        validate_password_strength("Ab1!Ab\t12")
+
+    assert any("whitespace" in v for v in exc_info.value.violations)
+
+
+def test_password_with_non_breaking_space_is_rejected() -> None:
+    # Неразрывный пробел (U+00A0) — прилетает при копировании пароля из
+    # офисных редакторов, а не только с обычной клавиатуры.
+    with pytest.raises(WeakPasswordError) as exc_info:
+        validate_password_strength("Ab1!Ab 12")
+
+    assert any("whitespace" in v for v in exc_info.value.violations)
+
+
+def test_numero_sign_counts_as_a_special_character() -> None:
+    """PR #140 review: «не вводить перечень допустимых спецсимволов» —
+    «№» не входит ни в один правдоподобный перечень, но обязан
+    засчитываться как спецсимвол через отрицание («не буква, не цифра,
+    не пробел»). Пароль принимается ЦЕЛИКОМ (не только состав) — 8
+    символов, 4 класса, не в списке распространённых, без контекста
+    личности."""
+    validate_password_strength("Пароль1№")
 
 
 def test_password_meeting_composition_can_still_be_a_common_password() -> None:

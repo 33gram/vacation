@@ -100,6 +100,18 @@ async def change_password(
             status.HTTP_400_BAD_REQUEST,
             "Only local accounts have a password to change",
         )
+    # PR #140 review (третий круг, замечание 2в): `current_password`
+    # намеренно НЕ ограничен `MAX_PASSWORD_BYTES`, в отличие от входа
+    # (`local_service.authenticate_local`) и `new_password` ниже.
+    # Отличие оправдано: вызывающий уже аутентифицирован (`Depends(
+    # get_current_account)`), а `account.local_password_hash` по
+    # построению никогда не хэширован из пароля длиннее 72 байт — все
+    # четыре места, где приложение вызывает `hash_password` (здесь,
+    # `bootstrap.py`, `employee_service.py` × 2), проверяют это ДО
+    # хэширования. Усечение bcrypt при сверке здесь не может дать
+    # совпадения, которого не было бы и без усечения: хранимому хэшу
+    # соответствуют только первые ≤72 байта, а больше 72 байт от
+    # `current_password` bcrypt и не увидит.
     if not verify_password(
         payload.current_password.get_secret_value(), account.local_password_hash
     ):

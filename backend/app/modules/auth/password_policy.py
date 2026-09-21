@@ -48,10 +48,21 @@ MAX_PASSWORD_BYTES = 72
 # byte check even runs.
 MAX_PASSWORD_LENGTH_CHARS = 128
 
-# Токены ФИО короче этого не проверяются: короткие фамилии/инициалы
-# («Ли», «О.») иначе блокировали бы огромную часть словаря паролей
-# случайными совпадениями, а не защищали от использования имени.
-_MIN_NAME_TOKEN_LENGTH = 4
+# PR #140 review: части ФИО от этой длины запрещены В ЛЮБОМ МЕСТЕ
+# пароля — как подстрока где угодно; короче — см.
+# `_SHORT_NAME_TOKEN_MIN_LENGTH` ниже (только начало пароля, не любое
+# место: как подстрока где угодно они заблокировали бы огромную долю
+# обычных паролей случайными совпадениями).
+_LONG_NAME_TOKEN_LENGTH = 4
+
+# Токены длиной 2–3 символа («Ли», «Пак», «Ким») запрещены только КАК
+# НАЧАЛО пароля (см. `_starts_with_word_boundary`) — это ловит именно
+# распространённый слабый пароль вида «короткая фамилия + цифры», не
+# трогая обычные слова, которые случайно начинаются с тех же букв.
+# Токены короче этого (одна буква — инициал вида «О.») не проверяются
+# вовсе: с ними совпадений было бы слишком много, а сигнала — почти
+# нет.
+_SHORT_NAME_TOKEN_MIN_LENGTH = 2
 
 _COMMON_PASSWORDS_PATH = Path(__file__).resolve().parent / "common_passwords.txt"
 
@@ -117,8 +128,38 @@ def _contains_case_insensitive(password_lower: str, needle: str) -> bool:
     return bool(needle) and needle in password_lower
 
 
+def _starts_with_word_boundary(password_lower: str, needle: str) -> bool:
+    """`password_lower` начинается с `needle`, и сразу за ним — конец
+    пароля или НЕ буква (PR #140 review). Без этого условия короткий
+    токен вроде «ли» (→ транслитерация «li») ловил бы не только пароли
+    вида «Ли123456!» (после «li» — цифра, граница есть, это и нужно
+    поймать), но и обычные слова вроде «Lightning7!» («li» — начало
+    слова «lightning», после «li» идёт «g», это НЕ совпадение с
+    фамилией, а совпадение первых двух букв случайного слова)."""
+    needle = needle.strip().lower()
+    if not needle or not password_lower.startswith(needle):
+        return False
+    if len(password_lower) == len(needle):
+        return True
+    return not password_lower[len(needle)].isalpha()
+
+
 def _full_name_tokens(full_name: str) -> list[str]:
-    return [tok for tok in full_name.split() if len(tok) >= _MIN_NAME_TOKEN_LENGTH]
+    """Части ФИО от `_LONG_NAME_TOKEN_LENGTH` символов — проверяются
+    как подстрока в любом месте пароля. Контракт `full_name` (`plan.md`
+    §4): хранится одной строкой, части — по пробельным символам, тем же
+    `str.split()`, что и здесь."""
+    return [tok for tok in full_name.split() if len(tok) >= _LONG_NAME_TOKEN_LENGTH]
+
+
+def _full_name_short_tokens(full_name: str) -> list[str]:
+    """Части ФИО длиной 2–3 символа — проверяются только как начало
+    пароля, см. `_starts_with_word_boundary`."""
+    return [
+        tok
+        for tok in full_name.split()
+        if _SHORT_NAME_TOKEN_MIN_LENGTH <= len(tok) < _LONG_NAME_TOKEN_LENGTH
+    ]
 
 
 def validate_password_strength(
@@ -188,12 +229,23 @@ def validate_password_strength(
         if _contains_case_insensitive(password_lower, local_part):
             contains_identity = True
     if full_name:
+        # Длинные части (>= _LONG_NAME_TOKEN_LENGTH) — где угодно в
+        # пароле; короткие (2–3 символа) — только как начало пароля с
+        # границей слова (PR #140 review, см. `_starts_with_word_
+        # boundary`). Обе проверки — и как есть, и транслитерацией.
         for token in _full_name_tokens(full_name):
             if _contains_case_insensitive(
                 password_lower, token
             ) or _contains_case_insensitive(password_lower, _transliterate(token)):
                 contains_identity = True
                 break
+        if not contains_identity:
+            for short_token in _full_name_short_tokens(full_name):
+                if _starts_with_word_boundary(
+                    password_lower, short_token
+                ) or _starts_with_word_boundary(password_lower, _transliterate(short_token)):
+                    contains_identity = True
+                    break
     if contains_identity:
         violations.append("Password must not contain the login, e-mail, or employee's name")
 

@@ -201,10 +201,62 @@ def test_password_containing_email_local_part_is_rejected() -> None:
     assert any("name" in v for v in exc_info.value.violations)
 
 
-def test_short_name_tokens_are_not_checked() -> None:
-    # «Ли Ир Ир» — все токены короче 4 символов, правило про ФИО не
-    # применяется вовсе; пароль должен пройти по этому критерию.
-    validate_password_strength(_STRONG_PASSWORD, full_name="Ли Ир Ир")
+def test_single_letter_name_tokens_are_not_checked() -> None:
+    # Токены короче 2 символов (инициалы вида «О.») не проверяются
+    # вовсе — ни как подстрока, ни как начало пароля.
+    validate_password_strength(_STRONG_PASSWORD, full_name="О И П")
+
+
+def test_short_name_token_at_start_of_password_is_rejected() -> None:
+    """PR #140 review, ПРОВЕРКА п. 4: сотрудник «Ли Иван Петрович» не
+    может задать пароль «Ли123456!» — короткая часть ФИО («Ли», 2
+    символа) в начале пароля, ровно случай «фамилия+цифры»."""
+    with pytest.raises(WeakPasswordError) as exc_info:
+        validate_password_strength("Ли123456!", full_name="Ли Иван Петрович")
+
+    assert any("name" in v for v in exc_info.value.violations)
+
+
+def test_short_name_token_is_not_rejected_as_a_substring_elsewhere() -> None:
+    """Симметрично тесту выше: тот же сотрудник МОЖЕТ задать
+    «Lightning7!», хотя транслитерация «Ли» («li») и есть первые две
+    буквы «Lightning» — после «li» идёт «g» (буква, не граница слова),
+    так что это обычное слово, а не «фамилия+цифры». Правило не должно
+    блокировать лишнего."""
+    validate_password_strength("Lightning7!", full_name="Ли Иван Петрович")
+
+
+def test_short_name_token_is_not_rejected_in_the_middle_of_the_password() -> None:
+    # «Ли» — не в начале пароля (пароль начинается с «Super»): как
+    # подстрока где угодно короткие токены не проверяются, иначе
+    # заблокировали бы много обычных слов/паролей с той же подстрокой.
+    validate_password_strength("SuperЛи123!", full_name="Ли Иван Петрович")
+
+
+def test_long_name_token_is_rejected_anywhere_in_the_password() -> None:
+    # «Петрович» (8 символов, >= _LONG_NAME_TOKEN_LENGTH) — запрещён в
+    # любом месте пароля, не только в начале, в отличие от «Ли» выше.
+    with pytest.raises(WeakPasswordError) as exc_info:
+        validate_password_strength("SuperПетрович1!", full_name="Ли Иван Петрович")
+
+    assert any("name" in v for v in exc_info.value.violations)
+
+
+def test_word_boundary_is_required_to_avoid_flagging_ordinary_words(monkeypatch) -> None:
+    """Отрицательный контроль для теста «...is_not_rejected_as_a_
+    substring_elsewhere» выше: без проверки границы слова — наивное
+    «пароль начинается с транслитерации токена» — «Lightning7!»
+    ОШИБОЧНО отклоняется, хотя правило не должно его трогать."""
+    monkeypatch.setattr(
+        password_policy,
+        "_starts_with_word_boundary",
+        lambda password_lower, needle: password_lower.startswith(needle.strip().lower())
+        if needle.strip()
+        else False,
+    )
+
+    with pytest.raises(WeakPasswordError):
+        validate_password_strength("Lightning7!", full_name="Ли Иван Петрович")
 
 
 def test_password_containing_transliterated_full_name_is_rejected() -> None:

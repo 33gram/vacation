@@ -19,6 +19,7 @@ FR-AUTH-002, NFR-SEC-004).
 from __future__ import annotations
 
 import datetime
+import unicodedata
 from pathlib import Path
 
 # Переносятся в business_rules_config при реализации T-M2-09.
@@ -162,6 +163,27 @@ def _full_name_short_tokens(full_name: str) -> list[str]:
     ]
 
 
+def _is_invisible_control_character(c: str) -> bool:
+    """Unicode-категория C* (Cc управляющие, Cf форматирующие вроде ZWJ/
+    ZWNJ и мягкого переноса, Cn неприсвоенные, ...) — PR #140 review,
+    второй круг: пользователь не может сознательно повторить символ,
+    который не видит. Пробельные символы (тоже частично попадают в Cc,
+    например табуляция) сюда не относятся — для них уже есть свой
+    критерий выше, с собственным сообщением; здесь `not c.isspace()`
+    исключает двойное срабатывание на одном и том же символе."""
+    return not c.isspace() and unicodedata.category(c).startswith("C")
+
+
+def _is_combining_mark(c: str) -> bool:
+    """Unicode-категория M* (комбинирующие знаки, например «́» U+0301) —
+    обычная часть письменности многих языков, сама по себе не
+    отклоняется (см. `_is_invisible_control_character` для того, что
+    отклоняется). Используется только чтобы НЕ засчитывать такой символ
+    за специальный в `validate_password_strength` — иначе стойкость
+    пароля держалась бы на знаке, невидимом при повторном наборе."""
+    return unicodedata.category(c).startswith("M")
+
+
 def validate_password_strength(
     password: str,
     *,
@@ -198,6 +220,16 @@ def validate_password_strength(
     if any(c.isspace() for c in password):
         violations.append("Password must not contain whitespace characters")
 
+    # PR #140 review (второй круг): невидимые/управляющие Unicode-символы
+    # (ZWJ, мягкий перенос, BEL, ...) запрещены отдельным критерием, тем
+    # же обоснованием, что и пробел выше, — пользователь не может
+    # сознательно повторить то, чего не видит.
+    if any(_is_invisible_control_character(c) for c in password):
+        violations.append(
+            "Password must not contain invisible or control characters "
+            "(e.g. zero-width joiners, soft hyphens, control codes)"
+        )
+
     # Специальный символ определяется через отрицание («не буква, не
     # цифра, не пробел»), а не перечнем допустимых символов (PR #140
     # review): перечень пришлось бы показывать в подсказке интерфейса,
@@ -206,13 +238,21 @@ def validate_password_strength(
     # вида "abcdefg1 " (строчные буквы, цифра, завершающий пробел)
     # набирал бы три класса из четырёх, не содержа ни одного НАСТОЯЩЕГО
     # спецсимвола — пробел уже наказан отдельным критерием выше, здесь
-    # он просто не в счёт.
+    # он просто не в счёт. То же — невидимые/управляющие символы (уже
+    # отклонены отдельно выше) и комбинирующие знаки (не отклоняются,
+    # но статуса спецсимвола тоже не дают, см. `_is_combining_mark`).
     class_count = sum(
         [
             any(c.islower() for c in password),
             any(c.isupper() for c in password),
             any(c.isdigit() for c in password),
-            any(not c.isalnum() and not c.isspace() for c in password),
+            any(
+                not c.isalnum()
+                and not c.isspace()
+                and not _is_invisible_control_character(c)
+                and not _is_combining_mark(c)
+                for c in password
+            ),
         ]
     )
     if class_count < 3:

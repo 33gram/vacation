@@ -156,6 +156,82 @@ def test_numero_sign_counts_as_a_special_character() -> None:
     validate_password_strength("Пароль1№")
 
 
+# --- Невидимые символы (PR #140 review, второй круг) ------------------------
+
+
+def test_password_with_soft_hyphen_is_rejected() -> None:
+    # U+00AD, категория Unicode Cf (форматирующий) — невидим при обычном
+    # отображении, пользователь не сможет сознательно повторить его при
+    # следующем вводе.
+    with pytest.raises(WeakPasswordError) as exc_info:
+        validate_password_strength("Ab1!Ab­12")
+
+    assert any("invisible" in v for v in exc_info.value.violations)
+
+
+def test_password_with_zero_width_joiner_is_rejected() -> None:
+    # U+200D (ZWJ), категория Cf — использовался бы для маскировки: два
+    # визуально одинаковых пароля с разным числом ZWJ внутри выглядели
+    # бы одинаково, но были бы разными строками.
+    with pytest.raises(WeakPasswordError) as exc_info:
+        validate_password_strength("Ab1!Ab‍12")
+
+    assert any("invisible" in v for v in exc_info.value.violations)
+
+
+def test_password_with_bell_control_character_is_rejected() -> None:
+    # U+0007 (BEL), категория Cc (управляющий) — не пробельный по
+    # `str.isspace()`, отдельная категория символов от уже закрытых
+    # пробельных.
+    with pytest.raises(WeakPasswordError) as exc_info:
+        validate_password_strength("Ab1!Ab\x0712")
+
+    assert any("invisible" in v for v in exc_info.value.violations)
+
+
+def test_invisible_character_rule_is_required_to_reject_zero_width_joiner(monkeypatch) -> None:
+    """Отрицательный контроль: без вызова проверки невидимых символов
+    (застаблено с помощью безусловно ложной функции) ZWJ ничем не
+    отклоняется — пароль со всеми четырьмя классами и ZWJ внутри
+    проходит целиком. Показывает, что закрывает находку именно эта
+    проверка, а не что-то из уже существующих правил."""
+    monkeypatch.setattr(
+        password_policy, "_is_invisible_control_character", lambda _c: False
+    )
+
+    validate_password_strength("Ab1!Ab‍12")  # не поднимает — без проверки принят
+
+
+def test_combining_acute_accent_does_not_count_as_a_special_character() -> None:
+    """PR #140 review (второй круг): комбинирующий знак (категория
+    Unicode M*, например U+0301 — комбинирующий акут) сам по себе НЕ
+    отклоняется (обычная часть письменности многих языков), но и
+    статуса спецсимвола не даёт. Без него пароль набирает только два
+    класса (строчные + цифра) и не проходит состав — с ним, если бы
+    комбинирующий знак ошибочно засчитывался за спецсимвол, состав был
+    бы пройден (три класса из четырёх); проверяем, что этого не
+    происходит."""
+    password_without_mark = "password1"
+    with pytest.raises(WeakPasswordError) as exc_info:
+        validate_password_strength(password_without_mark)
+    assert any("three of" in v for v in exc_info.value.violations)
+
+    password_with_combining_mark = password_without_mark + "́"
+    with pytest.raises(WeakPasswordError) as exc_info:
+        validate_password_strength(password_with_combining_mark)
+    assert any("three of" in v for v in exc_info.value.violations)
+
+
+def test_combining_mark_exclusion_is_required_to_fail_composition(monkeypatch) -> None:
+    """Отрицательный контроль для теста выше: без исключения категории
+    M* из специального класса (застаблено с помощью безусловно ложной
+    функции) тот же пароль с комбинирующим знаком набирал бы три класса
+    из четырёх и проходил бы состав."""
+    monkeypatch.setattr(password_policy, "_is_combining_mark", lambda _c: False)
+
+    validate_password_strength("password1́")  # не поднимает — состав пройден
+
+
 def test_password_meeting_composition_can_still_be_a_common_password() -> None:
     # «Qwerty1» проходит правило состава символов (буквы обоих
     # регистров + цифра — три класса из четырёх), но входит в список

@@ -22,6 +22,8 @@ import datetime
 import unicodedata
 from pathlib import Path
 
+from app.core.security import BCRYPT_MAX_INPUT_BYTES, exceeds_bcrypt_input_limit
+
 # Переносятся в business_rules_config при реализации T-M2-09.
 DEFAULT_MIN_PASSWORD_LENGTH = 8
 DEFAULT_MAX_FAILED_ATTEMPTS = 5
@@ -38,7 +40,13 @@ DEFAULT_LOCKOUT_DURATION = datetime.timedelta(minutes=15)
 # wrong here — the 72-byte ceiling is about bcrypt's input size, and a
 # character is 1-4 UTF-8 bytes depending on script; ~36 characters for
 # Cyrillic, not 72).
-MAX_PASSWORD_BYTES = 72
+#
+# PR #140 review (четвёртый круг): значение и предикат теперь живут в
+# `core.security` (`BCRYPT_MAX_INPUT_BYTES`/`exceeds_bcrypt_input_limit`)
+# — это свойство bcrypt, а не парольной политики. Импорт здесь оставляет
+# имя `MAX_PASSWORD_BYTES` на месте, чтобы остальные файлы и тесты этого
+# модуля не меняли свои импорты.
+MAX_PASSWORD_BYTES = BCRYPT_MAX_INPUT_BYTES
 
 # pydantic `max_length` on password fields in `schemas/*.py` — a coarse
 # guard so a request with a multi-megabyte password is rejected by
@@ -205,7 +213,7 @@ def validate_password_strength(
     if len(password) < min_length:
         violations.append(f"Password must be at least {min_length} characters long")
 
-    if len(password.encode("utf-8")) > MAX_PASSWORD_BYTES:
+    if exceeds_bcrypt_input_limit(password):
         violations.append(
             f"Password must not exceed {MAX_PASSWORD_BYTES} bytes when UTF-8 encoded "
             "(bcrypt only hashes the first 72 bytes of a password; for Cyrillic text "

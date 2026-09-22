@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.security import verify_password
+from app.core.security import exceeds_bcrypt_input_limit, verify_password
 from app.core.time_utils import utcnow
 from app.models.account import Account
 from app.models.employee import Employee
@@ -18,7 +18,6 @@ from app.modules.auth.exceptions import AccessDeniedError, AuthenticationError
 from app.modules.auth.password_policy import (
     DEFAULT_LOCKOUT_DURATION,
     DEFAULT_MAX_FAILED_ATTEMPTS,
-    MAX_PASSWORD_BYTES,
 )
 from app.modules.auth.repository import (
     get_account_by_employee_id,
@@ -64,7 +63,7 @@ async def authenticate_local(session: AsyncSession, login: str, password: str) -
         # каталогу (FR-AUTH-004) — см. ldap_service.authenticate_via_ldap.
         raise AuthenticationError("Invalid login or password")
 
-    if len(password.encode("utf-8")) > MAX_PASSWORD_BYTES:
+    if exceeds_bcrypt_input_limit(password):
         # PR #140 review (второй круг), FR-AUTH-002 (раздел 13, п. 20):
         # `MAX_PASSWORD_BYTES` раньше проверялся только при задании/смене
         # пароля (`validate_password_strength`), которую вход не

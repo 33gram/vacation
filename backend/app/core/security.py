@@ -12,8 +12,34 @@ import jwt
 from app.core.config import get_settings
 from app.core.time_utils import utcnow
 
+# PR #140 review (четвёртый круг): 72 байта — свойство bcrypt (он молча
+# хэширует только первые 72 байта входа, не отклоняя более длинный),
+# а не парольной политики приложения, поэтому граница живёт здесь, а не
+# в `modules/auth/password_policy.py`. Три места приложения, которым
+# нужно было проверить это ДО вызова bcrypt (парольная политика при
+# задании/смене пароля, вход, bootstrap-администратор), трижды
+# передержали проверку заново вместо общего предиката — граница стоила
+# трёх кругов ревью именно поэтому, а не из-за расхождения копий числа
+# 72 между ними.
+BCRYPT_MAX_INPUT_BYTES = 72
+
+
+def exceeds_bcrypt_input_limit(password: str) -> bool:
+    return len(password.encode("utf-8")) > BCRYPT_MAX_INPUT_BYTES
+
 
 def hash_password(password: str) -> str:
+    if exceeds_bcrypt_input_limit(password):
+        # Сетка НЕ вместо дружелюбных проверок выше по стеку (парольная
+        # политика, вход, bootstrap) — они остаются и дают понятное
+        # сообщение раньше. Это срабатывает только тогда, когда новый
+        # путь к `hash_password` их не вызвал, то есть на баге, а не на
+        # штатном отказе пользователю.
+        raise ValueError(
+            f"Password is {len(password.encode('utf-8'))} bytes when UTF-8 encoded, "
+            f"over bcrypt's {BCRYPT_MAX_INPUT_BYTES}-byte input limit — reject it "
+            "before hashing instead of letting bcrypt silently truncate it"
+        )
     return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("ascii")
 
 

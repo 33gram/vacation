@@ -9,7 +9,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
-from app.core.security import hash_password
+from app.core.security import exceeds_bcrypt_input_limit, hash_password
 from app.models.account import Account
 from app.modules.auth.password_policy import MAX_PASSWORD_BYTES
 from app.modules.auth.repository import count_active_system_admins
@@ -25,8 +25,8 @@ def _reject_oversized_bootstrap_password(password: str) -> None:
     тот же п. 20) — администратор не смог бы войти и не понял бы,
     почему. Падаем на старте с понятным сообщением, а не создаём
     учётную запись, в которую нельзя будет войти."""
-    password_bytes = len(password.encode("utf-8"))
-    if password_bytes > MAX_PASSWORD_BYTES:
+    if exceeds_bcrypt_input_limit(password):
+        password_bytes = len(password.encode("utf-8"))
         raise RuntimeError(
             f"BOOTSTRAP_ADMIN_PASSWORD is {password_bytes} bytes when UTF-8 encoded, "
             f"over the {MAX_PASSWORD_BYTES}-byte limit bcrypt hashes and the login "

@@ -3,9 +3,11 @@ FR-AUTH-002 v1.9)."""
 
 from __future__ import annotations
 
+import bcrypt
 import pytest
 
-from app.core.security import hash_password, verify_password
+from app.core import security
+from app.core.security import BCRYPT_MAX_INPUT_BYTES, exceeds_bcrypt_input_limit, hash_password
 from app.modules.auth import password_policy
 from app.modules.auth.password_policy import WeakPasswordError, validate_password_strength
 
@@ -70,38 +72,67 @@ def test_cyrillic_password_under_72_characters_can_still_exceed_72_bytes() -> No
 
 def test_length_upper_bound_is_required_to_reject_the_overlong_password(monkeypatch) -> None:
     """Отрицательный контроль для трёх тестов выше: без проверки
-    (`MAX_PASSWORD_BYTES` эффективно снят) 76-байтовый пароль, который
-    больше ничего не нарушает, проходит — то есть закрывает находку
-    именно эта проверка, а не какое-то из уже существующих правил."""
-    monkeypatch.setattr(password_policy, "MAX_PASSWORD_BYTES", 10**6)
+    (лимит эффективно снят) 76-байтовый пароль, который больше ничего
+    не нарушает, проходит — то есть закрывает находку именно эта
+    проверка, а не какое-то из уже существующих правил. PR #140 review
+    (четвёртый круг): граница переехала в `core.security.
+    BCRYPT_MAX_INPUT_BYTES`, `exceeds_bcrypt_input_limit` читает её из
+    модуля `core.security` на каждый вызов — патчить нужно её, а не
+    `password_policy.MAX_PASSWORD_BYTES` (тот теперь лишь однократный
+    импорт значения на момент загрузки модуля, дальше с проверкой не
+    связан)."""
+    monkeypatch.setattr(security, "BCRYPT_MAX_INPUT_BYTES", 10**6)
 
     validate_password_strength("Aa1!" * 19)  # не поднимает — без проверки принят
 
 
 def test_overlong_password_that_would_collide_under_bcrypt_is_rejected() -> None:
     """ГЛАВНОЕ (PR #140 review, ПРОВЕРКА п. 1). bcrypt сам по себе
-    остаётся усекающим — это неизменное поведение библиотеки
-    (`core/security.py`), не то, что политика паролей может починить;
-    альтернатива («предварительно хэшировать SHA-256») рассмотрена и
-    отклонена (`requirements.md` §13, п. 17). Первая часть теста
-    показывает: коллизия реальна на уровне bcrypt как таковом —
-    5003-символьный пароль, его 72-байтовый префикс и тот же префикс с
+    остаётся усекающим — это неизменное поведение библиотеки, не то,
+    что политика паролей может починить; альтернатива («предварительно
+    хэшировать SHA-256») рассмотрена и отклонена (`requirements.md`
+    §13, п. 17). Первая часть теста показывает именно поведение bcrypt
+    КАК ТАКОВОГО, напрямую через `bcrypt.hashpw`/`bcrypt.checkpw`, а не
+    через приложенческий `hash_password` (PR #140 review, четвёртый
+    круг: `hash_password` теперь сам отказывает на входе длиннее лимита
+    — см. `test_hash_password_rejects_input_over_bcrypt_limit` ниже, —
+    так что демонстрировать усечение через него уже нельзя): 5003-
+    символьный пароль, его 72-байтовый префикс и тот же префикс с
     другим хвостом аутентифицируют один и тот же хэш. Вторая часть —
     почему это больше не эксплуатируется через приложение: длиннее
     72 байт пароль теперь нельзя ЗАДАТЬ вовсе (T-M1-38 подключает эту
     проверку на всех точках входа), а не только «неудобно менять»."""
     long_password = "A" * 5003
-    password_hash = hash_password(long_password)
+    password_hash = bcrypt.hashpw(long_password.encode("utf-8"), bcrypt.gensalt()).decode("ascii")
     prefix_72_bytes = long_password.encode("utf-8")[:72].decode("utf-8")
     prefix_with_different_tail = prefix_72_bytes + "DIFFERENT_TAIL_XYZ"
 
-    assert verify_password(long_password, password_hash)
-    assert verify_password(prefix_72_bytes, password_hash)
-    assert verify_password(prefix_with_different_tail, password_hash)
+    assert bcrypt.checkpw(long_password.encode("utf-8"), password_hash.encode("ascii"))
+    assert bcrypt.checkpw(prefix_72_bytes.encode("utf-8"), password_hash.encode("ascii"))
+    assert bcrypt.checkpw(
+        prefix_with_different_tail.encode("utf-8"), password_hash.encode("ascii")
+    )
 
     with pytest.raises(WeakPasswordError) as exc_info:
         validate_password_strength(long_password)
     assert any("72 bytes" in v for v in exc_info.value.violations)
+
+
+def test_hash_password_rejects_input_over_bcrypt_limit() -> None:
+    """Отрицательный контроль на сетку в `hash_password` (PR #140
+    review, четвёртый круг): без неё этот тест обнаружил бы, что вход
+    длиннее лимита ТИХО хэшируется усечённым — тем самым поведением,
+    которое `test_overlong_password_that_would_collide_under_bcrypt_
+    is_rejected` выше показывает как раз для bcrypt как такового. Здесь
+    же проверяется именно сетка приложения, а не уже существующие
+    проверки выше по стеку (`validate_password_strength`,
+    `authenticate_local`, `_reject_oversized_bootstrap_password`) — вход
+    ни одну из них не проходит."""
+    long_password = "A" * (BCRYPT_MAX_INPUT_BYTES + 1)
+    assert exceeds_bcrypt_input_limit(long_password)
+
+    with pytest.raises(ValueError, match=r"72-byte"):
+        hash_password(long_password)
 
 
 # --- Состав символов (FR-AUTH-002 v1.9) -------------------------------------

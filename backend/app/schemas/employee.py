@@ -5,7 +5,9 @@ from __future__ import annotations
 import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, SecretStr, model_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
+
+from app.modules.auth.password_policy import MAX_PASSWORD_LENGTH_CHARS
 
 WorkScheduleType = Literal["standard", "shift"]
 EmployeeAuthType = Literal["ldap", "local"]
@@ -54,7 +56,8 @@ class EmployeeCreate(EmployeeCardFields):
     auth_type: EmployeeAuthType = "ldap"
     # SecretStr — маскирует repr()/str() (см. LdapTestRequest, PR #137);
     # обязателен при `auth_type = "local"`, запрещён при `"ldap"`.
-    initial_password: SecretStr | None = None
+    # max_length — PR #140 review, см. `LoginRequest.password`.
+    initial_password: SecretStr | None = Field(default=None, max_length=MAX_PASSWORD_LENGTH_CHARS)
 
     @model_validator(mode="after")
     def _validate_initial_password(self) -> EmployeeCreate:
@@ -109,7 +112,7 @@ class EmployeeUpdate(EmployeeCardFields):
     auth_type: EmployeeAuthType
     # SecretStr — см. `EmployeeCreate.initial_password`; принимается
     # только при переходе с `ldap` на `local` (проверяет сервис).
-    new_password: SecretStr | None = None
+    new_password: SecretStr | None = Field(default=None, max_length=MAX_PASSWORD_LENGTH_CHARS)
 
     @model_validator(mode="after")
     def _validate_new_password(self) -> EmployeeUpdate:

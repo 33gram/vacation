@@ -9,13 +9,16 @@ from __future__ import annotations
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.security import verify_password
+from app.core.security import exceeds_bcrypt_input_limit, verify_password
 from app.core.time_utils import utcnow
 from app.models.account import Account
 from app.models.employee import Employee
 from app.modules.auth.access_control import enforce_access
 from app.modules.auth.exceptions import AccessDeniedError, AuthenticationError
-from app.modules.auth.password_policy import DEFAULT_LOCKOUT_DURATION, DEFAULT_MAX_FAILED_ATTEMPTS
+from app.modules.auth.password_policy import (
+    DEFAULT_LOCKOUT_DURATION,
+    DEFAULT_MAX_FAILED_ATTEMPTS,
+)
 from app.modules.auth.repository import (
     get_account_by_employee_id,
     get_account_by_login,
@@ -60,11 +63,34 @@ async def authenticate_local(session: AsyncSession, login: str, password: str) -
         # каталогу (FR-AUTH-004) — см. ldap_service.authenticate_via_ldap.
         raise AuthenticationError("Invalid login or password")
 
+    if exceeds_bcrypt_input_limit(password):
+        # PR #140 review (второй круг), FR-AUTH-002 (раздел 13, п. 20):
+        # `MAX_PASSWORD_BYTES` раньше проверялся только при задании/смене
+        # пароля (`validate_password_strength`), которую вход не
+        # вызывает — `verify_password`/`bcrypt.checkpw` ниже усекает вход
+        # так же, как хэширование усекает пароль при задании. Без этой
+        # проверки легальный пароль ровно на границе плюс произвольный
+        # хвост после неё аутентифицировал бы ту же учётную запись.
+        # PR #140 review (третий круг, замечание 2б): отказ здесь — то же
+        # СООБЩЕНИЕ и тот же СТАТУС (401), что и у обычного неверного
+        # пароля, не более того. Ответ ЦЕЛИКОМ не неразличим: эта ветка
+        # возвращается раньше обращения к БД и bcrypt, то есть быстрее
+        # ветки «неверный пароль» ниже — по времени ответа отличима, см.
+        # T-M1-41.
+        raise AuthenticationError("Invalid login or password")
+
     account, employee = await _resolve_local_account(session, login)
 
     if account is None or account.auth_type != "local":
-        # Не различаем «нет такого логина» и «неверный пароль» — исключаем
-        # перебор существующих логинов (FR-AUTH-002).
+        # PR #140 review (третий круг, замечание 2а): то же СООБЩЕНИЕ и
+        # тот же СТАТУС (401), что и у существующего логина с неверным
+        # паролем, — но не то же самое по ВРЕМЕНИ ответа. Здесь bcrypt
+        # не вызывается вовсе; в ветке `verify_password` ниже вызывается
+        # всегда — разница порядка ~100 мс (стоимость bcrypt) против
+        # микросекунд, которой достаточно, чтобы по времени ответа
+        # отличить существующий логин от несуществующего. Закрывается
+        # отдельно — T-M1-41 (сравнение с фиктивным хэшем фиксированной
+        # стоимости), не этим отказом.
         raise AuthenticationError("Invalid login or password")
 
     if account.locked_until is not None and account.locked_until > utcnow():

@@ -174,7 +174,13 @@ async def create_employee(session: AsyncSession, payload: EmployeeCreate) -> Emp
         # `_validate_initial_password` (schemas/employee.py) уже
         # гарантировал непустой пароль для `auth_type = "local"`.
         assert payload.initial_password is not None
-        validate_password_strength(payload.initial_password.get_secret_value())
+        # У карточки сотрудника нет отдельного логина (вход — по e-mail,
+        # `auth/router.py`), поэтому `login` контексту не передаётся.
+        validate_password_strength(
+            payload.initial_password.get_secret_value(),
+            email=payload.email,
+            full_name=payload.full_name,
+        )
         password_hash = hash_password(payload.initial_password.get_secret_value())
 
     employee = Employee()
@@ -224,7 +230,11 @@ def _apply_auth_type_change(account: Account, payload: EmployeeUpdate) -> None:
         if not has_password:
             raise ValueError("new_password is required when switching auth_type to 'local'")
         assert payload.new_password is not None
-        validate_password_strength(payload.new_password.get_secret_value())
+        validate_password_strength(
+            payload.new_password.get_secret_value(),
+            email=payload.email,
+            full_name=payload.full_name,
+        )
         account.local_password_hash = hash_password(payload.new_password.get_secret_value())
         account.must_change_password = True
         account.auth_type = "local"

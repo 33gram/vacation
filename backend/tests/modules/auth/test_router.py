@@ -6,7 +6,9 @@ from __future__ import annotations
 from app.core.config import get_settings
 from app.core.crypto import encrypt
 from app.core.security import hash_password
+from app.main import app
 from app.models.ldap_settings import LdapSettings
+from app.modules.auth.password_policy import MAX_PASSWORD_BYTES
 from tests.ldap_guard import LDAP_TEST_HOST, LDAP_TEST_PORT, requires_ldap
 from tests.modules.auth.factories import bearer_header, make_account, make_employee
 
@@ -19,6 +21,26 @@ def _assert_denied_with_hr_message(response) -> None:
     # приёмки, поэтому проверяется он, а не только код ответа.
     assert response.status_code == 403
     assert "HR-администратор" in response.json()["detail"]
+
+
+def test_password_change_fields_are_marked_write_only() -> None:
+    # NFR-SEC-001, симметрично `test_employee_password_fields_are_
+    # marked_write_only` (PR #140 review, п. 1 коммита 5): пароль не
+    # должен уходить в OpenAPI-схему (и сгенерированный TS-клиент) как
+    # обычная строка.
+    schema = app.openapi()["components"]["schemas"]["PasswordChangeRequest"]["properties"]
+    for field_name in ("current_password", "new_password"):
+        assert schema[field_name].get("writeOnly") is True
+
+
+def test_login_password_field_is_marked_write_only() -> None:
+    # PR #140 review, третий круг: `LoginRequest.password` — единственное
+    # парольное поле, пропущенное коммитом 4b47556, когда тот объявил
+    # асимметрию между схемами закрытой. Проверяется именно схема
+    # OpenAPI (`writeOnly`), а не тип в Python — тип мог смениться на
+    # `SecretStr` и всё равно не попасть в схему без `Field(...)`.
+    schema = app.openapi()["components"]["schemas"]["LoginRequest"]["properties"]
+    assert schema["password"].get("writeOnly") is True
 
 
 async def _get_me_and_admin_ldap_settings(api_client, headers):
@@ -127,6 +149,77 @@ async def test_login_local_disabled_account_returns_403_with_hr_message(
     _assert_denied_with_hr_message(response)
 
 
+async def test_login_local_rejects_boundary_password_with_appended_tail(
+    db_session, api_client
+) -> None:
+    """PR #140 review (второй круг), замечание 1, живым HTTP: пароль
+    РОВНО на 72-байтовой границе легален и проходит вход как есть. До
+    этой правки тот же пароль с ЛЮБЫМ хвостом после байта 72 тоже
+    возвращал 200 и токен на ту же учётную запись — `LoginRequest.
+    password`'s `max_length=128` ограничивает символы, не байты, а
+    `authenticate_local` уходил прямо в `bcrypt.checkpw`, который
+    усекает вход так же, как хэширование."""
+    boundary_password = "Aa1!" * 18  # ровно 72 ASCII-байта
+    employee = await make_employee(db_session, email="boundary-http@company.local")
+    await make_account(
+        db_session,
+        employee_id=employee.id,
+        auth_type="local",
+        role="employee",
+        password_hash=hash_password(boundary_password),
+    )
+
+    legal = await api_client.post(
+        "/api/auth/login/local",
+        json={"login": "boundary-http@company.local", "password": boundary_password},
+    )
+    assert legal.status_code == 200
+
+    with_tail = await api_client.post(
+        "/api/auth/login/local",
+        json={
+            "login": "boundary-http@company.local",
+            "password": boundary_password + "EXTRA_TAIL",
+        },
+    )
+    assert with_tail.status_code == 401
+
+
+async def test_login_local_rejects_cyrillic_password_over_the_byte_boundary(
+    db_session, api_client
+) -> None:
+    # Кириллица — 2 байта на символ в UTF-8: граница в 72 байта достигается
+    # на 36 символах, а не на 128 (символьный лимит схемы `LoginRequest.
+    # password`). 37-символьный пароль легко проходит символьный лимит, но
+    # уже превышает байтовую границу — без байтовой проверки на входе это
+    # был бы обход именно для кириллических/многобайтовых паролей.
+    boundary_password = "п" * 36  # ровно 72 байта в UTF-8
+    assert len(boundary_password.encode("utf-8")) == MAX_PASSWORD_BYTES
+    employee = await make_employee(db_session, email="cyrillic-boundary@company.local")
+    await make_account(
+        db_session,
+        employee_id=employee.id,
+        auth_type="local",
+        role="employee",
+        password_hash=hash_password(boundary_password),
+    )
+
+    legal = await api_client.post(
+        "/api/auth/login/local",
+        json={"login": "cyrillic-boundary@company.local", "password": boundary_password},
+    )
+    assert legal.status_code == 200
+
+    with_tail = await api_client.post(
+        "/api/auth/login/local",
+        json={
+            "login": "cyrillic-boundary@company.local",
+            "password": boundary_password + "х",  # +2 байта, 37 символов — всё ещё «короткий»
+        },
+    )
+    assert with_tail.status_code == 401
+
+
 # --- POST /api/auth/login (FR-AUTH-003: embedded mode dispatch) -------
 
 
@@ -153,6 +246,21 @@ async def test_login_rejects_empty_password_before_ldap_bind(db_session, api_cli
     )
 
     assert response.status_code == 401
+
+
+async def test_login_rejects_oversized_password_before_hashing(api_client) -> None:
+    """PR #140 review, ПРОВЕРКА п. 2: запрос с мегабайтным паролем
+    отсекается схемой (`LoginRequest.password`'s `max_length`) до
+    диспетчеризации на LDAP/локальную аутентификацию — не доходит до
+    bcrypt-хэширования вовсе. Нет `db_session`: запрос отклоняется на
+    уровне валидации, до первого обращения к БД."""
+    oversized_password = "A" * (2 * 1024 * 1024)
+
+    response = await api_client.post(
+        "/api/auth/login", json={"login": "ivanov@company.local", "password": oversized_password}
+    )
+
+    assert response.status_code == 422
 
 
 @requires_ldap
@@ -320,6 +428,60 @@ async def test_password_change_rejects_weak_new_password(db_session, api_client)
     )
 
     assert response.status_code == 400
+    violations = response.json()["detail"]
+    assert isinstance(violations, list)
+    assert len(violations) > 1
+
+
+async def test_password_change_rejects_password_containing_employee_full_name(
+    db_session, api_client
+) -> None:
+    """T-M1-38, точка подключения 3 (`auth/router.change_password`):
+    контекст берётся у ТЕКУЩЕЙ учётной записи через её карточку
+    сотрудника (`_identity_context`), а не передаётся вызывающим."""
+    employee = await make_employee(
+        db_session, email="ivanov@company.local", full_name="Иванов Иван Иванович"
+    )
+    account = await make_account(
+        db_session,
+        employee_id=employee.id,
+        auth_type="local",
+        role="employee",
+        password_hash=hash_password(PASSWORD),
+    )
+
+    response = await api_client.post(
+        "/api/auth/password/change",
+        json={"current_password": PASSWORD, "new_password": "Ivanov2026!"},
+        headers=bearer_header(account),
+    )
+
+    assert response.status_code == 400
+    assert any("name" in v for v in response.json()["detail"])
+
+
+async def test_password_change_rejects_password_containing_service_account_login(
+    db_session, api_client
+) -> None:
+    """Симметрично тесту выше, для второй ветки `_identity_context`:
+    служебная запись без карточки (`employee_id is None`) сверяется по
+    `login`, а не по e-mail/ФИО, которых у неё нет."""
+    account = await make_account(
+        db_session,
+        login="svc-import",
+        auth_type="local",
+        role="hr_admin",
+        password_hash=hash_password(PASSWORD),
+    )
+
+    response = await api_client.post(
+        "/api/auth/password/change",
+        json={"current_password": PASSWORD, "new_password": "Svc-import1!"},
+        headers=bearer_header(account),
+    )
+
+    assert response.status_code == 400
+    assert any("name" in v for v in response.json()["detail"])
 
 
 async def test_password_change_rejects_ldap_only_account(db_session, api_client) -> None:

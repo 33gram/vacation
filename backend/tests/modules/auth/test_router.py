@@ -695,6 +695,36 @@ async def test_password_policy_returns_all_codes_with_russian_hints(
     assert all(any(ord(c) > 127 for c in h["hint"]) for h in hints)
 
 
+async def test_password_policy_is_available_before_first_password_change(
+    db_session, api_client
+) -> None:
+    """PR #143 review, замечание 3: единственное состояние, ради
+    которого эндпоинт вообще существует, — учётная запись ещё не
+    сменила первичный пароль (`must_change_password = True`) и должна
+    увидеть действующие правила ДО того, как сможет их пройти. Эндпоинт
+    висит на `get_current_account` напрямую, без `require_roles`
+    (см. `rbac.require_roles`), поэтому `must_change_password` его не
+    блокирует — здесь это проверяется прогоном, а не выводится из
+    чтения кода."""
+    employee = await make_employee(db_session, email="must-change@company.local")
+    account = await make_account(
+        db_session,
+        employee_id=employee.id,
+        auth_type="local",
+        role="employee",
+        password_hash=hash_password(PASSWORD),
+        must_change_password=True,
+    )
+
+    response = await api_client.get(
+        "/api/auth/password-policy", headers=bearer_header(account)
+    )
+
+    assert response.status_code == 200
+    hints = response.json()
+    assert {h["code"] for h in hints} == set(password_policy.PASSWORD_POLICY_VIOLATION_CODES)
+
+
 # --- T-M1-30 scope check --------------------------------------------------
 
 

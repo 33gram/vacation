@@ -71,10 +71,26 @@ async def get_current_account(
 
 
 def require_roles(*roles: str) -> Callable[[Account], Awaitable[Account]]:
-    """T-M1-13: пока `account.must_change_password` истинно, доступны
-    только `GET /api/auth/me` и `POST /api/auth/password/change` (они
-    используют `get_current_account` напрямую, без `require_roles`) —
-    любой эндпоинт за этой зависимостью требует сначала сменить пароль."""
+    """T-M1-13: `must_change_password` проверяется только здесь, не в
+    `get_current_account` — любой эндпоинт, висящий на `get_current_
+    account` напрямую (без `require_roles`), доступен и при
+    `must_change_password = True`. Проверено по коду (PR #143 review,
+    замечание 2), а не переписано «примерно»: таких эндпоинтов СЕМЬ, не
+    два —
+    `GET /api/auth/me`, `POST /api/auth/password/change`,
+    `GET /api/auth/password-policy` (T-M1-45),
+    `POST /api/auth/logout`, `GET /api/departments`,
+    `GET /api/employees`, `GET /api/employees/{employee_id}`.
+    Первые четыре — намеренно (нечем сменить пароль, если `/me` и
+    `/password/change` недоступны; подсказки политики нужны ДО смены
+    пароля; выйти можно всегда). Три последних — просмотр оргструктуры
+    и карточек сотрудников, доступный «любому аутентифицированному» по
+    замыслу (`plan.md` §5.1), но не проверялся на пересечение с этим
+    состоянием: сотрудник с непогашенным `must_change_password` может
+    просматривать список/карточки сотрудников и подразделения ДО смены
+    пароля. Ограничивать это или нет — решение продукта, вне рамок
+    данной правки; здесь только докстринг приведён в соответствие с
+    фактическим поведением кода."""
 
     async def _dependency(account: Account = Depends(get_current_account)) -> Account:
         if account.must_change_password:

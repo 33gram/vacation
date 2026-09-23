@@ -8,7 +8,8 @@ from app.core.crypto import encrypt
 from app.core.security import hash_password
 from app.main import app
 from app.models.ldap_settings import LdapSettings
-from app.modules.auth.password_policy import MAX_PASSWORD_BYTES
+from app.modules.auth import password_policy
+from app.modules.auth.password_policy import MAX_PASSWORD_BYTES, VIOLATION_CONTAINS_IDENTITY
 from tests.ldap_guard import LDAP_TEST_HOST, LDAP_TEST_PORT, requires_ldap
 from tests.modules.auth.factories import bearer_header, make_account, make_employee
 
@@ -431,6 +432,8 @@ async def test_password_change_rejects_weak_new_password(db_session, api_client)
     violations = response.json()["detail"]
     assert isinstance(violations, list)
     assert len(violations) > 1
+    # T-M1-45: код + русское сообщение (NFR-LOC-001), не голая строка.
+    assert all(set(v) == {"code", "message"} for v in violations)
 
 
 async def test_password_change_rejects_password_containing_employee_full_name(
@@ -457,7 +460,7 @@ async def test_password_change_rejects_password_containing_employee_full_name(
     )
 
     assert response.status_code == 400
-    assert any("name" in v for v in response.json()["detail"])
+    assert any(v["code"] == VIOLATION_CONTAINS_IDENTITY for v in response.json()["detail"])
 
 
 async def test_password_change_rejects_password_containing_service_account_login(
@@ -481,7 +484,7 @@ async def test_password_change_rejects_password_containing_service_account_login
     )
 
     assert response.status_code == 400
-    assert any("name" in v for v in response.json()["detail"])
+    assert any(v["code"] == VIOLATION_CONTAINS_IDENTITY for v in response.json()["detail"])
 
 
 async def test_password_change_rejects_ldap_only_account(db_session, api_client) -> None:
@@ -660,6 +663,66 @@ async def test_logout_succeeds_with_valid_token(db_session, api_client) -> None:
     response = await api_client.post("/api/auth/logout", headers=bearer_header(account))
 
     assert response.status_code == 204
+
+
+# --- GET /api/auth/password-policy (T-M1-45) -----------------------------
+
+
+async def test_password_policy_requires_authentication(api_client) -> None:
+    # Правило задачи: эндпоинт под авторизацией, публичным не делать.
+    response = await api_client.get("/api/auth/password-policy")
+
+    assert response.status_code == 401
+
+
+async def test_password_policy_returns_all_codes_with_russian_hints(
+    db_session, api_client
+) -> None:
+    employee = await make_employee(db_session, email="policy-hints@company.local")
+    account = await make_account(
+        db_session, employee_id=employee.id, auth_type="local", role="employee"
+    )
+
+    response = await api_client.get(
+        "/api/auth/password-policy", headers=bearer_header(account)
+    )
+
+    assert response.status_code == 200
+    hints = response.json()
+    assert {h["code"] for h in hints} == set(password_policy.PASSWORD_POLICY_VIOLATION_CODES)
+    assert all(set(h) == {"code", "hint"} for h in hints)
+    # NFR-LOC-001: интерфейс русский — подсказки не заглушки на английском.
+    assert all(any(ord(c) > 127 for c in h["hint"]) for h in hints)
+
+
+async def test_password_policy_is_available_before_first_password_change(
+    db_session, api_client
+) -> None:
+    """PR #143 review, замечание 3: единственное состояние, ради
+    которого эндпоинт вообще существует, — учётная запись ещё не
+    сменила первичный пароль (`must_change_password = True`) и должна
+    увидеть действующие правила ДО того, как сможет их пройти. Эндпоинт
+    висит на `get_current_account` напрямую, без `require_roles`
+    (см. `rbac.require_roles`), поэтому `must_change_password` его не
+    блокирует — здесь это проверяется прогоном, а не выводится из
+    чтения кода."""
+    employee = await make_employee(db_session, email="must-change@company.local")
+    account = await make_account(
+        db_session,
+        employee_id=employee.id,
+        auth_type="local",
+        role="employee",
+        password_hash=hash_password(PASSWORD),
+        must_change_password=True,
+    )
+
+    response = await api_client.get(
+        "/api/auth/password-policy", headers=bearer_header(account)
+    )
+
+    assert response.status_code == 200
+    hints = response.json()
+    assert {h["code"] for h in hints} == set(password_policy.PASSWORD_POLICY_VIOLATION_CODES)
 
 
 # --- T-M1-30 scope check --------------------------------------------------

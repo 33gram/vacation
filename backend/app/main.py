@@ -19,11 +19,13 @@ from app.modules.auth.exceptions import (
     AuthenticationError,
     LdapNotConfiguredError,
 )
+from app.modules.auth.password_policy import WeakPasswordError
 from app.modules.auth.router import router as auth_router
 from app.modules.employees.department_router import router as department_router
 from app.modules.employees.employee_router import router as employee_router
 from app.modules.employees.import_parsing import ImportFileError
 from app.modules.employees.unique_violations import unique_violation_field
+from app.schemas.errors import PasswordPolicyViolationOut
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +80,27 @@ async def _handle_ldap_not_configured_error(_: Request, __: LdapNotConfiguredErr
     # внедрения), но остаётся защитой на случай гонки между проверкой и
     # обращением к каталогу.
     return JSONResponse(status_code=401, content={"detail": "Неверный логин или пароль"})
+
+
+@app.exception_handler(WeakPasswordError)
+async def _handle_weak_password_error(_: Request, exc: WeakPasswordError) -> JSONResponse:
+    """Сетка уровня приложения (PR #143 review, коммит 1), симметрично
+    `IntegrityError`/`ImportFileError` ниже: до этой правки три вызывающих
+    места (`auth/router.change_password`, `employee_router.create_
+    employee`/`update_employee`) строили ЭТОТ ЖЕ ответ локальным `try/
+    except`, дублируя друг друга — и место, которое забыло бы обернуть
+    `validate_password_strength`/`_apply_auth_type_change`, отдало бы
+    500 вместо 400. Локальные блоки убраны; здесь — единственное место,
+    которое строит ответ."""
+    return JSONResponse(
+        status_code=400,
+        content={
+            "detail": [
+                PasswordPolicyViolationOut(code=v.code, message=v.message).model_dump()
+                for v in exc.violations
+            ]
+        },
+    )
 
 
 @app.exception_handler(ImportFileError)

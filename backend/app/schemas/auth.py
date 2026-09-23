@@ -46,3 +46,15 @@ class PasswordChangeRequest(BaseModel):
     # (payload)` не утёк пароль в лог целиком.
     current_password: SecretStr = Field(max_length=MAX_PASSWORD_LENGTH_CHARS)
     new_password: SecretStr = Field(max_length=MAX_PASSWORD_LENGTH_CHARS)
+
+
+class PasswordPolicyHintOut(BaseModel):
+    """Один пункт ответа `GET /api/auth/password-policy` (T-M1-45):
+    `code` — тот же стабильный идентификатор, что и в `ErrorDetail.
+    detail` при отказе `WeakPasswordError` (см. `schemas.errors.
+    PasswordPolicyViolationOut`), `hint` — готовая русская
+    формулировка правила с уже подставленными параметрами (например,
+    минимальной длиной) — интерфейс не хардкодит ни то, ни другое."""
+
+    code: str
+    hint: str

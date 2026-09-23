@@ -28,7 +28,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db_session
 from app.models.account import Account
-from app.modules.auth.password_policy import WeakPasswordError
 from app.modules.auth.rbac import get_current_account, require_roles
 from app.modules.employees import employee_service
 from app.modules.employees.import_parsing import ImportFileError, parse_import_file
@@ -73,10 +72,11 @@ async def create_employee(
     session: AsyncSession = Depends(get_db_session),
     _: Account = Depends(_require_employee_admin),
 ) -> EmployeeOut:
+    # PR #143 review, коммит 1: WeakPasswordError из create_employee (не
+    # только ValueError) ловится сеткой уровня приложения (`main.py`),
+    # не локально — см. ту же правку в auth/router.change_password.
     try:
         employee = await employee_service.create_employee(session, payload)
-    except WeakPasswordError as exc:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, exc.violations) from exc
     except ValueError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
     return EmployeeOut.model_validate(employee)
@@ -143,16 +143,15 @@ async def update_employee(
     session: AsyncSession = Depends(get_db_session),
     _: Account = Depends(_require_employee_admin),
 ) -> EmployeeOut:
+    # PR #143 review, коммит 1: WeakPasswordError из update_employee
+    # (путь `_apply_auth_type_change`, T-M1-34/T-M1-38) ловится сеткой
+    # уровня приложения (`main.py`), не локально — проверено прогоном
+    # (`test_main_exception_handlers.py`), что это не оставляет
+    # частично применённых изменений в БД, см. тело коммита.
     try:
         employee = await employee_service.update_employee(session, employee_id, payload)
     except employee_service.EmployeeNotFoundError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
-    except WeakPasswordError as exc:
-        # T-M1-38, PR review: до этой правки эндпоинт не ловил
-        # `WeakPasswordError` вовсе (только `create_employee` ловил) —
-        # переключение на локальный вход (`_apply_auth_type_change`,
-        # T-M1-34) со слабым паролем уходило клиенту как 500, не 400.
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, exc.violations) from exc
     except ValueError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
     return EmployeeOut.model_validate(employee)

@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import datetime
 import unicodedata
+from dataclasses import dataclass
 from pathlib import Path
 
 from app.core.security import BCRYPT_MAX_INPUT_BYTES, exceeds_bcrypt_input_limit
@@ -116,20 +117,132 @@ def _load_common_passwords(path: Path) -> frozenset[str]:
 
 COMMON_PASSWORDS = _load_common_passwords(_COMMON_PASSWORDS_PATH)
 
+# T-M1-45: коды нарушений парольной политики, по одному на критерий
+# FR-AUTH-002 — стабильные идентификаторы для сопоставления с пунктом
+# чек-листа в интерфейсе (NFR-LOC-001 требует русский интерфейс, но код
+# не должен меняться при переформулировке текста). Порядок — тот же,
+# что и порядок проверок в `validate_password_strength` ниже.
+VIOLATION_TOO_SHORT = "too_short"
+VIOLATION_EXCEEDS_BYTE_LIMIT = "exceeds_byte_limit"
+VIOLATION_CONTAINS_WHITESPACE = "contains_whitespace"
+VIOLATION_CONTAINS_INVISIBLE_OR_CONTROL_CHARACTERS = "contains_invisible_or_control_characters"
+VIOLATION_INSUFFICIENT_CHARACTER_CLASSES = "insufficient_character_classes"
+VIOLATION_CONTAINS_IDENTITY = "contains_identity"
+VIOLATION_COMMON_PASSWORD = "common_password"
+
+PASSWORD_POLICY_VIOLATION_CODES = (
+    VIOLATION_TOO_SHORT,
+    VIOLATION_EXCEEDS_BYTE_LIMIT,
+    VIOLATION_CONTAINS_WHITESPACE,
+    VIOLATION_CONTAINS_INVISIBLE_OR_CONTROL_CHARACTERS,
+    VIOLATION_INSUFFICIENT_CHARACTER_CLASSES,
+    VIOLATION_CONTAINS_IDENTITY,
+    VIOLATION_COMMON_PASSWORD,
+)
+
+
+@dataclass(frozen=True)
+class PasswordPolicyViolation:
+    """Код + русская формулировка одного нарушения (T-M1-45). Один и тот
+    же объект используется и как элемент `WeakPasswordError.violations`
+    (что не так с ЭТИМ паролем), и как элемент `get_password_policy_
+    hints()` (что вообще проверяется, безотносительно конкретного
+    пароля) — текст в обоих случаях описывает само правило, а не что-то
+    специфичное для введённого значения, поэтому формулировка совпадает
+    дословно."""
+
+    code: str
+    message: str
+
+    def __post_init__(self) -> None:
+        # PR #143 review: сетка того же рода, что запрет в hash_password
+        # (PR #140) — не замена проверке `test_password_policy_codes_
+        # and_hints_are_the_same_set` (та ловит расхождение реестра и
+        # словаря формулировок на уровне тестов), а срабатывает, когда
+        # НОВЫЙ код нарушения обошёл реестр `PASSWORD_POLICY_VIOLATION_
+        # CODES` и добрался до конструктора — то есть на баге, который
+        # тест по каким-то причинам не поймал.
+        if self.code not in PASSWORD_POLICY_VIOLATION_CODES:
+            raise ValueError(
+                f"{self.code!r} is not a registered password policy violation code "
+                "(see PASSWORD_POLICY_VIOLATION_CODES in password_policy.py)"
+            )
+
+
+def _password_policy_messages(*, min_length: int) -> dict[str, str]:
+    """ЕДИНСТВЕННЫЙ источник русских формулировок парольной политики —
+    и для сообщений о нарушении, и для подсказок `GET /api/auth/
+    password-policy` (T-M1-45): один код существует в ровно одном
+    месте этого словаря, поэтому набор кодов, которые может поднять
+    `validate_password_strength`, и набор кодов, которые перечисляет
+    эндпоинт-подсказка, не могут разойтись сами по себе (см. тест
+    `test_password_policy_codes_and_hints_are_the_same_set`). Тексты —
+    по формулировкам FR-AUTH-002 (`requirements.md`), не придуманы
+    заново; минимальная длина — параметр функции, а не хардкод: это
+    бизнес-правило, которое в M2 (`T-M2-09`) переезжает в
+    `business_rules_config`."""
+    return {
+        VIOLATION_TOO_SHORT: f"Пароль должен быть не короче {min_length} символов.",
+        VIOLATION_EXCEEDS_BYTE_LIMIT: (
+            f"Пароль не должен превышать {MAX_PASSWORD_BYTES} байт в кодировке "
+            "UTF-8 — алгоритм хэширования учитывает только первые 72 байта пароля; "
+            "для кириллицы граница составляет около 36 символов, а не 72."
+        ),
+        VIOLATION_CONTAINS_WHITESPACE: (
+            "Пароль не должен содержать пробельные символы (пробел, табуляция, "
+            "перевод строки, неразрывный пробел)."
+        ),
+        VIOLATION_CONTAINS_INVISIBLE_OR_CONTROL_CHARACTERS: (
+            "Пароль не должен содержать невидимые, управляющие или форматирующие "
+            "символы Unicode (например, символы нулевой ширины ZWJ/ZWNJ, мягкий "
+            "перенос)."
+        ),
+        VIOLATION_INSUFFICIENT_CHARACTER_CLASSES: (
+            "Пароль должен содержать символы минимум трёх типов из четырёх: "
+            "строчные буквы, заглавные буквы, цифры, специальные символы."
+        ),
+        VIOLATION_CONTAINS_IDENTITY: (
+            "Пароль не должен содержать логин, e-mail или ФИО сотрудника."
+        ),
+        VIOLATION_COMMON_PASSWORD: (
+            "Пароль входит в список распространённых или ранее скомпрометированных "
+            "паролей."
+        ),
+    }
+
+
+def get_password_policy_hints(
+    *, min_length: int = DEFAULT_MIN_PASSWORD_LENGTH
+) -> list[PasswordPolicyViolation]:
+    """`GET /api/auth/password-policy` (T-M1-45): состав действующих
+    правил с уже подставленными параметрами на русском — чтобы
+    интерфейс не хардкодил ни тексты, ни значения (например, `min_
+    length`). Возвращает ВСЕ коды из `PASSWORD_POLICY_VIOLATION_CODES`
+    без исключения — порядок соответствует порядку проверок в
+    `validate_password_strength`."""
+    messages = _password_policy_messages(min_length=min_length)
+    return [
+        PasswordPolicyViolation(code=code, message=messages[code])
+        for code in PASSWORD_POLICY_VIOLATION_CODES
+    ]
+
 
 class WeakPasswordError(Exception):
     """Пароль не прошёл один или несколько критериев политики.
 
     Несёт СПИСОК всех нарушенных требований (`violations`), а не одно
-    сообщение, — этого требует FR-AUTH-002 v1.8. `str(exc)` остаётся
-    удобочитаемой строкой (нарушения через «; ») для мест, которым
+    сообщение, — этого требует FR-AUTH-002 v1.8. Каждый элемент —
+    `PasswordPolicyViolation` (T-M1-45): код + русская формулировка
+    (NFR-LOC-001), а не голая строка — интерфейс сопоставляет нарушение
+    с пунктом чек-листа по коду, не по тексту. `str(exc)` остаётся
+    удобочитаемой строкой (сообщения через «; ») для мест, которым
     структура не нужна; вызывающий код, которому нужен именно список
     (ответ 400 с перечислением всех нарушений), берёт `exc.violations`
     напрямую."""
 
-    def __init__(self, violations: list[str]) -> None:
+    def __init__(self, violations: list[PasswordPolicyViolation]) -> None:
         self.violations = violations
-        super().__init__("; ".join(violations))
+        super().__init__("; ".join(v.message for v in violations))
 
 
 def _contains_case_insensitive(password_lower: str, needle: str) -> bool:
@@ -207,17 +320,24 @@ def validate_password_strength(
     учётная запись без карточки сотрудника — см. `bootstrap.py`),
     передаёт `None` явно, а не полагается на то, что правило "как-то
     само" не сработает."""
-    violations: list[str] = []
+    violations: list[PasswordPolicyViolation] = []
     password_lower = password.lower()
+    # T-M1-45: те же формулировки, что отдаёт `GET /api/auth/password-
+    # policy` (см. `get_password_policy_hints`) — один словарь на оба
+    # потребителя, чтобы код и текст нарушения не могли разойтись с
+    # тем, что показано в подсказке.
+    messages = _password_policy_messages(min_length=min_length)
 
     if len(password) < min_length:
-        violations.append(f"Password must be at least {min_length} characters long")
+        violations.append(
+            PasswordPolicyViolation(VIOLATION_TOO_SHORT, messages[VIOLATION_TOO_SHORT])
+        )
 
     if exceeds_bcrypt_input_limit(password):
         violations.append(
-            f"Password must not exceed {MAX_PASSWORD_BYTES} bytes when UTF-8 encoded "
-            "(bcrypt only hashes the first 72 bytes of a password; for Cyrillic text "
-            "this is roughly 36 characters, not 72)"
+            PasswordPolicyViolation(
+                VIOLATION_EXCEEDS_BYTE_LIMIT, messages[VIOLATION_EXCEEDS_BYTE_LIMIT]
+            )
         )
 
     # PR #140 review: пробел (в т.ч. неразрывный — прилетает при
@@ -226,7 +346,11 @@ def validate_password_strength(
     # `str.isspace()` покрывает пробел, табуляцию, перевод строки и
     # неразрывный пробел (U+00A0) одним вызовом.
     if any(c.isspace() for c in password):
-        violations.append("Password must not contain whitespace characters")
+        violations.append(
+            PasswordPolicyViolation(
+                VIOLATION_CONTAINS_WHITESPACE, messages[VIOLATION_CONTAINS_WHITESPACE]
+            )
+        )
 
     # PR #140 review (второй круг): невидимые/управляющие Unicode-символы
     # (ZWJ, мягкий перенос, BEL, ...) запрещены отдельным критерием, тем
@@ -234,8 +358,10 @@ def validate_password_strength(
     # сознательно повторить то, чего не видит.
     if any(_is_invisible_control_character(c) for c in password):
         violations.append(
-            "Password must not contain invisible or control characters "
-            "(e.g. zero-width joiners, soft hyphens, control codes)"
+            PasswordPolicyViolation(
+                VIOLATION_CONTAINS_INVISIBLE_OR_CONTROL_CHARACTERS,
+                messages[VIOLATION_CONTAINS_INVISIBLE_OR_CONTROL_CHARACTERS],
+            )
         )
 
     # Специальный символ определяется через отрицание («не буква, не
@@ -265,8 +391,10 @@ def validate_password_strength(
     )
     if class_count < 3:
         violations.append(
-            "Password must contain at least three of: lowercase letters, "
-            "uppercase letters, digits, special characters"
+            PasswordPolicyViolation(
+                VIOLATION_INSUFFICIENT_CHARACTER_CLASSES,
+                messages[VIOLATION_INSUFFICIENT_CHARACTER_CLASSES],
+            )
         )
 
     contains_identity = False
@@ -295,10 +423,16 @@ def validate_password_strength(
                     contains_identity = True
                     break
     if contains_identity:
-        violations.append("Password must not contain the login, e-mail, or employee's name")
+        violations.append(
+            PasswordPolicyViolation(
+                VIOLATION_CONTAINS_IDENTITY, messages[VIOLATION_CONTAINS_IDENTITY]
+            )
+        )
 
     if password_lower in COMMON_PASSWORDS:
-        violations.append("Password is one of the most common passwords and cannot be used")
+        violations.append(
+            PasswordPolicyViolation(VIOLATION_COMMON_PASSWORD, messages[VIOLATION_COMMON_PASSWORD])
+        )
 
     if violations:
         raise WeakPasswordError(violations)

@@ -11,10 +11,16 @@ from app.models.account import Account
 from app.models.employee import Employee
 from app.modules.auth import ldap_service, local_service
 from app.modules.auth.embedded_mode import is_embedded_mode
-from app.modules.auth.password_policy import WeakPasswordError, validate_password_strength
+from app.modules.auth.password_policy import get_password_policy_hints, validate_password_strength
 from app.modules.auth.rbac import get_current_account
 from app.modules.auth.tokens import AuthResult
-from app.schemas.auth import LoginRequest, MeResponse, PasswordChangeRequest, TokenResponse
+from app.schemas.auth import (
+    LoginRequest,
+    MeResponse,
+    PasswordChangeRequest,
+    PasswordPolicyHintOut,
+    TokenResponse,
+)
 from app.schemas.errors import ErrorDetail
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
@@ -117,16 +123,34 @@ async def change_password(
     ):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid current password")
 
-    try:
-        validate_password_strength(
-            payload.new_password.get_secret_value(), **await _identity_context(session, account)
-        )
-    except WeakPasswordError as exc:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, exc.violations) from exc
+    # PR #143 review, коммит 1: WeakPasswordError, поднятая здесь, ловится
+    # не локально, а сеткой уровня приложения (`main.py`, симметрично
+    # `IntegrityError`/`ImportFileError`) — она строит тот же ответ
+    # (400, список `PasswordPolicyViolationOut`), локальный `try/except`
+    # был бы дублированием без дополнительной пользы.
+    validate_password_strength(
+        payload.new_password.get_secret_value(), **await _identity_context(session, account)
+    )
 
     account.local_password_hash = hash_password(payload.new_password.get_secret_value())
     account.must_change_password = False
     await session.commit()
+
+
+@router.get("/password-policy", response_model=list[PasswordPolicyHintOut])
+async def get_password_policy(
+    _: Account = Depends(get_current_account),
+) -> list[PasswordPolicyHintOut]:
+    """T-M1-45: состав действующих правил парольной политики с уже
+    подставленными параметрами на русском (NFR-LOC-001), чтобы
+    интерфейс не хардкодил ни тексты, ни значения (минимальная длина —
+    бизнес-параметр, `T-M2-09`). Под авторизацией (`Depends(
+    get_current_account)`) — не публичный эндпоинт: состав правил сам
+    по себе не секрет, но раскрывать детали механизма аутентификации
+    без аутентификации не требуется."""
+    return [
+        PasswordPolicyHintOut(code=h.code, hint=h.message) for h in get_password_policy_hints()
+    ]
 
 
 @router.post("/logout", status_code=status.HTTP_204_NO_CONTENT, response_model=None)

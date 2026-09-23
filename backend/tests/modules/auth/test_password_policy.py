@@ -1,5 +1,5 @@
 """`password_policy.validate_password_strength` (T-M1-25/T-M1-38,
-FR-AUTH-002 v1.9)."""
+FR-AUTH-002 v1.9) и коды/подсказки парольной политики (T-M1-45)."""
 
 from __future__ import annotations
 
@@ -16,6 +16,13 @@ from app.modules.auth.password_policy import WeakPasswordError, validate_passwor
 _STRONG_PASSWORD = "Zq7$mVx2"
 
 
+def _violation_codes(exc: WeakPasswordError) -> set[str]:
+    """Тесты проверяют КОД нарушения (T-M1-45), а не текст сообщения —
+    сообщение теперь на русском (NFR-LOC-001) и меняется при
+    переформулировке, а код — стабильный контракт с интерфейсом."""
+    return {v.code for v in exc.violations}
+
+
 def test_strong_password_with_no_context_is_accepted() -> None:
     validate_password_strength(_STRONG_PASSWORD)
 
@@ -27,7 +34,68 @@ def test_password_below_minimum_length_is_rejected_with_only_that_violation() ->
         validate_password_strength("Ab1!Ab")
 
     assert len(exc_info.value.violations) == 1
-    assert "8 characters" in exc_info.value.violations[0]
+    assert exc_info.value.violations[0].code == password_policy.VIOLATION_TOO_SHORT
+
+
+# --- T-M1-45: коды нарушений и подсказки строятся из одного источника ------
+
+
+def test_password_policy_codes_and_hints_are_the_same_set() -> None:
+    """ГЛАВНЫЙ тест задачи (T-M1-45). Сравнивает ДВА НЕЗАВИСИМО
+    НАПИСАННЫХ источника: ключи словаря `_password_policy_messages`
+    (формулировки, автор пишет их вручную по одной на код) и кортеж
+    `PASSWORD_POLICY_VIOLATION_CODES` (реестр кодов, тоже написан
+    вручную). `get_password_policy_hints()` сюда намеренно не входит —
+    он строится ИТЕРАЦИЕЙ ПО ТОМУ ЖЕ КОРТЕЖУ, поэтому сравнение его
+    результата с этим кортежем совпадало бы по построению и не могло
+    бы упасть ни при каком состоянии кода (PR #143 review, замечание
+    1). Именно расхождение словаря и кортежа — критерий без подсказки
+    или подсказка без критерия — и есть та ошибка, ради которой
+    заведена задача."""
+    message_codes = set(password_policy._password_policy_messages(min_length=8))
+    assert message_codes == set(password_policy.PASSWORD_POLICY_VIOLATION_CODES)
+
+
+def test_violation_message_matches_the_policy_hint_text() -> None:
+    """Не только код, но и САМ ТЕКСТ нарушения обязан совпадать с
+    текстом соответствующей подсказки: оба берутся из одного словаря
+    (`_password_policy_messages`), поэтому подмена текста в одном месте
+    без другого структурно невозможна, а не только по соглашению."""
+    hints_by_code = {
+        hint.code: hint.message for hint in password_policy.get_password_policy_hints()
+    }
+
+    with pytest.raises(WeakPasswordError) as exc_info:
+        validate_password_strength("qwertyui")  # только состав символов нарушен
+
+    violation = exc_info.value.violations[0]
+    assert violation.code == password_policy.VIOLATION_INSUFFICIENT_CHARACTER_CLASSES
+    assert violation.message == hints_by_code[violation.code]
+
+
+def test_get_password_policy_hints_substitutes_min_length() -> None:
+    # T-M1-45: минимальная длина — бизнес-параметр (T-M2-09), подсказка
+    # не хардкодит его, а подставляет переданное значение в текст.
+    hints = {
+        hint.code: hint.message for hint in password_policy.get_password_policy_hints(
+            min_length=12
+        )
+    }
+    assert "12" in hints[password_policy.VIOLATION_TOO_SHORT]
+
+
+def test_password_policy_violation_rejects_unregistered_code() -> None:
+    """Отрицательный контроль (PR #143 review, замечание 1), отдельный
+    от `test_password_policy_codes_and_hints_are_the_same_set` выше и
+    различающий с ним: тот тест ловит расхождение реестра кодов и
+    словаря формулировок, этот — конкретно сетку в `PasswordPolicyViolation.
+    __post_init__`. Проверено руками: без сетки (`__post_init__` временно
+    закомментирован) падает именно этот тест, а `test_password_policy_
+    codes_and_hints_are_the_same_set` по-прежнему проходит — словарь и
+    кортеж между собой не расходятся, расходится только то, что
+    ДОПУСТИЛ конструктор."""
+    with pytest.raises(ValueError, match="not a registered password policy violation code"):
+        password_policy.PasswordPolicyViolation(code="not_a_real_code", message="текст")
 
 
 # --- Верхняя граница длины: усечение bcrypt (PR #140 review) ----------------
@@ -43,7 +111,7 @@ def test_password_exceeding_72_bytes_is_rejected_in_isolation() -> None:
         validate_password_strength(password)
 
     assert len(exc_info.value.violations) == 1
-    assert "72 bytes" in exc_info.value.violations[0]
+    assert exc_info.value.violations[0].code == password_policy.VIOLATION_EXCEEDS_BYTE_LIMIT
 
 
 def test_password_of_exactly_72_bytes_is_accepted() -> None:
@@ -67,7 +135,7 @@ def test_cyrillic_password_under_72_characters_can_still_exceed_72_bytes() -> No
     with pytest.raises(WeakPasswordError) as exc_info:
         validate_password_strength(password)
 
-    assert any("72 bytes" in v for v in exc_info.value.violations)
+    assert password_policy.VIOLATION_EXCEEDS_BYTE_LIMIT in _violation_codes(exc_info.value)
 
 
 def test_length_upper_bound_is_required_to_reject_the_overlong_password(monkeypatch) -> None:
@@ -115,7 +183,7 @@ def test_overlong_password_that_would_collide_under_bcrypt_is_rejected() -> None
 
     with pytest.raises(WeakPasswordError) as exc_info:
         validate_password_strength(long_password)
-    assert any("72 bytes" in v for v in exc_info.value.violations)
+    assert password_policy.VIOLATION_EXCEEDS_BYTE_LIMIT in _violation_codes(exc_info.value)
 
 
 def test_hash_password_rejects_input_over_bcrypt_limit() -> None:
@@ -142,7 +210,10 @@ def test_password_with_only_lowercase_letters_is_rejected() -> None:
     with pytest.raises(WeakPasswordError) as exc_info:
         validate_password_strength("qwertyui")
 
-    assert any("three of" in v for v in exc_info.value.violations)
+    assert (
+        password_policy.VIOLATION_INSUFFICIENT_CHARACTER_CLASSES
+        in _violation_codes(exc_info.value)
+    )
 
 
 def test_password_with_trailing_space_is_rejected_by_composition() -> None:
@@ -156,25 +227,25 @@ def test_password_with_trailing_space_is_rejected_by_composition() -> None:
     with pytest.raises(WeakPasswordError) as exc_info:
         validate_password_strength("abcdefg1 ")
 
-    violations = exc_info.value.violations
-    assert any("three of" in v for v in violations)
-    assert any("whitespace" in v for v in violations)
+    codes = _violation_codes(exc_info.value)
+    assert password_policy.VIOLATION_INSUFFICIENT_CHARACTER_CLASSES in codes
+    assert password_policy.VIOLATION_CONTAINS_WHITESPACE in codes
 
 
 def test_password_with_tab_is_rejected() -> None:
     with pytest.raises(WeakPasswordError) as exc_info:
         validate_password_strength("Ab1!Ab\t12")
 
-    assert any("whitespace" in v for v in exc_info.value.violations)
+    assert password_policy.VIOLATION_CONTAINS_WHITESPACE in _violation_codes(exc_info.value)
 
 
 def test_password_with_non_breaking_space_is_rejected() -> None:
     # Неразрывный пробел (U+00A0) — прилетает при копировании пароля из
     # офисных редакторов, а не только с обычной клавиатуры.
     with pytest.raises(WeakPasswordError) as exc_info:
-        validate_password_strength("Ab1!Ab 12")
+        validate_password_strength("Ab1!Ab 12")
 
-    assert any("whitespace" in v for v in exc_info.value.violations)
+    assert password_policy.VIOLATION_CONTAINS_WHITESPACE in _violation_codes(exc_info.value)
 
 
 def test_numero_sign_counts_as_a_special_character() -> None:
@@ -197,7 +268,10 @@ def test_password_with_soft_hyphen_is_rejected() -> None:
     with pytest.raises(WeakPasswordError) as exc_info:
         validate_password_strength("Ab1!Ab­12")
 
-    assert any("invisible" in v for v in exc_info.value.violations)
+    assert (
+        password_policy.VIOLATION_CONTAINS_INVISIBLE_OR_CONTROL_CHARACTERS
+        in _violation_codes(exc_info.value)
+    )
 
 
 def test_password_with_zero_width_joiner_is_rejected() -> None:
@@ -207,7 +281,10 @@ def test_password_with_zero_width_joiner_is_rejected() -> None:
     with pytest.raises(WeakPasswordError) as exc_info:
         validate_password_strength("Ab1!Ab‍12")
 
-    assert any("invisible" in v for v in exc_info.value.violations)
+    assert (
+        password_policy.VIOLATION_CONTAINS_INVISIBLE_OR_CONTROL_CHARACTERS
+        in _violation_codes(exc_info.value)
+    )
 
 
 def test_password_with_bell_control_character_is_rejected() -> None:
@@ -217,7 +294,10 @@ def test_password_with_bell_control_character_is_rejected() -> None:
     with pytest.raises(WeakPasswordError) as exc_info:
         validate_password_strength("Ab1!Ab\x0712")
 
-    assert any("invisible" in v for v in exc_info.value.violations)
+    assert (
+        password_policy.VIOLATION_CONTAINS_INVISIBLE_OR_CONTROL_CHARACTERS
+        in _violation_codes(exc_info.value)
+    )
 
 
 def test_invisible_character_rule_is_required_to_reject_zero_width_joiner(monkeypatch) -> None:
@@ -245,12 +325,18 @@ def test_combining_acute_accent_does_not_count_as_a_special_character() -> None:
     password_without_mark = "password1"
     with pytest.raises(WeakPasswordError) as exc_info:
         validate_password_strength(password_without_mark)
-    assert any("three of" in v for v in exc_info.value.violations)
+    assert (
+        password_policy.VIOLATION_INSUFFICIENT_CHARACTER_CLASSES
+        in _violation_codes(exc_info.value)
+    )
 
     password_with_combining_mark = password_without_mark + "́"
     with pytest.raises(WeakPasswordError) as exc_info:
         validate_password_strength(password_with_combining_mark)
-    assert any("three of" in v for v in exc_info.value.violations)
+    assert (
+        password_policy.VIOLATION_INSUFFICIENT_CHARACTER_CLASSES
+        in _violation_codes(exc_info.value)
+    )
 
 
 def test_combining_mark_exclusion_is_required_to_fail_composition(monkeypatch) -> None:
@@ -270,8 +356,9 @@ def test_password_meeting_composition_can_still_be_a_common_password() -> None:
     with pytest.raises(WeakPasswordError) as exc_info:
         validate_password_strength("Qwerty1")
 
-    assert not any("three of" in v for v in exc_info.value.violations)
-    assert any("common" in v for v in exc_info.value.violations)
+    codes = _violation_codes(exc_info.value)
+    assert password_policy.VIOLATION_INSUFFICIENT_CHARACTER_CLASSES not in codes
+    assert password_policy.VIOLATION_COMMON_PASSWORD in codes
 
 
 # --- Список распространённых паролей ----------------------------------------
@@ -281,14 +368,14 @@ def test_cyrillic_common_password_is_rejected() -> None:
     with pytest.raises(WeakPasswordError) as exc_info:
         validate_password_strength("Пароль1")
 
-    assert any("common" in v for v in exc_info.value.violations)
+    assert password_policy.VIOLATION_COMMON_PASSWORD in _violation_codes(exc_info.value)
 
 
 def test_cyrillic_keyboard_layout_pattern_is_rejected() -> None:
     with pytest.raises(WeakPasswordError) as exc_info:
         validate_password_strength("Йцукен123")
 
-    assert any("common" in v for v in exc_info.value.violations)
+    assert password_policy.VIOLATION_COMMON_PASSWORD in _violation_codes(exc_info.value)
 
 
 # --- Логин / e-mail / ФИО ----------------------------------------------------
@@ -298,14 +385,14 @@ def test_password_containing_login_is_rejected() -> None:
     with pytest.raises(WeakPasswordError) as exc_info:
         validate_password_strength("Vasiliev2026!", login="Vasiliev")
 
-    assert any("name" in v for v in exc_info.value.violations)
+    assert password_policy.VIOLATION_CONTAINS_IDENTITY in _violation_codes(exc_info.value)
 
 
 def test_password_containing_email_local_part_is_rejected() -> None:
     with pytest.raises(WeakPasswordError) as exc_info:
         validate_password_strength("Vasiliev2026!", email="vasiliev@company.local")
 
-    assert any("name" in v for v in exc_info.value.violations)
+    assert password_policy.VIOLATION_CONTAINS_IDENTITY in _violation_codes(exc_info.value)
 
 
 def test_single_letter_name_tokens_are_not_checked() -> None:
@@ -321,7 +408,7 @@ def test_short_name_token_at_start_of_password_is_rejected() -> None:
     with pytest.raises(WeakPasswordError) as exc_info:
         validate_password_strength("Ли123456!", full_name="Ли Иван Петрович")
 
-    assert any("name" in v for v in exc_info.value.violations)
+    assert password_policy.VIOLATION_CONTAINS_IDENTITY in _violation_codes(exc_info.value)
 
 
 def test_short_name_token_is_not_rejected_as_a_substring_elsewhere() -> None:
@@ -346,7 +433,7 @@ def test_long_name_token_is_rejected_anywhere_in_the_password() -> None:
     with pytest.raises(WeakPasswordError) as exc_info:
         validate_password_strength("SuperПетрович1!", full_name="Ли Иван Петрович")
 
-    assert any("name" in v for v in exc_info.value.violations)
+    assert password_policy.VIOLATION_CONTAINS_IDENTITY in _violation_codes(exc_info.value)
 
 
 def test_word_boundary_is_required_to_avoid_flagging_ordinary_words(monkeypatch) -> None:
@@ -374,7 +461,7 @@ def test_password_containing_transliterated_full_name_is_rejected() -> None:
     with pytest.raises(WeakPasswordError) as exc_info:
         validate_password_strength("Ivanov2026!", full_name="Иванов Иван Иванович")
 
-    assert any("name" in v for v in exc_info.value.violations)
+    assert password_policy.VIOLATION_CONTAINS_IDENTITY in _violation_codes(exc_info.value)
 
 
 def test_transliteration_is_required_to_catch_the_name(monkeypatch) -> None:
@@ -403,9 +490,10 @@ def test_all_violations_are_reported_at_once() -> None:
 
     violations = exc_info.value.violations
     assert len(violations) == 3
-    assert any("8 characters" in v for v in violations)
-    assert any("three of" in v for v in violations)
-    assert any("name" in v for v in violations)
+    codes = {v.code for v in violations}
+    assert password_policy.VIOLATION_TOO_SHORT in codes
+    assert password_policy.VIOLATION_INSUFFICIENT_CHARACTER_CLASSES in codes
+    assert password_policy.VIOLATION_CONTAINS_IDENTITY in codes
 
 
 # --- Контекст необязателен ----------------------------------------------------
@@ -417,4 +505,4 @@ def test_missing_context_only_skips_the_identity_rule() -> None:
     with pytest.raises(WeakPasswordError) as exc_info:
         validate_password_strength("qwertyui")
 
-    assert not any("name" in v for v in exc_info.value.violations)
+    assert password_policy.VIOLATION_CONTAINS_IDENTITY not in _violation_codes(exc_info.value)

@@ -90,6 +90,32 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/auth/password-policy": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Password Policy
+         * @description T-M1-45: состав действующих правил парольной политики с уже
+         *     подставленными параметрами на русском (NFR-LOC-001), чтобы
+         *     интерфейс не хардкодил ни тексты, ни значения (минимальная длина —
+         *     бизнес-параметр, `T-M2-09`). Под авторизацией (`Depends(
+         *     get_current_account)`) — не публичный эндпоинт: состав правил сам
+         *     по себе не секрет, но раскрывать детали механизма аутентификации
+         *     без аутентификации не требуется.
+         */
+        get: operations["get_password_policy_api_auth_password_policy_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/auth/logout": {
         parameters: {
             query?: never;
@@ -451,7 +477,7 @@ export interface components {
         /** ErrorDetail */
         ErrorDetail: {
             /** Detail */
-            detail: string | string[];
+            detail: string | components["schemas"]["PasswordPolicyViolationOut"][];
         };
         /** HTTPValidationError */
         HTTPValidationError: {
@@ -602,6 +628,37 @@ export interface components {
              * Format: password
              */
             new_password: string;
+        };
+        /**
+         * PasswordPolicyHintOut
+         * @description Один пункт ответа `GET /api/auth/password-policy` (T-M1-45):
+         *     `code` — тот же стабильный идентификатор, что и в `ErrorDetail.
+         *     detail` при отказе `WeakPasswordError` (см. `schemas.errors.
+         *     PasswordPolicyViolationOut`), `hint` — готовая русская
+         *     формулировка правила с уже подставленными параметрами (например,
+         *     минимальной длиной) — интерфейс не хардкодит ни то, ни другое.
+         */
+        PasswordPolicyHintOut: {
+            /** Code */
+            code: string;
+            /** Hint */
+            hint: string;
+        };
+        /**
+         * PasswordPolicyViolationOut
+         * @description Один элемент `ErrorDetail.detail`, когда причина 400 —
+         *     `WeakPasswordError` (T-M1-45): `code` — стабильный идентификатор
+         *     нарушенного критерия FR-AUTH-002 (см. `password_policy.
+         *     PASSWORD_POLICY_VIOLATION_CODES`) для интерфейса, чтобы сопоставить
+         *     с пунктом чек-листа; `message` — готовая русская формулировка
+         *     (NFR-LOC-001), показывается как есть, не переписывается на клиенте
+         *     (`ui.md` §7).
+         */
+        PasswordPolicyViolationOut: {
+            /** Code */
+            code: string;
+            /** Message */
+            message: string;
         };
         /** ProductionCalendarDayIn */
         ProductionCalendarDayIn: {
@@ -796,6 +853,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_password_policy_api_auth_password_policy_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PasswordPolicyHintOut"][];
                 };
             };
         };

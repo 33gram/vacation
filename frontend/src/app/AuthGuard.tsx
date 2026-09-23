@@ -1,12 +1,16 @@
 import type { ReactElement } from "react";
-import { Navigate } from "react-router-dom";
+import { Navigate, Outlet } from "react-router-dom";
 
-import { isAuthenticated } from "./auth";
+import { hasStoredAccessToken } from "./auth";
 
-export function AuthGuard({ children }: { children: ReactElement }): ReactElement {
-  if (!isAuthenticated()) {
+/** Только наличие токена — не проверяет действующую сессию (это делает
+ * `SessionGate`, следующим уровнем ниже, через `GET /api/auth/me`).
+ * Достаточно на этом уровне: если токена нет вовсе, спрашивать `/me`
+ * незачем — 401 неизбежен. */
+export function AuthGuard(): ReactElement {
+  if (!hasStoredAccessToken()) {
     return <Navigate to="/login" replace />;
   }
 
-  return children;
+  return <Outlet />;
 }

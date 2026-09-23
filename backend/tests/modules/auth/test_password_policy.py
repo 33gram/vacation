@@ -41,17 +41,19 @@ def test_password_below_minimum_length_is_rejected_with_only_that_violation() ->
 
 
 def test_password_policy_codes_and_hints_are_the_same_set() -> None:
-    """ГЛАВНЫЙ тест задачи (T-M1-45). Набор кодов, которые может
-    поднять `validate_password_strength` (`PASSWORD_POLICY_VIOLATION_
-    CODES`), и набор кодов, которые перечисляет `get_password_policy_
-    hints()` (данные для `GET /api/auth/password-policy`), обязаны
-    быть ОДНИМ И ТЕМ ЖЕ множеством. Именно расхождение этих двух
-    списков — критерий без подсказки или подсказка без критерия — и
-    есть та ошибка, ради которой заведена задача: интерфейс решает,
-    какое нарушение показать, по коду из подсказки, и код, которого
-    там нет, отобразить нечем."""
-    hint_codes = {hint.code for hint in password_policy.get_password_policy_hints()}
-    assert hint_codes == set(password_policy.PASSWORD_POLICY_VIOLATION_CODES)
+    """ГЛАВНЫЙ тест задачи (T-M1-45). Сравнивает ДВА НЕЗАВИСИМО
+    НАПИСАННЫХ источника: ключи словаря `_password_policy_messages`
+    (формулировки, автор пишет их вручную по одной на код) и кортеж
+    `PASSWORD_POLICY_VIOLATION_CODES` (реестр кодов, тоже написан
+    вручную). `get_password_policy_hints()` сюда намеренно не входит —
+    он строится ИТЕРАЦИЕЙ ПО ТОМУ ЖЕ КОРТЕЖУ, поэтому сравнение его
+    результата с этим кортежем совпадало бы по построению и не могло
+    бы упасть ни при каком состоянии кода (PR #143 review, замечание
+    1). Именно расхождение словаря и кортежа — критерий без подсказки
+    или подсказка без критерия — и есть та ошибка, ради которой
+    заведена задача."""
+    message_codes = set(password_policy._password_policy_messages(min_length=8))
+    assert message_codes == set(password_policy.PASSWORD_POLICY_VIOLATION_CODES)
 
 
 def test_violation_message_matches_the_policy_hint_text() -> None:
@@ -80,6 +82,20 @@ def test_get_password_policy_hints_substitutes_min_length() -> None:
         )
     }
     assert "12" in hints[password_policy.VIOLATION_TOO_SHORT]
+
+
+def test_password_policy_violation_rejects_unregistered_code() -> None:
+    """Отрицательный контроль (PR #143 review, замечание 1), отдельный
+    от `test_password_policy_codes_and_hints_are_the_same_set` выше и
+    различающий с ним: тот тест ловит расхождение реестра кодов и
+    словаря формулировок, этот — конкретно сетку в `PasswordPolicyViolation.
+    __post_init__`. Проверено руками: без сетки (`__post_init__` временно
+    закомментирован) падает именно этот тест, а `test_password_policy_
+    codes_and_hints_are_the_same_set` по-прежнему проходит — словарь и
+    кортеж между собой не расходятся, расходится только то, что
+    ДОПУСТИЛ конструктор."""
+    with pytest.raises(ValueError, match="not a registered password policy violation code"):
+        password_policy.PasswordPolicyViolation(code="not_a_real_code", message="текст")
 
 
 # --- Верхняя граница длины: усечение bcrypt (PR #140 review) ----------------

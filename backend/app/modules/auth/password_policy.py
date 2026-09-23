@@ -154,6 +154,20 @@ class PasswordPolicyViolation:
     code: str
     message: str
 
+    def __post_init__(self) -> None:
+        # PR #143 review: сетка того же рода, что запрет в hash_password
+        # (PR #140) — не замена проверке `test_password_policy_codes_
+        # and_hints_are_the_same_set` (та ловит расхождение реестра и
+        # словаря формулировок на уровне тестов), а срабатывает, когда
+        # НОВЫЙ код нарушения обошёл реестр `PASSWORD_POLICY_VIOLATION_
+        # CODES` и добрался до конструктора — то есть на баге, который
+        # тест по каким-то причинам не поймал.
+        if self.code not in PASSWORD_POLICY_VIOLATION_CODES:
+            raise ValueError(
+                f"{self.code!r} is not a registered password policy violation code "
+                "(see PASSWORD_POLICY_VIOLATION_CODES in password_policy.py)"
+            )
+
 
 def _password_policy_messages(*, min_length: int) -> dict[str, str]:
     """ЕДИНСТВЕННЫЙ источник русских формулировок парольной политики —

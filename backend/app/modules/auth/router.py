@@ -11,11 +11,21 @@ from app.models.account import Account
 from app.models.employee import Employee
 from app.modules.auth import ldap_service, local_service
 from app.modules.auth.embedded_mode import is_embedded_mode
-from app.modules.auth.password_policy import WeakPasswordError, validate_password_strength
+from app.modules.auth.password_policy import (
+    WeakPasswordError,
+    get_password_policy_hints,
+    validate_password_strength,
+)
 from app.modules.auth.rbac import get_current_account
 from app.modules.auth.tokens import AuthResult
-from app.schemas.auth import LoginRequest, MeResponse, PasswordChangeRequest, TokenResponse
-from app.schemas.errors import ErrorDetail
+from app.schemas.auth import (
+    LoginRequest,
+    MeResponse,
+    PasswordChangeRequest,
+    PasswordPolicyHintOut,
+    TokenResponse,
+)
+from app.schemas.errors import ErrorDetail, PasswordPolicyViolationOut
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
@@ -122,11 +132,35 @@ async def change_password(
             payload.new_password.get_secret_value(), **await _identity_context(session, account)
         )
     except WeakPasswordError as exc:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, exc.violations) from exc
+        # T-M1-45: код + русское сообщение на нарушение (NFR-LOC-001),
+        # не голая строка — см. `schemas.errors.PasswordPolicyViolationOut`.
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            [
+                PasswordPolicyViolationOut(code=v.code, message=v.message).model_dump()
+                for v in exc.violations
+            ],
+        ) from exc
 
     account.local_password_hash = hash_password(payload.new_password.get_secret_value())
     account.must_change_password = False
     await session.commit()
+
+
+@router.get("/password-policy", response_model=list[PasswordPolicyHintOut])
+async def get_password_policy(
+    _: Account = Depends(get_current_account),
+) -> list[PasswordPolicyHintOut]:
+    """T-M1-45: состав действующих правил парольной политики с уже
+    подставленными параметрами на русском (NFR-LOC-001), чтобы
+    интерфейс не хардкодил ни тексты, ни значения (минимальная длина —
+    бизнес-параметр, `T-M2-09`). Под авторизацией (`Depends(
+    get_current_account)`) — не публичный эндпоинт: состав правил сам
+    по себе не секрет, но раскрывать детали механизма аутентификации
+    без аутентификации не требуется."""
+    return [
+        PasswordPolicyHintOut(code=h.code, hint=h.message) for h in get_password_policy_hints()
+    ]
 
 
 @router.post("/logout", status_code=status.HTTP_204_NO_CONTENT, response_model=None)

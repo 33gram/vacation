@@ -15,6 +15,7 @@ from app.db.session import get_engine
 from app.main import app
 from app.models.account import Account
 from app.models.employee import Employee
+from app.modules.auth.password_policy import VIOLATION_CONTAINS_IDENTITY
 from tests.modules.auth.factories import (
     bearer_header,
     make_account,
@@ -275,6 +276,8 @@ async def test_create_employee_local_auth_rejects_weak_password(db_session, api_
     violations = response.json()["detail"]
     assert isinstance(violations, list)
     assert len(violations) > 1
+    # T-M1-45: код + русское сообщение (NFR-LOC-001), не голая строка.
+    assert all(set(v) == {"code", "message"} for v in violations)
 
 
 async def test_create_employee_local_auth_rejects_password_containing_full_name(
@@ -296,7 +299,7 @@ async def test_create_employee_local_auth_rejects_password_containing_full_name(
     )
 
     assert response.status_code == 400
-    assert any("name" in v for v in response.json()["detail"])
+    assert any(v["code"] == VIOLATION_CONTAINS_IDENTITY for v in response.json()["detail"])
 
 
 async def test_create_employee_ldap_auth_rejects_password(db_session, api_client) -> None:
@@ -779,7 +782,7 @@ async def test_put_employee_switch_to_local_rejects_password_containing_full_nam
     )
 
     assert response.status_code == 400
-    assert any("name" in v for v in response.json()["detail"])
+    assert any(v["code"] == VIOLATION_CONTAINS_IDENTITY for v in response.json()["detail"])
 
 
 async def test_put_employee_staying_local_with_new_password_is_rejected(

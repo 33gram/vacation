@@ -41,7 +41,7 @@ from app.schemas.employee import (
     ImportRowError,
     ImportSummary,
 )
-from app.schemas.errors import ErrorDetail
+from app.schemas.errors import ErrorDetail, PasswordPolicyViolationOut
 
 logger = logging.getLogger(__name__)
 
@@ -76,7 +76,15 @@ async def create_employee(
     try:
         employee = await employee_service.create_employee(session, payload)
     except WeakPasswordError as exc:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, exc.violations) from exc
+        # T-M1-45: код + русское сообщение на нарушение (NFR-LOC-001),
+        # не голая строка — см. `schemas.errors.PasswordPolicyViolationOut`.
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            [
+                PasswordPolicyViolationOut(code=v.code, message=v.message).model_dump()
+                for v in exc.violations
+            ],
+        ) from exc
     except ValueError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
     return EmployeeOut.model_validate(employee)
@@ -152,7 +160,14 @@ async def update_employee(
         # `WeakPasswordError` вовсе (только `create_employee` ловил) —
         # переключение на локальный вход (`_apply_auth_type_change`,
         # T-M1-34) со слабым паролем уходило клиенту как 500, не 400.
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, exc.violations) from exc
+        # T-M1-45: код + русское сообщение на нарушение (NFR-LOC-001).
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            [
+                PasswordPolicyViolationOut(code=v.code, message=v.message).model_dump()
+                for v in exc.violations
+            ],
+        ) from exc
     except ValueError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
     return EmployeeOut.model_validate(employee)

@@ -760,7 +760,17 @@ async def test_put_employee_switch_to_local_rejects_password_containing_full_nam
     паролем уходило клиенту как необработанное исключение (500), а не
     400. Отрицательный контроль на это выполнен вручную (временный
     откат `except WeakPasswordError` в `employee_router.update_employee`
-    и повторный прогон этого теста показали 500 — см. тело коммита)."""
+    и повторный прогон этого теста показали 500 — см. тело коммита).
+
+    PR #143 review, коммит 1: с переносом обработки в сетку `main.py`
+    (без локального `try/except`) — прогоном, а не рассуждением,
+    проверено, что `account`, изменённый В ПАМЯТИ ДО исключения
+    (`_apply_auth_type_change` мутирует `account.auth_type`/`local_
+    password_hash`/`must_change_password`, ПОТОМ вызывает `validate_
+    password_strength` не для этой ветки — здесь мутация ПОСЛЕ вызова,
+    но проверяется факт, а не порядок строк), не долетает до БД: запись
+    в `accounts` после отказа остаётся ровно такой, какой была до
+    запроса (`auth_type = 'ldap'`, хэш пароля не задан)."""
     department = await make_department(db_session)
     employee = await make_employee(
         db_session, email="switch-to-local-name@company.local", full_name="Тестовый Сотрудник"
@@ -783,6 +793,13 @@ async def test_put_employee_switch_to_local_rejects_password_containing_full_nam
 
     assert response.status_code == 400
     assert any(v["code"] == VIOLATION_CONTAINS_IDENTITY for v in response.json()["detail"])
+
+    unchanged_account = (
+        await db_session.execute(select(Account).where(Account.employee_id == employee.id))
+    ).scalar_one()
+    assert unchanged_account.auth_type == "ldap"
+    assert unchanged_account.local_password_hash is None
+    assert unchanged_account.must_change_password is False
 
 
 async def test_put_employee_staying_local_with_new_password_is_rejected(

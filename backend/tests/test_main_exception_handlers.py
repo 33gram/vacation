@@ -24,12 +24,23 @@ net.py` (там — временное снятие перехвата в реа
 
 from __future__ import annotations
 
+import json
 import logging
 
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
-from app.main import _handle_import_file_error, _handle_unexpected_integrity_error
+from app.main import (
+    _handle_import_file_error,
+    _handle_unexpected_integrity_error,
+    _handle_weak_password_error,
+)
+from app.modules.auth.password_policy import (
+    VIOLATION_COMMON_PASSWORD,
+    VIOLATION_TOO_SHORT,
+    PasswordPolicyViolation,
+    WeakPasswordError,
+)
 from app.modules.employees.import_parsing import ImportFileError
 from tests.fake_integrity_error import fake_integrity_error
 
@@ -75,6 +86,54 @@ async def test_import_file_error_handler_returns_400_with_message() -> None:
 
     assert response.status_code == 400
     assert response.body == b'{"detail":"File exceeds the 1000 data row limit"}'
+
+
+async def test_weak_password_error_handler_returns_400_with_violations() -> None:
+    """PR #143 review, коммит 1: сетка уровня приложения, заменившая три
+    одинаковых локальных `try/except` (`auth/router.change_password`,
+    `employee_router.create_employee`/`update_employee`)."""
+    exc = WeakPasswordError(
+        [PasswordPolicyViolation(code=VIOLATION_TOO_SHORT, message="Пароль слишком короткий.")]
+    )
+
+    response = await _handle_weak_password_error(_FakeRequest(), exc)
+
+    assert response.status_code == 400
+    assert json.loads(response.body) == {
+        "detail": [{"code": "too_short", "message": "Пароль слишком короткий."}]
+    }
+
+
+async def test_weak_password_error_handler_saves_a_route_with_no_local_catch() -> None:
+    """Отрицательный контроль (PR #143 review, коммит 1): изолированное
+    mini-приложение с ОДНИМ маршрутом, который поднимает
+    `WeakPasswordError` и НЕ ловит её сам — ровно ситуация, для которой
+    обработчик в `main.py` и существует, той же формы, что и для
+    `ImportFileError` ниже. Убрать регистрацию обработчика здесь — и
+    этот тест получит 500 вместо 400, то есть красен именно на сетку,
+    а не на какой-то из трёх убранных локальных блоков (их больше нет
+    ни в одном роутере)."""
+    probe_app = FastAPI()
+    probe_app.exception_handler(WeakPasswordError)(_handle_weak_password_error)
+
+    @probe_app.get("/probe")
+    async def _probe() -> None:
+        raise WeakPasswordError(
+            [
+                PasswordPolicyViolation(
+                    code=VIOLATION_COMMON_PASSWORD, message="Пароль распространён."
+                )
+            ]
+        )
+
+    transport = ASGITransport(app=probe_app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/probe")
+
+    assert response.status_code == 400
+    assert response.json() == {
+        "detail": [{"code": "common_password", "message": "Пароль распространён."}]
+    }
 
 
 async def test_import_file_error_handler_saves_a_route_with_no_local_catch() -> None:

@@ -11,11 +11,7 @@ from app.models.account import Account
 from app.models.employee import Employee
 from app.modules.auth import ldap_service, local_service
 from app.modules.auth.embedded_mode import is_embedded_mode
-from app.modules.auth.password_policy import (
-    WeakPasswordError,
-    get_password_policy_hints,
-    validate_password_strength,
-)
+from app.modules.auth.password_policy import get_password_policy_hints, validate_password_strength
 from app.modules.auth.rbac import get_current_account
 from app.modules.auth.tokens import AuthResult
 from app.schemas.auth import (
@@ -25,7 +21,7 @@ from app.schemas.auth import (
     PasswordPolicyHintOut,
     TokenResponse,
 )
-from app.schemas.errors import ErrorDetail, PasswordPolicyViolationOut
+from app.schemas.errors import ErrorDetail
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
@@ -127,20 +123,14 @@ async def change_password(
     ):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid current password")
 
-    try:
-        validate_password_strength(
-            payload.new_password.get_secret_value(), **await _identity_context(session, account)
-        )
-    except WeakPasswordError as exc:
-        # T-M1-45: код + русское сообщение на нарушение (NFR-LOC-001),
-        # не голая строка — см. `schemas.errors.PasswordPolicyViolationOut`.
-        raise HTTPException(
-            status.HTTP_400_BAD_REQUEST,
-            [
-                PasswordPolicyViolationOut(code=v.code, message=v.message).model_dump()
-                for v in exc.violations
-            ],
-        ) from exc
+    # PR #143 review, коммит 1: WeakPasswordError, поднятая здесь, ловится
+    # не локально, а сеткой уровня приложения (`main.py`, симметрично
+    # `IntegrityError`/`ImportFileError`) — она строит тот же ответ
+    # (400, список `PasswordPolicyViolationOut`), локальный `try/except`
+    # был бы дублированием без дополнительной пользы.
+    validate_password_strength(
+        payload.new_password.get_secret_value(), **await _identity_context(session, account)
+    )
 
     account.local_password_hash = hash_password(payload.new_password.get_secret_value())
     account.must_change_password = False

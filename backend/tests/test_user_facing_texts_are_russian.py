@@ -7,8 +7,9 @@ HTTP-ответа, обязано быть по-русски (`ui.md` §7 зап
 ровно про строковые литералы в модулях `_SCANNED_MODULES` ниже, в местах,
 которые эти модули используют для ошибок, реально доходящих до
 пользователя (`HTTPException`, `ValueError`/`ImportFileError`/
-`EmployeeNotFoundError`/`DepartmentNotFoundError`, поле `reason` у
-`RowError`). Она НЕ проверяет:
+`EmployeeNotFoundError`/`DepartmentNotFoundError`/`LdapAuthError`, поле
+`reason` у `RowError`, и возврат именованных в `_MESSAGE_BUILDER_
+FUNCTIONS` функций-строителей текста). Она НЕ проверяет:
 - модули, для которых русский текст не требование (`_EXCLUDED_MODULES`
   ниже — «что не переводится», см. тело коммита T-M1-47);
 - встроенные тексты pydantic в 422 (`"Field required"` и подобные) —
@@ -82,6 +83,18 @@ _MESSAGE_ARG_BY_CALLEE: dict[str, tuple[int, ...]] = {
     "RowError": (2,),
 }
 
+# PR #149 review: `unique_violations.py`'s `*_conflict_message` строят
+# текст один раз и ВОЗВРАЩАЮТ его — вызывающая сторона передаёт уже
+# готовую строку (`ValueError(personnel_number_conflict_message(...))`),
+# а не литерал, поэтому обычное сканирование по позиции аргумента их не
+# видит вовсе (аргумент — вызов функции, не литерал, `_literal_text`
+# возвращает `None`). Без этого списка правка одной из этих двух функций
+# на английский текст прошла бы проверку молча — ровно так, как прошла
+# бы дыра `ldap_client.py` без записи в `_SCANNED_MODULES` выше.
+_MESSAGE_BUILDER_FUNCTIONS = frozenset(
+    {"personnel_number_conflict_message", "email_conflict_message"}
+)
+
 _CYRILLIC = re.compile(r"[а-яА-ЯёЁ]")
 
 
@@ -133,6 +146,20 @@ def _find_english_messages(path: Path) -> list[str]:
                 continue
             if not _CYRILLIC.search(text):
                 offenders.append(f"{path.relative_to(_BACKEND_ROOT)}: {callee}(...): {text!r}")
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef) or node.name not in _MESSAGE_BUILDER_FUNCTIONS:
+            continue
+        for stmt in ast.walk(node):
+            if not isinstance(stmt, ast.Return) or stmt.value is None:
+                continue
+            text = _literal_text(stmt.value)
+            if text is None or len(text.strip()) <= 2:
+                continue
+            if not _CYRILLIC.search(text):
+                offenders.append(
+                    f"{path.relative_to(_BACKEND_ROOT)}: {node.name}() returns: {text!r}"
+                )
     return offenders
 
 

@@ -21,6 +21,14 @@ asyncpg — общая для всех путей записи в `employees`/`a
 
 Поле определяется по ИМЕНИ ОГРАНИЧЕНИЯ, а не разбором текста ошибки —
 имя не зависит от локали/версии сервера, текст сообщения зависит.
+
+PR #149 review: тексты обеих ошибок ("уже используется") живут ЗДЕСЬ, а
+не дублируются байт-в-байт между этим модулем и опережающей проверкой
+(`employee_service._require_personnel_number_free`/`_require_email_
+free`) — предварительная проверка и сетка под `IntegrityError` обязаны
+говорить пользователю одно и то же (см. `translate_unique_violation`),
+и одно место правки вместо двух — единственный способ гарантировать
+это статически, а не проверкой после факта.
 """
 
 from __future__ import annotations
@@ -43,6 +51,20 @@ def unique_violation_field(exc: IntegrityError) -> str | None:
     return UNIQUE_CONSTRAINT_FIELDS.get(constraint_name)
 
 
+def personnel_number_conflict_message(personnel_number: str) -> str:
+    """Текст для обоих путей отказа по `personnel_number` — опережающей
+    проверки (`employee_service._require_personnel_number_free`) и гонки
+    под `IntegrityError` (`translate_unique_violation` ниже). Префикс
+    `personnel_number:` — машиночитаемый, интерфейс кладёт ошибку под
+    нужное поле по нему; сохраняется дословно."""
+    return f"personnel_number: табельный номер «{personnel_number}» уже используется"
+
+
+def email_conflict_message(email: str) -> str:
+    """Симметрично `personnel_number_conflict_message` — для `email`."""
+    return f"email: адрес «{email}» уже используется"
+
+
 def translate_unique_violation(
     exc: IntegrityError, *, personnel_number: str | None, email: str | None
 ) -> Exception:
@@ -50,14 +72,13 @@ def translate_unique_violation(
     проверка (`_require_personnel_number_free`/`_require_email_free`,
     `employee_service.py`) — клиент не должен различать «поймали до
     записи» и «поймали на гонке», поэтому оба пути дают один и тот же
-    тип исключения и один и тот же текст. Ограничение, не входящее в
-    карту, не подменяется — исходная ошибка поднимается как есть, чтобы
-    не маскировать неожиданный сбой под штатный отказ 400."""
+    тип исключения и один и тот же текст (`*_conflict_message` выше —
+    единственный источник этого текста для обоих). Ограничение, не
+    входящее в карту, не подменяется — исходная ошибка поднимается как
+    есть, чтобы не маскировать неожиданный сбой под штатный отказ 400."""
     field = unique_violation_field(exc)
     if field == "personnel_number" and personnel_number is not None:
-        return ValueError(
-            f"personnel_number: табельный номер «{personnel_number}» уже используется"
-        )
+        return ValueError(personnel_number_conflict_message(personnel_number))
     if field == "email" and email is not None:
-        return ValueError(f"email: адрес «{email}» уже используется")
+        return ValueError(email_conflict_message(email))
     return exc

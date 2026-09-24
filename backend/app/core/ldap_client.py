@@ -75,7 +75,9 @@ def authenticate(settings: LdapSettingsData, login: str, password: str) -> str:
             user_dn = entries[0].entry_dn
             matched_value = str(entries[0][settings.user_match_attribute].value)
     except LDAPException as exc:
-        raise LdapAuthError("Не удалось выполнить bind сервисной записью или поиск в каталоге") from exc
+        raise LdapAuthError(
+            "Не удалось выполнить bind сервисной записью или поиск в каталоге"
+        ) from exc
 
     try:
         with Connection(server, user=user_dn, password=password, auto_bind=True):
@@ -101,4 +103,6 @@ def test_connection(settings: LdapSettingsData) -> None:
         ) as conn:
             conn.search(search_base=settings.base_dn, search_filter="(objectClass=*)", size_limit=1)
     except LDAPException as exc:
-        raise LdapAuthError("Не удалось выполнить bind сервисной записью или поиск по base DN") from exc
+        raise LdapAuthError(
+            "Не удалось выполнить bind сервисной записью или поиск по base DN"
+        ) from exc

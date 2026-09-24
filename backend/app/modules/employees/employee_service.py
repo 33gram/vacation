@@ -25,7 +25,11 @@ from app.models.employee import Employee
 from app.modules.auth.password_policy import validate_password_strength
 from app.modules.auth.rbac import is_in_management_chain, list_subordinate_employee_ids
 from app.modules.auth.repository import get_account_by_employee_id
-from app.modules.employees.unique_violations import translate_unique_violation
+from app.modules.employees.unique_violations import (
+    email_conflict_message,
+    personnel_number_conflict_message,
+    translate_unique_violation,
+)
 from app.schemas.employee import (
     EmployeeCardFields,
     EmployeeCreate,
@@ -140,7 +144,7 @@ async def _require_personnel_number_free(
     if exclude_employee_id is not None:
         query = query.where(Employee.id != exclude_employee_id)
     if (await session.execute(query.limit(1))).first() is not None:
-        raise ValueError(f"personnel_number: табельный номер «{personnel_number}» уже используется")
+        raise ValueError(personnel_number_conflict_message(personnel_number))
 
 
 async def _require_email_free(
@@ -150,7 +154,7 @@ async def _require_email_free(
     if exclude_employee_id is not None:
         query = query.where(Employee.id != exclude_employee_id)
     if (await session.execute(query.limit(1))).first() is not None:
-        raise ValueError(f"email: адрес «{email}» уже используется")
+        raise ValueError(email_conflict_message(email))
 
 
 def _apply_card_fields(employee: Employee, payload: EmployeeCardFields) -> None:

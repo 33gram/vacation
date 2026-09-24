@@ -180,7 +180,9 @@ async def test_deactivate_employee_twice_is_rejected_cleanly(db_session, api_cli
     )
 
     assert second.status_code == 400
-    assert "already terminated" in second.json()["detail"]
+    # Устойчивый признак — id сотрудника, а не формулировка сообщения
+    # (T-M1-47: сообщение теперь по-русски и меняется по мере правок текста).
+    assert str(employee.id) in second.json()["detail"]
 
 
 async def test_deactivated_employee_is_hidden_from_default_list(db_session, api_client) -> None:

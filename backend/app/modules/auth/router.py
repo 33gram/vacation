@@ -104,7 +104,7 @@ async def change_password(
     if account.auth_type != "local" or account.local_password_hash is None:
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST,
-            "Only local accounts have a password to change",
+            "Сменить пароль можно только для локальной учётной записи",
         )
     # PR #140 review (третий круг, замечание 2в): `current_password`
     # намеренно НЕ ограничен `MAX_PASSWORD_BYTES`, в отличие от входа
@@ -121,7 +121,7 @@ async def change_password(
     if not verify_password(
         payload.current_password.get_secret_value(), account.local_password_hash
     ):
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid current password")
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Неверный текущий пароль")
 
     # PR #143 review, коммит 1: WeakPasswordError, поднятая здесь, ловится
     # не локально, а сеткой уровня приложения (`main.py`, симметрично

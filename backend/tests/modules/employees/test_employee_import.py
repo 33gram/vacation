@@ -119,8 +119,8 @@ async def test_import_does_not_log_personal_data(db_session, api_client, caplog)
     email = f"pii-imp-{seq}@company.local"
     # Строка файла сталкивается с уже существующим personnel_number —
     # сообщение об ошибке (`reason`) в ОТВЕТЕ содержит само значение
-    # (`'{personnel_number}' already exists`), это нормально (ответ
-    # видит загрузивший HR-администратор), но не должно попасть в лог.
+    # (T-M1-47: `«{personnel_number}» уже существует`), это нормально
+    # (ответ видит загрузивший HR-администратор), но не должно попасть в лог.
     await make_employee(db_session, email=email, department_id=department.id, full_name=full_name)
     existing = (
         await db_session.execute(
@@ -190,7 +190,16 @@ async def test_import_exhausted_write_retries_returns_400_not_500(
         )
 
     assert response.status_code == 400
-    assert "repeated concurrent write conflicts" in response.json()["detail"]
+    # PR #149 review: имя поля одно проверяло только то, что ответ вообще
+    # о personnel_number — тот же признак не отличил бы этот отказ
+    # (исчерпание попыток записи под конкурентным конфликтом) от обычного
+    # "табельный номер уже используется" (`unique_violations.py`), которое
+    # тоже называет personnel_number. Добавлена вторая, распознающая
+    # ИМЕННО причину "попытки исчерпаны" фраза — общий признак (поле) плюс
+    # причина, не одно вместо другого.
+    detail = response.json()["detail"]
+    assert "personnel_number" in detail
+    assert "повторите загрузку" in detail
 
     log_text = "\n".join(record.getMessage() for record in caplog.records)
     assert full_name not in log_text

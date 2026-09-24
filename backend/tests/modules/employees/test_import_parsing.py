@@ -72,7 +72,9 @@ def test_parse_rejects_unsupported_extension() -> None:
 def test_parse_rejects_file_over_size_limit() -> None:
     content = b"x" * (MAX_FILE_SIZE_BYTES + 1)
 
-    with pytest.raises(ImportFileError, match="byte limit"):
+    # Устойчивый признак — сам предел (константа), а не формулировка
+    # сообщения (T-M1-47: теперь по-русски).
+    with pytest.raises(ImportFileError, match=str(MAX_FILE_SIZE_BYTES)):
         parse_import_file("employees.csv", content)
 
 
@@ -83,7 +85,7 @@ def test_parse_rejects_file_over_row_limit() -> None:
     ]
     content = _csv_bytes(*lines)
 
-    with pytest.raises(ImportFileError, match="row limit"):
+    with pytest.raises(ImportFileError, match=str(MAX_ROWS)):
         parse_import_file("employees.csv", content)
 
 
@@ -190,7 +192,15 @@ def _xlsx_bytes_with_no_worksheets() -> bytes:
 
 
 def test_parse_xlsx_without_worksheets_is_rejected_cleanly() -> None:
-    with pytest.raises(ImportFileError, match="worksheet"):
+    # PR #149 review: без `match=` этот тест passes на ЛЮБОЙ ImportFileError
+    # — включая одну, поднятую по неверной причине (например, если разбор
+    # книги начал бы падать на чём-то другом раньше проверки листов).
+    # Привязка к фрагменту текста ("нет ни одного листа", а не сообщение
+    # целиком — оно ещё содержит "В файле XLSX", общее с другими отказами
+    # этого же файла) — осознанный размен: она делает тест чувствительным к
+    # правке формулировки, но альтернатива (коды причин отказа импорта, как
+    # в T-M1-45) — отдельная задача, вне рамок T-M1-47.
+    with pytest.raises(ImportFileError, match="нет ни одного листа"):
         parse_import_file("employees.xlsx", _xlsx_bytes_with_no_worksheets())
 
 
@@ -212,5 +222,8 @@ def test_parse_xlsx_rejects_zip_bomb_before_decompressing() -> None:
     # размер ЗАГРУЖЕННОГО файла, а не именно проверка архива.
     assert len(content) < MAX_FILE_SIZE_BYTES
 
-    with pytest.raises(ImportFileError, match="uncompressed"):
+    # Устойчивый признак — сам предел (константа), а не формулировка
+    # сообщения (T-M1-47: теперь по-русски) — отличает этот отказ от
+    # MAX_FILE_SIZE_BYTES, который сработал бы по другой причине.
+    with pytest.raises(ImportFileError, match=str(MAX_XLSX_UNCOMPRESSED_BYTES)):
         parse_import_file("employees.xlsx", content)

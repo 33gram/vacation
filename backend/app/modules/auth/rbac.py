@@ -45,19 +45,19 @@ async def get_current_account(
     session: AsyncSession = Depends(get_db_session),
 ) -> Account:
     if credentials is None:
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Not authenticated")
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Требуется аутентификация")
 
     try:
         payload = decode_token(credentials.credentials)
     except TokenError as exc:
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid token") from exc
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Недействительный токен") from exc
 
     if payload.get("type") != "access":
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid token type")
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Недопустимый тип токена")
 
     account = await session.get(Account, int(payload["sub"]))
     if account is None:
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Account not found or inactive")
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Учётная запись не найдена или отключена")
 
     # FR-AUTH-004: та же проверка, что и на входе (`local_service`/
     # `ldap_service` вызывают `enforce_access` напрямую) —
@@ -98,10 +98,10 @@ def require_roles(*roles: str) -> Callable[[Account], Awaitable[Account]]:
         if account.must_change_password:
             raise HTTPException(
                 status.HTTP_403_FORBIDDEN,
-                "Password change required before continuing",
+                "Перед тем как продолжить, необходимо сменить пароль",
             )
         if account.role not in roles:
-            raise HTTPException(status.HTTP_403_FORBIDDEN, "Insufficient role")
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "Недостаточно прав для этого действия")
         return account
 
     return _dependency

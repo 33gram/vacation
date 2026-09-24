@@ -177,7 +177,9 @@ async def test_import_rejects_row_closing_into_pre_existing_corrupted_chain(db_s
     assert result.accepted_count == 0
     assert result.rejected_count == 1
     assert result.errors[0].field == "manager_personnel_number"
-    assert "cycle" in result.errors[0].reason
+    # Устойчивый признак — id существующего сотрудника, чья цепочка
+    # испорчена, а не формулировка сообщения (T-M1-47: теперь по-русски).
+    assert str(existing_a.id) in result.errors[0].reason
     assert await _employee_by_pn(db_session, "F") is None
 
 
@@ -216,7 +218,9 @@ async def test_import_rejects_personnel_number_already_in_db_without_updating(db
     assert result.accepted_count == 0
     assert result.rejected_count == 1
     assert result.errors[0].field == "personnel_number"
-    assert "already exists" in result.errors[0].reason
+    # Устойчивый признак — сам табельный номер, а не формулировка
+    # сообщения (T-M1-47: теперь по-русски).
+    assert existing.personnel_number in result.errors[0].reason
 
     row = await _employee_by_pn(db_session, existing.personnel_number)
     assert row.full_name == "Original Name"
@@ -252,7 +256,9 @@ async def test_import_rejects_ambiguous_department_name(db_session) -> None:
 
     assert result.accepted_count == 0
     assert result.errors[0].field == "department"
-    assert "ambiguous" in result.errors[0].reason
+    # Устойчивый признак — само название подразделения, а не
+    # формулировка сообщения (T-M1-47: теперь по-русски).
+    assert "Sales" in result.errors[0].reason
 
 
 async def test_import_rejects_manager_reference_not_found_anywhere(db_session) -> None:
@@ -264,7 +270,9 @@ async def test_import_rejects_manager_reference_not_found_anywhere(db_session) -
 
     assert result.accepted_count == 0
     assert result.errors[0].field == "manager_personnel_number"
-    assert "not found" in result.errors[0].reason
+    # Устойчивый признак — сама (несуществующая) ссылка, а не
+    # формулировка сообщения (T-M1-47: теперь по-русски).
+    assert "NO-SUCH-PERSON" in result.errors[0].reason
 
 
 async def test_import_rejects_manager_reference_to_terminated_existing_employee(db_session) -> None:
@@ -282,7 +290,9 @@ async def test_import_rejects_manager_reference_to_terminated_existing_employee(
 
     assert result.accepted_count == 0
     assert result.errors[0].field == "manager_personnel_number"
-    assert "terminated" in result.errors[0].reason
+    # Устойчивый признак — табельный номер уволенного, а не
+    # формулировка сообщения (T-M1-47: теперь по-русски).
+    assert terminated.personnel_number in result.errors[0].reason
 
 
 async def test_import_reraises_unexpected_integrity_error_without_retry(

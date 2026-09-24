@@ -30,7 +30,7 @@ async def replace_year(
     дням, поэтому `PUT` заменяет весь год, а не мёржит его."""
     for day in days:
         if day.date.year != year:
-            raise ValueError(f"date {day.date} does not belong to year {year}")
+            raise ValueError(f"дата {day.date} не относится к году {year}")
 
     start = datetime.date(year, 1, 1)
     end = datetime.date(year, 12, 31)

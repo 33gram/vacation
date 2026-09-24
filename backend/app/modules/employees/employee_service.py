@@ -25,7 +25,11 @@ from app.models.employee import Employee
 from app.modules.auth.password_policy import validate_password_strength
 from app.modules.auth.rbac import is_in_management_chain, list_subordinate_employee_ids
 from app.modules.auth.repository import get_account_by_employee_id
-from app.modules.employees.unique_violations import translate_unique_violation
+from app.modules.employees.unique_violations import (
+    email_conflict_message,
+    personnel_number_conflict_message,
+    translate_unique_violation,
+)
 from app.schemas.employee import (
     EmployeeCardFields,
     EmployeeCreate,
@@ -120,17 +124,17 @@ async def list_visible_employees(
 
 async def _require_department_reference(session: AsyncSession, department_id: int) -> None:
     if await session.get(Department, department_id) is None:
-        raise ValueError(f"department_id: department {department_id} not found")
+        raise ValueError(f"department_id: подразделение {department_id} не найдено")
 
 
 async def _require_active_manager_reference(session: AsyncSession, manager_id: int) -> None:
     manager = await session.get(Employee, manager_id)
     if manager is None:
-        raise ValueError(f"manager_id: employee {manager_id} not found")
+        raise ValueError(f"manager_id: сотрудник {manager_id} не найден")
     if manager.employment_status != "active":
         # Иначе поддерево подчинения указывает на неактивного человека,
         # и маршрут согласования (M3) упирается в никуда.
-        raise ValueError("manager_id: a terminated employee cannot be a manager")
+        raise ValueError("manager_id: уволенный сотрудник не может быть руководителем")
 
 
 async def _require_personnel_number_free(
@@ -140,7 +144,7 @@ async def _require_personnel_number_free(
     if exclude_employee_id is not None:
         query = query.where(Employee.id != exclude_employee_id)
     if (await session.execute(query.limit(1))).first() is not None:
-        raise ValueError(f"personnel_number: '{personnel_number}' is already in use")
+        raise ValueError(personnel_number_conflict_message(personnel_number))
 
 
 async def _require_email_free(
@@ -150,7 +154,7 @@ async def _require_email_free(
     if exclude_employee_id is not None:
         query = query.where(Employee.id != exclude_employee_id)
     if (await session.execute(query.limit(1))).first() is not None:
-        raise ValueError(f"email: '{email}' is already in use")
+        raise ValueError(email_conflict_message(email))
 
 
 def _apply_card_fields(employee: Employee, payload: EmployeeCardFields) -> None:
@@ -228,7 +232,7 @@ def _apply_auth_type_change(account: Account, payload: EmployeeUpdate) -> None:
             payload.new_password is not None and payload.new_password.get_secret_value().strip()
         )
         if not has_password:
-            raise ValueError("new_password is required when switching auth_type to 'local'")
+            raise ValueError("Пароль обязателен при переходе на локальный вход")
         assert payload.new_password is not None
         validate_password_strength(
             payload.new_password.get_secret_value(),
@@ -250,7 +254,7 @@ def _apply_auth_type_change(account: Account, payload: EmployeeUpdate) -> None:
         # пароля, вне области T-M1-34 (для него — отдельный механизм,
         # T-M1-30). Отклоняем явно, а не молча меняем пароль мимо него.
         raise ValueError(
-            "new_password is only accepted when switching auth_type from 'ldap' to 'local'"
+            "Пароль принимается только при переходе с LDAP на локальный вход"
         )
 
 
@@ -259,26 +263,26 @@ async def update_employee(
 ) -> Employee:
     employee = await session.get(Employee, employee_id)
     if employee is None:
-        raise EmployeeNotFoundError(f"Employee {employee_id} not found")
+        raise EmployeeNotFoundError(f"Сотрудник {employee_id} не найден")
 
     # Карточка и учётная запись существуют атомарно с момента создания
     # (`create_employee`) — `None` здесь означало бы, что этот инвариант
     # уже нарушен где-то ещё, а не штатный случай этого эндпоинта.
     account = await get_account_by_employee_id(session, employee.id)
     if account is None:
-        raise ValueError(f"Employee {employee_id} has no linked account")
+        raise ValueError(f"У сотрудника {employee_id} нет привязанной учётной записи")
 
     await _require_department_reference(session, payload.department_id)
     if payload.manager_id is not None:
         if payload.manager_id == employee.id:
-            raise ValueError("manager_id: an employee cannot be their own manager")
+            raise ValueError("manager_id: сотрудник не может быть руководителем самому себе")
         await lock_management_chain(session)
         await _require_active_manager_reference(session, payload.manager_id)
         # Цикл по цепочке подчинения: запрещаем, если сам сотрудник уже
         # стоит выше предлагаемого руководителя — иначе после правки он
         # оказался бы одновременно и предком, и потомком того же узла.
         if await is_in_management_chain(session, employee.id, payload.manager_id):
-            raise ValueError("manager_id: would create a cycle in the reporting chain")
+            raise ValueError("manager_id: создаст цикл в цепочке подчинения")
 
     await _require_personnel_number_free(
         session, payload.personnel_number, exclude_employee_id=employee.id
@@ -361,15 +365,16 @@ async def _require_no_active_dependents(session: AsyncSession, employee: Employe
     problems = []
     if direct_reports:
         problems.append(
-            f"reassign manager_id for active direct report(s) {list(direct_reports)} first"
+            "сначала переназначьте manager_id для активных прямых подчинённых "
+            f"{list(direct_reports)}"
         )
     if headed_department_ids:
         problems.append(
-            "reassign head_employee_id for department(s) "
-            f"{list(headed_department_ids)} first"
+            "сначала переназначьте head_employee_id для подразделений "
+            f"{list(headed_department_ids)}"
         )
     if problems:
-        raise ValueError("cannot deactivate: " + "; ".join(problems))
+        raise ValueError("Невозможно деактивировать: " + "; ".join(problems))
 
 
 async def deactivate_employee(
@@ -379,13 +384,13 @@ async def deactivate_employee(
     отказа при активных зависимостях — `_require_no_active_dependents`."""
     employee = await session.get(Employee, employee_id)
     if employee is None:
-        raise EmployeeNotFoundError(f"Employee {employee_id} not found")
+        raise EmployeeNotFoundError(f"Сотрудник {employee_id} не найден")
     if employee.employment_status == "terminated":
-        raise ValueError(f"Employee {employee_id} is already terminated")
+        raise ValueError(f"Сотрудник {employee_id} уже уволен")
 
     account = await get_account_by_employee_id(session, employee.id)
     if account is None:
-        raise ValueError(f"Employee {employee_id} has no linked account")
+        raise ValueError(f"У сотрудника {employee_id} нет привязанной учётной записи")
 
     # PR #139 review, verification item 4: same write skew PR #138 closed
     # for manager_id cycles, on a different pair of paths. Under READ

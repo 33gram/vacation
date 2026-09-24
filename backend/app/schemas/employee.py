@@ -66,9 +66,9 @@ class EmployeeCreate(EmployeeCardFields):
             and self.initial_password.get_secret_value().strip()
         )
         if self.auth_type == "local" and not has_password:
-            raise ValueError("initial_password is required when auth_type is 'local'")
+            raise ValueError("initial_password обязателен, когда auth_type = 'local'")
         if self.auth_type == "ldap" and self.initial_password is not None:
-            raise ValueError("initial_password must not be set when auth_type is 'ldap'")
+            raise ValueError("initial_password не должен быть задан, когда auth_type = 'ldap'")
         return self
 
 
@@ -117,5 +117,5 @@ class EmployeeUpdate(EmployeeCardFields):
     @model_validator(mode="after")
     def _validate_new_password(self) -> EmployeeUpdate:
         if self.auth_type == "ldap" and self.new_password is not None:
-            raise ValueError("new_password must not be set when auth_type is 'ldap'")
+            raise ValueError("new_password не должен быть задан, когда auth_type = 'ldap'")
         return self

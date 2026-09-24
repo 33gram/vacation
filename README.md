@@ -58,6 +58,18 @@ docker compose --env-file .env -f infra/docker-compose.yml up
 в `infra/docker-compose.yml` молча берёт значения по умолчанию вместо
 заданных в корневом `.env`.
 
+Команды фронтенда (`npm run lint`/`npm run test`/`npm run build`), запускаемые
+НЕ через `docker compose` (тот использует `frontend/Dockerfile`, `node:22-slim`,
+и версии Node на хосте не касается), а напрямую на хосте — требуют версию Node,
+указанную в `.nvmrc` (мажор 22). `.github/workflows/ci.yml` читает тот же файл
+(`node-version-file: .nvmrc`), так что версия задана в одном месте, а не
+дублируется literal'ом, который пришлось бы поддерживать в двух местах вручную.
+`nvm use` в корне репозитория подхватывает версию из `.nvmrc` автоматически;
+скрипт `frontend/scripts/check-node-version.mjs` (`preinstall` в
+`frontend/package.json`) отказывает в `npm install`/`npm ci` понятным
+сообщением, если версия Node не подходит, — вместо трассировки об ESM-модуле из
+транзитивной зависимости `jsdom` на непригодной версии.
+
 ## Тестирование
 
 `make test-backend` прогоняет backend-тесты **не в dev-базе** работающего приложения, а в отдельной базе `vacation_tracker_test` (T-M1-31) — том же имени, что использует CI (`.github/workflows/ci.yml`), чтобы локальный прогон воспроизводил состояние CI, а не только приближался к нему. Без этого `make test-backend` подключался бы к той же базе и тому же `DATABASE_URL`, что и запущенное через `make up` приложение — а его `lifespan` при старте создаёт bootstrap-учётную запись администратора (`FR-AUTH-005`) обычным `commit`, минуя откат транзакций тестовой фикстуры.

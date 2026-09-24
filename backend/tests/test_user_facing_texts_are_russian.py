@@ -38,7 +38,9 @@ _BACKEND_ROOT = Path(__file__).resolve().parent.parent
 # (employee_service.py, department_service.py,
 # production_calendar_service.py, ldap_settings_service.py,
 # unique_violations.py, schemas/employee.py), сообщения импорта
-# (import_parsing.py/import_service.py).
+# (import_parsing.py/import_service.py), LdapAuthError (core/ldap_client.py
+# — PR #149 review: возвращается администратору как есть через
+# `POST /api/admin/ldap-settings/test`, пропущено в первом заходе).
 _SCANNED_MODULES = (
     "app/modules/auth/rbac.py",
     "app/modules/auth/router.py",
@@ -51,6 +53,7 @@ _SCANNED_MODULES = (
     "app/schemas/employee.py",
     "app/modules/employees/import_parsing.py",
     "app/modules/employees/import_service.py",
+    "app/core/ldap_client.py",
 )
 
 # «Что не переводится» (тело коммита T-M1-47) — намеренно НЕ входят в
@@ -75,6 +78,7 @@ _MESSAGE_ARG_BY_CALLEE: dict[str, tuple[int, ...]] = {
     "ImportFileError": (0,),
     "EmployeeNotFoundError": (0,),
     "DepartmentNotFoundError": (0,),
+    "LdapAuthError": (0,),
     "RowError": (2,),
 }
 

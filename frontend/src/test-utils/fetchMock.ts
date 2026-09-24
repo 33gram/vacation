@@ -58,11 +58,19 @@ export function installFetchMock(): void {
       "http://localhost",
     );
     const method = (init?.method ?? (input instanceof Request ? input.method : "GET")).toUpperCase();
+    // `openapi-fetch` calls `fetch(request)` with a single `Request` — `init`
+    // is `undefined`, and the body lives on `request` itself, not in a
+    // second argument (PR #144 review: `LoginPage.test.tsx` is the first
+    // test to read a POST body through this mock — `init.body` was silently
+    // `undefined` for every such call before this, unnoticed because no
+    // earlier test asserted on a request body). `Request.body` is a stream,
+    // read once — `.clone()` first so the real client can still read it too.
+    const body = init?.body ?? (input instanceof Request ? await input.clone().text() : undefined);
 
     if (!currentHandler) {
       throw new Error(`Fetch mock not configured for ${method} ${url.pathname} — call setFetchHandler()`);
     }
-    const result = currentHandler(method, url.pathname, init ?? {});
+    const result = currentHandler(method, url.pathname, { ...(init ?? {}), body });
     if (!result) {
       throw new Error(`Unhandled request in test: ${method} ${url.pathname}`);
     }

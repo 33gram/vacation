@@ -62,11 +62,14 @@ export function menuItemsForRole(role: Role): MenuItemConfig[] {
 
 export function isPathAllowedForRole(role: Role, path: string): boolean {
   const item = MENU_ITEMS.find((candidate) => candidate.path === path);
-  // Путь вне состава меню (например, будущий раздел) — не пункт меню этой
-  // задачи, решать нечего; `RoleGuard` вызывающего кода отвечает за то,
-  // чтобы им не пользовались для несуществующих маршрутов.
+  // Путь вне MENU_ITEMS — запрет, не разрешение: правильная сторона
+  // умолчания для проверки доступа — новый маршрут ОБЯЗАН явно объявить
+  // свои роли в MENU_ITEMS, а не получить доступ молча тем, что забыли его
+  // туда добавить. T-M1-19 добавит `/employees/{id}`, которого в составе
+  // меню нет и не будет (это карточка записи, не пункт меню) — без этого
+  // правила такой маршрут был бы открыт всем ролям по умолчанию.
   if (!item) {
-    return true;
+    return false;
   }
   return item.roles.includes(role);
 }

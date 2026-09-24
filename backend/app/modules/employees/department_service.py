@@ -84,13 +84,13 @@ async def list_departments(session: AsyncSession) -> list[Department]:
 async def _require_department(session: AsyncSession, department_id: int) -> Department:
     department = await session.get(Department, department_id)
     if department is None:
-        raise DepartmentNotFoundError(f"Department {department_id} not found")
+        raise DepartmentNotFoundError(f"Подразделение {department_id} не найдено")
     return department
 
 
 async def _require_parent_reference(session: AsyncSession, parent_id: int) -> None:
     if await session.get(Department, parent_id) is None:
-        raise ValueError(f"Parent department {parent_id} not found")
+        raise ValueError(f"Родительское подразделение {parent_id} не найдено")
 
 
 async def _require_active_head_reference(session: AsyncSession, head_employee_id: int) -> None:
@@ -106,9 +106,11 @@ async def _require_active_head_reference(session: AsyncSession, head_employee_id
     увольнение, обе стороны проходят)."""
     head = await session.get(Employee, head_employee_id)
     if head is None:
-        raise ValueError(f"Employee {head_employee_id} not found")
+        raise ValueError(f"Сотрудник {head_employee_id} не найден")
     if head.employment_status != "active":
-        raise ValueError("head_employee_id: a terminated employee cannot be a department head")
+        raise ValueError(
+            "head_employee_id: уволенный сотрудник не может быть руководителем подразделения"
+        )
 
 
 async def _would_create_cycle(
@@ -161,7 +163,7 @@ async def update_department(
         await _lock_department_tree(session)
         await _require_parent_reference(session, payload.parent_id)
         if await _would_create_cycle(session, department_id, payload.parent_id):
-            raise ValueError("Department cannot become a descendant of its own descendant")
+            raise ValueError("Подразделение не может стать потомком собственного потомка")
 
     if payload.head_employee_id is not None:
         await lock_management_chain(session)

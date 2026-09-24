@@ -106,7 +106,7 @@ describe("401 handling (T-M1-18)", () => {
         return { status: 200, body: PASSWORD_POLICY_HINTS };
       }
       if (method === "POST" && pathname === "/api/auth/password/change") {
-        return { status: 401, body: { detail: "Invalid current password" } };
+        return { status: 401, body: { detail: "Неверный текущий пароль" } };
       }
       return null;
     });
@@ -139,7 +139,7 @@ describe("401 handling (T-M1-18)", () => {
         return { status: 200, body: PASSWORD_POLICY_HINTS };
       }
       if (method === "POST" && pathname === "/api/auth/password/change") {
-        return { status: 401, body: { detail: "Invalid current password" } };
+        return { status: 401, body: { detail: "Неверный текущий пароль" } };
       }
       return null;
     });
@@ -152,9 +152,10 @@ describe("401 handling (T-M1-18)", () => {
     await user.type(screen.getByLabelText("Новый пароль"), "NewPassword1!");
     await user.click(screen.getByRole("button", { name: "Сменить пароль" }));
 
-    // T-M1-47 ещё не сделана — текст ожидаемо по-английски, показывается
-    // как есть (ui.md §7).
-    expect(await screen.findByText("Invalid current password")).toBeInTheDocument();
+    // T-M1-47: текст сервера показывается как есть (ui.md §7), уже
+    // по-русски — мок здесь воспроизводит РЕАЛЬНЫЙ текст `auth/router.py`,
+    // не произвольную строку.
+    expect(await screen.findByText("Неверный текущий пароль")).toBeInTheDocument();
     expect(screen.getByText("Смена пароля")).toBeInTheDocument();
     expect(getAccessToken()).toBe("token");
     expect(meCallCount).toBeGreaterThanOrEqual(2);

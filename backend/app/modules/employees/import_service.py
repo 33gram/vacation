@@ -210,7 +210,9 @@ def _validate_rows(
 
         missing = [f for f in _REQUIRED_FIELDS if not values.get(f)]
         for field_name in missing:
-            row_errors.append(RowError(row.row_number, field_name, "required field is empty"))
+            row_errors.append(
+                RowError(row.row_number, field_name, "обязательное поле не заполнено")
+            )
 
         full_name = values.get("full_name")
         personnel_number = values.get("personnel_number")
@@ -228,7 +230,7 @@ def _validate_rows(
                 hire_date = datetime.date.fromisoformat(hire_date_raw)
             except ValueError:
                 row_errors.append(
-                    RowError(row.row_number, "hire_date", f"invalid date: '{hire_date_raw}'")
+                    RowError(row.row_number, "hire_date", f"некорректная дата: «{hire_date_raw}»")
                 )
 
         if work_schedule_type is not None and work_schedule_type not in WORK_SCHEDULE_TYPES:
@@ -236,7 +238,7 @@ def _validate_rows(
                 RowError(
                     row.row_number,
                     "work_schedule_type",
-                    f"must be one of {sorted(WORK_SCHEDULE_TYPES)}",
+                    f"допустимые значения: {sorted(WORK_SCHEDULE_TYPES)}",
                 )
             )
 
@@ -248,7 +250,7 @@ def _validate_rows(
                     RowError(
                         row.row_number,
                         "department",
-                        f"department '{department_name}' not found",
+                        f"подразделение «{department_name}» не найдено",
                     )
                 )
             elif len(matches) > 1:
@@ -256,8 +258,8 @@ def _validate_rows(
                     RowError(
                         row.row_number,
                         "department",
-                        f"department name '{department_name}' is ambiguous "
-                        f"(department ids: {sorted(matches)})",
+                        f"название подразделения «{department_name}» неоднозначно "
+                        f"(id подразделений: {sorted(matches)})",
                     )
                 )
             else:
@@ -269,7 +271,7 @@ def _validate_rows(
                     RowError(
                         row.row_number,
                         "personnel_number",
-                        f"'{personnel_number}' already exists",
+                        f"«{personnel_number}» уже существует",
                     )
                 )
             elif personnel_number in seen_personnel_numbers:
@@ -277,7 +279,7 @@ def _validate_rows(
                     RowError(
                         row.row_number,
                         "personnel_number",
-                        f"duplicated in file (also row "
+                        f"дублируется в файле (см. также строку "
                         f"{seen_personnel_numbers[personnel_number]})",
                     )
                 )
@@ -288,14 +290,14 @@ def _validate_rows(
             email_lower = email.lower()
             if email_lower in existing["emails_lower"]:
                 row_errors.append(
-                    RowError(row.row_number, "email", f"'{email}' already exists")
+                    RowError(row.row_number, "email", f"«{email}» уже существует")
                 )
             elif email_lower in seen_emails_lower:
                 row_errors.append(
                     RowError(
                         row.row_number,
                         "email",
-                        f"duplicated in file (also row {seen_emails_lower[email_lower]})",
+                        f"дублируется в файле (см. также строку {seen_emails_lower[email_lower]})",
                     )
                 )
             else:
@@ -345,7 +347,7 @@ def _resolve_manager_targets(
                     RowError(
                         candidate.row_number,
                         "manager_personnel_number",
-                        f"'{ref}' refers to a terminated employee",
+                        f"«{ref}» ссылается на уволенного сотрудника",
                     )
                 )
                 del candidates[pn]
@@ -356,7 +358,7 @@ def _resolve_manager_targets(
                 RowError(
                     candidate.row_number,
                     "manager_personnel_number",
-                    f"'{ref}' not found among existing employees or valid rows in this file",
+                    f"«{ref}» не найден ни среди существующих сотрудников, ни среди строк файла",
                 )
             )
             del candidates[pn]
@@ -445,7 +447,7 @@ def _reject_broken_chains(
             RowError(
                 candidate.row_number,
                 "manager_personnel_number",
-                f"forms a manager_id cycle with row(s) for personnel_number "
+                f"образует цикл manager_id со строками для табельных номеров "
                 f"{sorted(cycle_members)}",
             )
         )
@@ -467,7 +469,7 @@ def _reject_broken_chains(
                     RowError(
                         candidate.row_number,
                         "manager_personnel_number",
-                        f"'{file_ref}' was rejected, so this row cannot reference it either",
+                        f"«{file_ref}» отклонена, поэтому эта строка не может ссылаться на неё",
                     )
                 )
                 changed = True
@@ -477,8 +479,8 @@ def _reject_broken_chains(
                     RowError(
                         candidate.row_number,
                         "manager_personnel_number",
-                        f"management chain through existing employee id {existing_ref} "
-                        "contains a cycle or exceeds the maximum depth",
+                        f"цепочка подчинения через существующего сотрудника с id {existing_ref} "
+                        "содержит цикл или превышает предельную глубину",
                     )
                 )
                 changed = True
@@ -571,9 +573,9 @@ async def import_employees(session: AsyncSession, rows: list[ParsedRow]) -> Impo
                 raise
             if attempt == _MAX_WRITE_ATTEMPTS:
                 raise ImportFileError(
-                    f"Import could not complete: repeated concurrent write "
-                    f"conflicts on '{field}' after {attempt} attempts, "
-                    "please retry the upload"
+                    f"Импорт не завершён: повторяющиеся конфликты записи "
+                    f"по полю «{field}» после {attempt} попыток — "
+                    "повторите загрузку"
                 ) from exc
             continue  # повторить фазу 1+2 со свежим снимком БД
 

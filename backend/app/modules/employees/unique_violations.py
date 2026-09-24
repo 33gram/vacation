@@ -55,7 +55,9 @@ def translate_unique_violation(
     не маскировать неожиданный сбой под штатный отказ 400."""
     field = unique_violation_field(exc)
     if field == "personnel_number" and personnel_number is not None:
-        return ValueError(f"personnel_number: '{personnel_number}' is already in use")
+        return ValueError(
+            f"personnel_number: табельный номер «{personnel_number}» уже используется"
+        )
     if field == "email" and email is not None:
-        return ValueError(f"email: '{email}' is already in use")
+        return ValueError(f"email: адрес «{email}» уже используется")
     return exc

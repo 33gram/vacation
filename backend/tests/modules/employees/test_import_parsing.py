@@ -72,7 +72,9 @@ def test_parse_rejects_unsupported_extension() -> None:
 def test_parse_rejects_file_over_size_limit() -> None:
     content = b"x" * (MAX_FILE_SIZE_BYTES + 1)
 
-    with pytest.raises(ImportFileError, match="byte limit"):
+    # Устойчивый признак — сам предел (константа), а не формулировка
+    # сообщения (T-M1-47: теперь по-русски).
+    with pytest.raises(ImportFileError, match=str(MAX_FILE_SIZE_BYTES)):
         parse_import_file("employees.csv", content)
 
 
@@ -83,7 +85,7 @@ def test_parse_rejects_file_over_row_limit() -> None:
     ]
     content = _csv_bytes(*lines)
 
-    with pytest.raises(ImportFileError, match="row limit"):
+    with pytest.raises(ImportFileError, match=str(MAX_ROWS)):
         parse_import_file("employees.csv", content)
 
 
@@ -190,7 +192,11 @@ def _xlsx_bytes_with_no_worksheets() -> bytes:
 
 
 def test_parse_xlsx_without_worksheets_is_rejected_cleanly() -> None:
-    with pytest.raises(ImportFileError, match="worksheet"):
+    # Без `match=`: нет устойчивого числового/полевого признака для этого
+    # случая (T-M1-47) — конкретность проверки уже даёт сама фикстура
+    # (`_xlsx_bytes_with_no_worksheets`, единственный способ получить файл
+    # без листов), а не текст сообщения.
+    with pytest.raises(ImportFileError):
         parse_import_file("employees.xlsx", _xlsx_bytes_with_no_worksheets())
 
 
@@ -212,5 +218,8 @@ def test_parse_xlsx_rejects_zip_bomb_before_decompressing() -> None:
     # размер ЗАГРУЖЕННОГО файла, а не именно проверка архива.
     assert len(content) < MAX_FILE_SIZE_BYTES
 
-    with pytest.raises(ImportFileError, match="uncompressed"):
+    # Устойчивый признак — сам предел (константа), а не формулировка
+    # сообщения (T-M1-47: теперь по-русски) — отличает этот отказ от
+    # MAX_FILE_SIZE_BYTES, который сработал бы по другой причине.
+    with pytest.raises(ImportFileError, match=str(MAX_XLSX_UNCOMPRESSED_BYTES)):
         parse_import_file("employees.xlsx", content)

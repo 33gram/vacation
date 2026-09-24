@@ -130,9 +130,11 @@ async def get_employee(
 ) -> EmployeeOut:
     employee = await employee_service.get_employee(session, employee_id)
     if employee is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Employee not found")
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Сотрудник не найден")
     if not await employee_service.can_view_employee(session, account, employee_id):
-        raise HTTPException(status.HTTP_403_FORBIDDEN, "Insufficient permissions")
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, "Недостаточно прав для просмотра карточки сотрудника"
+        )
     return EmployeeOut.model_validate(employee)
 
 

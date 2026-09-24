@@ -77,7 +77,7 @@ class ParsedRow:
 
 def parse_import_file(filename: str, content: bytes) -> list[ParsedRow]:
     if len(content) > MAX_FILE_SIZE_BYTES:
-        raise ImportFileError(f"File exceeds the {MAX_FILE_SIZE_BYTES} byte limit")
+        raise ImportFileError(f"Файл превышает предельный размер {MAX_FILE_SIZE_BYTES} байт")
 
     lower_name = filename.lower()
     if lower_name.endswith(".csv"):
@@ -85,10 +85,10 @@ def parse_import_file(filename: str, content: bytes) -> list[ParsedRow]:
     elif lower_name.endswith(".xlsx"):
         rows = _parse_xlsx(content)
     else:
-        raise ImportFileError("Unsupported file type: expected .csv or .xlsx")
+        raise ImportFileError("Неподдерживаемый тип файла: ожидается .csv или .xlsx")
 
     if len(rows) > MAX_ROWS:
-        raise ImportFileError(f"File exceeds the {MAX_ROWS} data row limit")
+        raise ImportFileError(f"Файл превышает предельное количество строк данных ({MAX_ROWS})")
 
     return rows
 
@@ -96,7 +96,7 @@ def parse_import_file(filename: str, content: bytes) -> list[ParsedRow]:
 def _require_expected_columns(header: list[str]) -> None:
     missing = [column for column in EXPECTED_COLUMNS if column not in header]
     if missing:
-        raise ImportFileError(f"Missing required column(s): {', '.join(missing)}")
+        raise ImportFileError(f"Отсутствуют обязательные колонки: {', '.join(missing)}")
 
 
 def _row_values(header: list[str], raw_row: list[str | None]) -> dict[str, str | None]:
@@ -116,7 +116,7 @@ def _parse_csv(content: bytes) -> list[ParsedRow]:
     try:
         header = next(reader)
     except StopIteration:
-        raise ImportFileError("File is empty") from None
+        raise ImportFileError("Файл пуст") from None
     _require_expected_columns(header)
 
     rows = []
@@ -157,8 +157,8 @@ def _reject_oversized_xlsx_archive(content: bytes) -> None:
         return
     if total_uncompressed > MAX_XLSX_UNCOMPRESSED_BYTES:
         raise ImportFileError(
-            f"XLSX archive declares {total_uncompressed} uncompressed bytes, "
-            f"exceeding the {MAX_XLSX_UNCOMPRESSED_BYTES} byte limit"
+            f"Архив XLSX заявляет {total_uncompressed} байт в распакованном виде — "
+            f"это больше предельных {MAX_XLSX_UNCOMPRESSED_BYTES} байт"
         )
 
 
@@ -176,17 +176,17 @@ def _parse_xlsx(content: bytes) -> list[ParsedRow]:
     try:
         workbook = load_workbook(io.BytesIO(content), read_only=True, data_only=True)
     except Exception as exc:
-        raise ImportFileError(f"Could not read XLSX file: {exc}") from exc
+        raise ImportFileError(f"Не удалось прочитать XLSX-файл: {exc}") from exc
 
     try:
         sheet = workbook.active
         if sheet is None:
-            raise ImportFileError("XLSX file has no worksheets")
+            raise ImportFileError("В файле XLSX нет ни одного листа")
         rows_iter = sheet.iter_rows(values_only=True)
         try:
             header_row = next(rows_iter)
         except StopIteration:
-            raise ImportFileError("File is empty") from None
+            raise ImportFileError("Файл пуст") from None
         header = [(str(c).strip() if c is not None else "") for c in header_row]
         _require_expected_columns(header)
 
@@ -201,6 +201,6 @@ def _parse_xlsx(content: bytes) -> list[ParsedRow]:
     except ImportFileError:
         raise
     except Exception as exc:
-        raise ImportFileError(f"Could not read XLSX file: {exc}") from exc
+        raise ImportFileError(f"Не удалось прочитать XLSX-файл: {exc}") from exc
     finally:
         workbook.close()

@@ -90,6 +90,75 @@ describe("401 handling (T-M1-18)", () => {
     });
     expect(getAccessToken()).toBeNull();
   });
+
+  it("password/change 401 with a dead session logs out, instead of showing a form error", async () => {
+    setAccessToken("token");
+    let meCallCount = 0;
+    setFetchHandler((method, pathname) => {
+      if (method === "GET" && pathname === "/api/auth/me") {
+        meCallCount += 1;
+        // Первый /me — обычная загрузка SessionGate (сессия ещё жива).
+        // Второй — переспрос мидлвари после 401 от /password/change:
+        // токен успел истечь, пока человек сидел на этом экране.
+        return { status: meCallCount === 1 ? 200 : 401, body: meResponse({ role: "hr_admin", must_change_password: true }) };
+      }
+      if (method === "GET" && pathname === "/api/auth/password-policy") {
+        return { status: 200, body: PASSWORD_POLICY_HINTS };
+      }
+      if (method === "POST" && pathname === "/api/auth/password/change") {
+        return { status: 401, body: { detail: "Invalid current password" } };
+      }
+      return null;
+    });
+
+    renderApp("/change-password");
+    const user = userEvent.setup();
+
+    await screen.findByText("Смена пароля");
+    await user.type(screen.getByLabelText("Текущий пароль"), "SomePassword1!");
+    await user.type(screen.getByLabelText("Новый пароль"), "NewPassword1!");
+    await user.click(screen.getByRole("button", { name: "Сменить пароль" }));
+
+    await waitFor(() => {
+      expect(screen.getByLabelText("Корпоративный e-mail")).toBeInTheDocument();
+    });
+    expect(getAccessToken()).toBeNull();
+  });
+
+  it("password/change 401 with a live session shows the server's text, without logging out", async () => {
+    setAccessToken("token");
+    let meCallCount = 0;
+    setFetchHandler((method, pathname) => {
+      if (method === "GET" && pathname === "/api/auth/me") {
+        meCallCount += 1;
+        // Обе проверки /me успешны — сессия всё это время жива, 401
+        // от /password/change объясняется только неверным текущим паролем.
+        return { status: 200, body: meResponse({ role: "hr_admin", must_change_password: true }) };
+      }
+      if (method === "GET" && pathname === "/api/auth/password-policy") {
+        return { status: 200, body: PASSWORD_POLICY_HINTS };
+      }
+      if (method === "POST" && pathname === "/api/auth/password/change") {
+        return { status: 401, body: { detail: "Invalid current password" } };
+      }
+      return null;
+    });
+
+    renderApp("/change-password");
+    const user = userEvent.setup();
+
+    await screen.findByText("Смена пароля");
+    await user.type(screen.getByLabelText("Текущий пароль"), "WrongPassword1!");
+    await user.type(screen.getByLabelText("Новый пароль"), "NewPassword1!");
+    await user.click(screen.getByRole("button", { name: "Сменить пароль" }));
+
+    // T-M1-47 ещё не сделана — текст ожидаемо по-английски, показывается
+    // как есть (ui.md §7).
+    expect(await screen.findByText("Invalid current password")).toBeInTheDocument();
+    expect(screen.getByText("Смена пароля")).toBeInTheDocument();
+    expect(getAccessToken()).toBe("token");
+    expect(meCallCount).toBeGreaterThanOrEqual(2);
+  });
 });
 
 describe("menu composition by role (ui.md §2.1/§2.2)", () => {

@@ -190,10 +190,16 @@ async def test_import_exhausted_write_retries_returns_400_not_500(
         )
 
     assert response.status_code == 400
-    # Устойчивый признак — имя поля-нарушителя (тот же принцип, что и
-    # у machine-readable префиксов "field:" в других эндпоинтах), а не
-    # формулировка сообщения (T-M1-47: теперь по-русски).
-    assert "personnel_number" in response.json()["detail"]
+    # PR #149 review: имя поля одно проверяло только то, что ответ вообще
+    # о personnel_number — тот же признак не отличил бы этот отказ
+    # (исчерпание попыток записи под конкурентным конфликтом) от обычного
+    # "табельный номер уже используется" (`unique_violations.py`), которое
+    # тоже называет personnel_number. Добавлена вторая, распознающая
+    # ИМЕННО причину "попытки исчерпаны" фраза — общий признак (поле) плюс
+    # причина, не одно вместо другого.
+    detail = response.json()["detail"]
+    assert "personnel_number" in detail
+    assert "повторите загрузку" in detail
 
     log_text = "\n".join(record.getMessage() for record in caplog.records)
     assert full_name not in log_text

@@ -2,10 +2,10 @@ import { Breadcrumb, Button, Layout, Menu, Typography } from "antd";
 import type { MenuProps } from "antd";
 import { Outlet, useLocation, useNavigate } from "react-router-dom";
 
-import { clearAccessToken } from "./auth";
 import { EmbeddedModeBanner } from "./EmbeddedModeBanner";
 import { menuItemsForRole, roleLabel, type MenuItemConfig, asRole } from "./roles";
 import { useSession } from "./SessionContext";
+import { useLogout } from "./useLogout";
 
 const { Header, Sider, Content } = Layout;
 
@@ -44,10 +44,7 @@ export function AppShell() {
   const items = menuItemsForRole(role);
   const currentItem = items.find((item) => item.path === location.pathname);
 
-  const handleLogout = () => {
-    clearAccessToken();
-    navigate("/login", { replace: true });
-  };
+  const handleLogout = useLogout();
 
   return (
     <Layout style={{ minHeight: "100vh" }}>

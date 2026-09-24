@@ -30,5 +30,5 @@ export function renderApp(initialPath = "/") {
     </QueryClientProvider>,
   );
 
-  return { ...result, router: testRouter };
+  return { ...result, router: testRouter, queryClient };
 }

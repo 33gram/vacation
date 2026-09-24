@@ -1,12 +1,11 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Alert, Button, Form, Input, Layout, List, Typography } from "antd";
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
 
 import { apiClient } from "../api/client";
 import { stringDetail, violationList } from "../api/errors";
-import { clearAccessToken } from "../app/auth";
 import { ErrorLoadingState, LoadingState } from "../app/states";
+import { useLogout } from "../app/useLogout";
 
 const { Header, Content } = Layout;
 
@@ -27,7 +26,6 @@ interface ChangePasswordFormValues {
  * me` сообщает `must_change_password = true` (`SessionGate`) — единственный
  * выход отсюда, кроме самой смены пароля, — «Выйти» в шапке. */
 export function ChangePasswordPage() {
-  const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [violatedCodes, setViolatedCodes] = useState<Set<string> | null>(null);
   const [generalError, setGeneralError] = useState<string | null>(null);
@@ -45,10 +43,7 @@ export function ChangePasswordPage() {
     retry: false,
   });
 
-  const handleLogout = () => {
-    clearAccessToken();
-    navigate("/login", { replace: true });
-  };
+  const handleLogout = useLogout();
 
   const handleFinish = async (values: ChangePasswordFormValues) => {
     setGeneralError(null);

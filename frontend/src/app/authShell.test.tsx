@@ -204,6 +204,56 @@ describe("menu composition by role (ui.md §2.1/§2.2)", () => {
   });
 });
 
+describe("logout clears the session cache (PR #144 review)", () => {
+  it("shows the NEW role's menu after logging out and back in as someone else, not a stale cached one", async () => {
+    setAccessToken("token-a");
+    setFetchHandler((method, pathname) => {
+      if (method === "GET" && pathname === "/api/auth/me") {
+        return { status: 200, body: meResponse({ role: "hr_admin", must_change_password: false }) };
+      }
+      return null;
+    });
+
+    const { queryClient } = renderApp("/");
+    const user = userEvent.setup();
+
+    await screen.findByText("Подразделения");
+
+    await user.click(screen.getByRole("button", { name: "Выйти" }));
+    await screen.findByLabelText("Логин или e-mail");
+
+    // Проверка САМОГО механизма, не только его симптома: без
+    // `queryClient.clear()` в `useLogout()` кэш `["me"]` пережил бы выход —
+    // react-query держит неактивные запросы в кэше по умолчанию 5 минут
+    // после размонтирования последнего наблюдателя, а не удаляет сразу по
+    // размонтированию. Проверять это на составе меню НИЖЕ было бы
+    // ненадёжно: react-query переспрашивает `/me` при повторном монтировании
+    // компонента (`staleTime` по умолчанию — 0), и устаревшее меню могло бы
+    // успеть замениться правильным раньше, чем успеет сработать любой ассерт.
+    expect(queryClient.getQueryData(["me"])).toBeUndefined();
+
+    setFetchHandler((method, pathname) => {
+      if (method === "POST" && pathname === "/api/auth/login") {
+        return { status: 200, body: { access_token: "token-b" } };
+      }
+      if (method === "GET" && pathname === "/api/auth/me") {
+        return { status: 200, body: meResponse({ role: "employee", must_change_password: false }) };
+      }
+      return null;
+    });
+
+    // employee — роль без единого пункта меню в M1 (`ui.md` §2.2), в отличие
+    // от hr_admin выше: если бы `["me"]` остался в кэше от прежней сессии,
+    // здесь всё ещё было бы видно меню hr_admin вместо страницы-заглушки.
+    await user.type(screen.getByLabelText("Логин или e-mail"), "petrova2");
+    await user.type(screen.getByLabelText("Пароль"), "PetrovaPass1!");
+    await user.click(screen.getByRole("button", { name: "Войти" }));
+
+    await screen.findByText("Разделы этой роли ещё не готовы");
+    expect(screen.queryByText("Подразделения")).not.toBeInTheDocument();
+  });
+});
+
 describe("embedded-mode banner (ui.md §4)", () => {
   it("is not shown to employee, and is shown to hr_admin, for the same embedded_mode: true", async () => {
     setAccessToken("token");

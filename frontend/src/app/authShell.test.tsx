@@ -221,6 +221,22 @@ describe("logout clears the session cache (PR #144 review)", () => {
     await screen.findByText("Подразделения");
 
     await user.click(screen.getByRole("button", { name: "Выйти" }));
+    // PR #151: сразу после клика — прежде чем ждать редиректа на /login —
+    // /me начинает отвечать 401. Без этого возможная гонка (react-query
+    // способен переиспользовать ещё не отписавшегося наблюдателя `useMe()`
+    // и перезапросить `/me` на следующем рендере ДО реального размонтирования
+    // `SessionGate`, см. `QueryObserver.setOptions` -> `#updateQuery` ->
+    // `#executeFetch` в `@tanstack/query-core`) может успеть вернуть тот же
+    // hr_admin-ответ и заново заполнить кэш `["me"]` уже ПОСЛЕ `clear()`,
+    // прежде чем сработает ассерт ниже — тест проверял бы, кто успел раньше,
+    // а не сам факт очистки. Отвечая 401 на любой /me с этого момента,
+    // делаем не важно, случится ли этот повторный запрос вообще.
+    setFetchHandler((method, pathname) => {
+      if (method === "GET" && pathname === "/api/auth/me") {
+        return { status: 401, body: { detail: "Неверный логин или пароль" } };
+      }
+      return null;
+    });
     await screen.findByLabelText("Логин или e-mail");
 
     // Проверка САМОГО механизма, не только его симптома: без

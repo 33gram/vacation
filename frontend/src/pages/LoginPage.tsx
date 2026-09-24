@@ -64,11 +64,16 @@ export function LoginPage() {
         )}
         <Form<LoginFormValues> layout="vertical" onFinish={handleFinish}>
           <Form.Item
-            label="Корпоративный e-mail"
+            label="Логин или e-mail"
             name="login"
-            rules={[{ required: true, type: "email" }]}
+            rules={[{ required: true }]}
           >
-            <Input autoComplete="username" />
+            {/* ui.md §7: поле принимает и служебный логин без карточки
+                сотрудника (bootstrap-администратор, FR-AUTH-005), и
+                корпоративный e-mail — `type="email"` здесь отклонил бы
+                обычный логин, формат проверяет сервер, не форма
+                (PR #144 review). */}
+            <Input autoComplete="username" placeholder="Служебный логин или корпоративный e-mail" />
           </Form.Item>
           <Form.Item label="Пароль" name="password" rules={[{ required: true }]}>
             <Input.Password autoComplete="current-password" />

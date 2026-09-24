@@ -86,7 +86,7 @@ describe("401 handling (T-M1-18)", () => {
     renderApp("/");
 
     await waitFor(() => {
-      expect(screen.getByLabelText("Корпоративный e-mail")).toBeInTheDocument();
+      expect(screen.getByLabelText("Логин или e-mail")).toBeInTheDocument();
     });
     expect(getAccessToken()).toBeNull();
   });
@@ -120,7 +120,7 @@ describe("401 handling (T-M1-18)", () => {
     await user.click(screen.getByRole("button", { name: "Сменить пароль" }));
 
     await waitFor(() => {
-      expect(screen.getByLabelText("Корпоративный e-mail")).toBeInTheDocument();
+      expect(screen.getByLabelText("Логин или e-mail")).toBeInTheDocument();
     });
     expect(getAccessToken()).toBeNull();
   });

@@ -13,6 +13,6 @@ describe("App", () => {
     render(<App />);
 
     expect(screen.getByText("Система учёта отпусков")).toBeInTheDocument();
-    expect(screen.getByLabelText("Корпоративный e-mail")).toBeInTheDocument();
+    expect(screen.getByLabelText("Логин или e-mail")).toBeInTheDocument();
   });
 });

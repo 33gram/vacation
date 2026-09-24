@@ -4,7 +4,7 @@
 
 ## Статус
 
-🚧 MVP в разработке. Текущий прогресс — см. чек-боксы в [`docs/tasks.md`](docs/tasks.md) или доску Issues/Projects (если настроена, см. раздел «Задачи и Milestones» ниже).
+🚧 MVP в разработке. Текущий прогресс — чек-боксы в [`docs/tasks.md`](docs/tasks.md), единственном источнике истины по составу и статусу задач (см. раздел «Задачи» ниже).
 
 ## Документация
 
@@ -34,8 +34,8 @@
 ├── frontend/            # React SPA
 ├── infra/                # docker-compose, nginx, скрипты бэкапа
 ├── docs/                 # requirements.md, plan.md, tasks.md
-├── scripts/              # вспомогательные скрипты (импорт задач в Issues и т.п.)
-└── .github/              # workflows, шаблоны issue/PR
+├── scripts/              # вспомогательные скрипты (восстановление зеркала задач в Issues и т.п.)
+└── .github/              # workflows, шаблон PR
 ```
 
 Backend и frontend разворачиваются задачами этапа **M0** (`docs/tasks.md`) — до их выполнения репозиторий содержит только документацию и конфигурацию.
@@ -98,18 +98,11 @@ docker compose --env-file .env -f infra/docker-compose.yml exec postgres \
 - В заголовке коммитов и PR указывайте ID задачи (`T-Mx-yy`) — это даёт трассируемость от кода к требованию (`FR-XXX`/`NFR-XXX`) через `docs/tasks.md` и `docs/requirements.md`.
 - Шаблон PR — `.github/PULL_REQUEST_TEMPLATE.md`.
 
-## Задачи и Milestones
+## Задачи
 
-Задачи ведутся как **GitHub Issues**, привязанные к **Milestones** `M0`–`M8` (соответствуют этапам `docs/plan.md`/`docs/tasks.md`). Метки (`labels`) — по функциональным модулям (`module:auth`, `module:requests` и т.д., см. `scripts/import_tasks_to_github.py`).
+Задачи (`T-Mx-yy`) ведутся в [`docs/tasks.md`](docs/tasks.md) — это единственный источник истины по их составу и статусу (чек-бокс `[x]` ставится только когда выполнены все критерии приёмки задачи, `CLAUDE.md`, правило 6). Отдельного зеркала в GitHub Issues/Milestones нет (`T-M1-50`: было, разошлось с `tasks.md` и упразднено) — связь задачи с работой прослеживается по ID в заголовке коммита (`git log --grep T-Mx-yy`) и в описании PR.
 
-Чтобы массово создать Milestones и Issues из `docs/tasks.md`, один раз выполните (после `gh auth login`):
-
-```bash
-python scripts/import_tasks_to_github.py --repo <owner>/<name> --dry-run   # проверить, что будет создано
-python scripts/import_tasks_to_github.py --repo <owner>/<name>             # создать по-настоящему
-```
-
-Прогресс по каждому этапу после этого виден во вкладке **Milestones** репозитория без необходимости открывать markdown-файлы.
+`scripts/import_tasks_to_github.py` остаётся в репозитории как средство восстановления зеркала, если решение пересмотрят, — не как часть обычного порядка работы; ограничения скрипта описаны в его докстринге.
 
 ## CI
 

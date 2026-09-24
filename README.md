@@ -61,10 +61,13 @@ docker compose --env-file .env -f infra/docker-compose.yml up
 Команды фронтенда (`npm run lint`/`npm run test`/`npm run build`), запускаемые
 НЕ через `docker compose` (тот использует `frontend/Dockerfile`, `node:22-slim`,
 и версии Node на хосте не касается), а напрямую на хосте — требуют версию Node,
-указанную в `.nvmrc` (мажор 22, тот же, что в CI, `.github/workflows/ci.yml`).
-`nvm use` в корне репозитория подхватывает её автоматически; `frontend/.npmrc`
-(`engine-strict=true`) отказывает в `npm install`/`npm ci` понятным сообщением,
-если версия Node не подходит, — вместо трассировки об ESM-модуле из
+указанную в `.nvmrc` (мажор 22). `.github/workflows/ci.yml` читает тот же файл
+(`node-version-file: .nvmrc`), так что версия задана в одном месте, а не
+дублируется literal'ом, который пришлось бы поддерживать в двух местах вручную.
+`nvm use` в корне репозитория подхватывает версию из `.nvmrc` автоматически;
+скрипт `frontend/scripts/check-node-version.mjs` (`preinstall` в
+`frontend/package.json`) отказывает в `npm install`/`npm ci` понятным
+сообщением, если версия Node не подходит, — вместо трассировки об ESM-модуле из
 транзитивной зависимости `jsdom` на непригодной версии.
 
 ## Тестирование

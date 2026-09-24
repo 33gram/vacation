@@ -34,8 +34,8 @@
 ├── frontend/            # React SPA
 ├── infra/                # docker-compose, nginx, скрипты бэкапа
 ├── docs/                 # requirements.md, plan.md, tasks.md
-├── scripts/              # вспомогательные скрипты (импорт задач в Issues и т.п.)
-└── .github/              # workflows, шаблоны issue/PR
+├── scripts/              # вспомогательные скрипты (восстановление зеркала задач в Issues и т.п.)
+└── .github/              # workflows, шаблон PR
 ```
 
 Backend и frontend разворачиваются задачами этапа **M0** (`docs/tasks.md`) — до их выполнения репозиторий содержит только документацию и конфигурацию.

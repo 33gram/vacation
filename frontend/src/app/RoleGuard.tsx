@@ -2,8 +2,8 @@ import type { ReactElement } from "react";
 import { useNavigate } from "react-router-dom";
 
 import { asRole, defaultPathForRole, isPathAllowedForRole } from "./roles";
-import { useSession } from "./SessionContext";
 import { NoAccessState } from "./states";
+import { useSession } from "./useSession";
 
 /** Прямой переход на маршрут, не входящий в меню роли (`ui.md` §2.1: «в
  * запрещённый раздел из интерфейса не попасть» — меню его и не показывает,

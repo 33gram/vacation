@@ -1,7 +1,7 @@
 import { Navigate } from "react-router-dom";
 
 import { asRole, defaultPathForRole } from "./roles";
-import { useSession } from "./SessionContext";
+import { useSession } from "./useSession";
 import { StubPage } from "../pages/StubPage";
 
 /** Индекс-маршрут оболочки (`/`) — стартовая страница по роли (`ui.md`

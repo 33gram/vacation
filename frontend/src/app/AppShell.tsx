@@ -1,11 +1,12 @@
 import { Breadcrumb, Button, Layout, Menu, Typography } from "antd";
 import type { MenuProps } from "antd";
+import { useState } from "react";
 import { Outlet, useLocation, useNavigate } from "react-router-dom";
 
 import { EmbeddedModeBanner } from "./EmbeddedModeBanner";
 import { menuItemsForRole, roleLabel, type MenuItemConfig, asRole } from "./roles";
-import { useSession } from "./SessionContext";
 import { useLogout } from "./useLogout";
+import { useSession } from "./useSession";
 
 const { Header, Sider, Content } = Layout;
 
@@ -40,6 +41,14 @@ export function AppShell() {
   const role = asRole(me.role);
   const navigate = useNavigate();
   const location = useLocation();
+  // `ui.md` §5: «на узком экране боковое меню уезжает в выдвижную панель,
+  // открываемую кнопкой в шапке» — `breakpoint`/`collapsedWidth` штатно
+  // сворачивают `Sider` до нуля на узком экране (a) и синхронизируют это же
+  // состояние обратно сюда через `onCollapse` (b), а `trigger={null}` глушит
+  // собственную плавающую кнопку `Sider`а — вместо неё кнопка в шапке ниже
+  // управляет тем же `collapsed` и работает одинаково что от breakpoint'а,
+  // что вручную на широком экране (PR #144 review).
+  const [siderCollapsed, setSiderCollapsed] = useState(false);
 
   const items = menuItemsForRole(role);
   const currentItem = items.find((item) => item.path === location.pathname);
@@ -48,7 +57,14 @@ export function AppShell() {
 
   return (
     <Layout style={{ minHeight: "100vh" }}>
-      <Sider theme="dark">
+      <Sider
+        theme="dark"
+        breakpoint="lg"
+        collapsedWidth={0}
+        collapsed={siderCollapsed}
+        onCollapse={setSiderCollapsed}
+        trigger={null}
+      >
         <Menu
           theme="dark"
           mode="inline"
@@ -59,12 +75,25 @@ export function AppShell() {
       </Sider>
       <Layout>
         <Header style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-          <Breadcrumb
-            items={[
-              { title: "Система учёта отпусков" },
-              ...(currentItem ? [{ title: currentItem.label }] : []),
-            ]}
-          />
+          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            {/* ui.md §9: подпись для скринридера у кнопки-иконки; §5: не
+                меньше 44px на мобильном — единственный НОВЫЙ интерактивный
+                элемент этого коммита, остальные элементы шапки/меню это
+                правило пока не проверяют (не в объёме этой правки). */}
+            <Button
+              onClick={() => setSiderCollapsed((collapsed) => !collapsed)}
+              aria-label={siderCollapsed ? "Показать меню" : "Скрыть меню"}
+              style={{ minWidth: 44, minHeight: 44 }}
+            >
+              ☰
+            </Button>
+            <Breadcrumb
+              items={[
+                { title: "Система учёта отпусков" },
+                ...(currentItem ? [{ title: currentItem.label }] : []),
+              ]}
+            />
+          </div>
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
             <Typography.Text style={{ color: "#fff" }}>{roleLabel(role)}</Typography.Text>
             <Button onClick={handleLogout}>Выйти</Button>

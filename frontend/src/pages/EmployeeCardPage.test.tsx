@@ -1,4 +1,4 @@
-import { screen } from "@testing-library/react";
+import { screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 
@@ -122,5 +122,57 @@ describe("employee card (T-M1-19, FR-EMP-001)", () => {
       leave_category: EMPLOYEE.leave_category,
       auth_type: EMPLOYEE.auth_type,
     });
+  });
+
+  it("deactivates only after confirming in the modal, as its own action, not part of PUT", async () => {
+    setAccessToken("token");
+    let deactivateCalled = false;
+    let putCalled = false;
+    setFetchHandler((method, pathname, init) => {
+      if (method === "GET" && pathname === "/api/auth/me") {
+        return { status: 200, body: meResponse({ role: "hr_admin", must_change_password: false }) };
+      }
+      if (method === "GET" && pathname === "/api/departments") {
+        return { status: 200, body: DEPARTMENTS };
+      }
+      if (method === "GET" && pathname === "/api/employees") {
+        return { status: 200, body: [MANAGER, EMPLOYEE] };
+      }
+      if (method === "GET" && pathname === "/api/employees/2") {
+        return { status: 200, body: EMPLOYEE };
+      }
+      if (method === "PUT" && pathname === "/api/employees/2") {
+        putCalled = true;
+        return { status: 200, body: EMPLOYEE };
+      }
+      if (method === "POST" && pathname === "/api/employees/2/deactivate") {
+        deactivateCalled = true;
+        const body = JSON.parse(init.body as string) as { termination_date: string };
+        return {
+          status: 200,
+          body: { ...EMPLOYEE, employment_status: "terminated", termination_date: body.termination_date },
+        };
+      }
+      return null;
+    });
+
+    renderApp("/employees/2");
+    const user = userEvent.setup();
+
+    await screen.findByRole("heading", { name: "Петров Пётр Петрович" });
+    await user.click(screen.getByRole("button", { name: "Деактивировать" }));
+
+    // Открытие диалога само по себе не должно ничего отправлять —
+    // подтверждение обязательно (FR-EMP-004).
+    await screen.findByText(/будет скрыт/);
+    expect(deactivateCalled).toBe(false);
+    expect(putCalled).toBe(false);
+
+    const dialog = screen.getByRole("dialog");
+    await user.click(within(dialog).getByRole("button", { name: "Деактивировать" }));
+
+    await screen.findByText("Уволен", { exact: false });
+    expect(deactivateCalled).toBe(true);
+    expect(putCalled).toBe(false);
   });
 });

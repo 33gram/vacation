@@ -1,10 +1,11 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Button, Descriptions, Row, Col, Space, Typography } from "antd";
+import { Alert, Button, DatePicker, Descriptions, Row, Col, Modal, Space, Typography } from "antd";
+import dayjs from "dayjs";
 import { useMemo, useState } from "react";
 import { useParams } from "react-router-dom";
 
 import { apiClient } from "../api/client";
-import { fieldError, stringDetail, violationList } from "../api/errors";
+import { stringDetail, fieldError, violationList } from "../api/errors";
 import { formatDate } from "../app/format";
 import { ErrorLoadingState, LoadingState } from "../app/states";
 import { EmployeeForm } from "../components/EmployeeForm";
@@ -78,6 +79,10 @@ export function EmployeeCardPage() {
   const employeeId = Number(id);
   const queryClient = useQueryClient();
   const [isEditing, setIsEditing] = useState(false);
+  const [isDeactivateModalOpen, setIsDeactivateModalOpen] = useState(false);
+  const [terminationDate, setTerminationDate] = useState(() => dayjs());
+  const [deactivateError, setDeactivateError] = useState<string | null>(null);
+  const [deactivating, setDeactivating] = useState(false);
 
   const employeeQuery = useEmployeeQuery(employeeId);
   const employeesQuery = useAllEmployeesQuery();
@@ -157,6 +162,28 @@ export function EmployeeCardPage() {
     return null;
   };
 
+  // Отдельное действие карточки, НЕ поле формы правки (`FR-EMP-004`):
+  // `EmployeeUpdate`/`handleSubmit` выше про деактивацию ничего не знает,
+  // и наоборот — этот запрос никогда не идёт вместе с PUT.
+  const handleDeactivate = async () => {
+    setDeactivateError(null);
+    setDeactivating(true);
+    const { data, error } = await apiClient.POST("/api/employees/{employee_id}/deactivate", {
+      params: { path: { employee_id: employeeId } },
+      body: { termination_date: terminationDate.format("YYYY-MM-DD") },
+    });
+    setDeactivating(false);
+
+    if (error) {
+      setDeactivateError(stringDetail(error.detail) ?? "Не удалось деактивировать сотрудника.");
+      return;
+    }
+
+    await queryClient.setQueryData(["employee", employeeId], data);
+    await queryClient.invalidateQueries({ queryKey: ["employees"] });
+    setIsDeactivateModalOpen(false);
+  };
+
   return (
     <div>
       <Space align="center" style={{ width: "100%", justifyContent: "space-between" }}>
@@ -169,9 +196,42 @@ export function EmployeeCardPage() {
           </Typography.Text>
         </div>
         {!isEditing && (
-          <Button onClick={() => setIsEditing(true)}>Редактировать</Button>
+          <Space>
+            {employee.employment_status === "active" && (
+              <Button danger onClick={() => setIsDeactivateModalOpen(true)}>
+                Деактивировать
+              </Button>
+            )}
+            <Button onClick={() => setIsEditing(true)}>Редактировать</Button>
+          </Space>
         )}
       </Space>
+
+      <Modal
+        title="Деактивировать сотрудника"
+        open={isDeactivateModalOpen}
+        onOk={handleDeactivate}
+        onCancel={() => setIsDeactivateModalOpen(false)}
+        confirmLoading={deactivating}
+        okText="Деактивировать"
+        okButtonProps={{ danger: true }}
+        cancelText="Отмена"
+      >
+        <Typography.Paragraph>
+          {employee.full_name} будет скрыт(а) из активных списков; история отсутствий сохранится.
+        </Typography.Paragraph>
+        <Typography.Text>Дата увольнения</Typography.Text>
+        <DatePicker
+          aria-label="Дата увольнения"
+          format="DD.MM.YYYY"
+          value={terminationDate}
+          onChange={(value) => value && setTerminationDate(value)}
+          style={{ width: "100%", marginTop: 8 }}
+        />
+        {deactivateError && (
+          <Alert type="error" message={deactivateError} showIcon style={{ marginTop: 16 }} />
+        )}
+      </Modal>
 
       {isEditing ? (
         <div style={{ marginTop: 24, maxWidth: 480 }}>

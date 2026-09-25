@@ -42,6 +42,7 @@ export function employeeResponse(overrides: Partial<EmployeeOut> = {}): Employee
     employment_status: "active",
     termination_date: null,
     leave_category: null,
+    auth_type: "ldap",
     ...overrides,
   };
 }

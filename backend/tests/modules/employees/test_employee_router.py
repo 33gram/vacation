@@ -413,6 +413,7 @@ async def test_get_employee_manager_sees_two_levels_down(db_session, api_client)
     bottom = await make_employee(
         db_session, email="bottom-report@company.local", manager_id=middle.id
     )
+    await make_account(db_session, employee_id=bottom.id, role="employee")
 
     response = await api_client.get(
         f"/api/employees/{bottom.id}", headers=bearer_header(top_account)
@@ -445,6 +446,7 @@ async def test_get_employee_manager_does_not_see_sibling_branch(db_session, api_
 
 async def test_get_employee_hr_admin_sees_anyone(db_session, api_client) -> None:
     other = await make_employee(db_session, email="hr-target@company.local")
+    await make_account(db_session, employee_id=other.id, role="employee")
     account = await _make_admin(db_session, role="hr_admin")
 
     response = await api_client.get(f"/api/employees/{other.id}", headers=bearer_header(account))
@@ -454,6 +456,7 @@ async def test_get_employee_hr_admin_sees_anyone(db_session, api_client) -> None
 
 async def test_get_employee_accountant_sees_anyone_read_only(db_session, api_client) -> None:
     other = await make_employee(db_session, email="acct-target@company.local")
+    await make_account(db_session, employee_id=other.id, role="employee")
     account = await _make_admin(db_session, role="accountant")
 
     response = await api_client.get(f"/api/employees/{other.id}", headers=bearer_header(account))
@@ -488,10 +491,12 @@ async def test_get_employee_returns_404_for_missing_employee(db_session, api_cli
 
 
 async def test_get_employees_hides_terminated_by_default(db_session, api_client) -> None:
-    await make_employee(db_session, email="active-1@company.local")
-    await make_employee(
+    active_employee = await make_employee(db_session, email="active-1@company.local")
+    await make_account(db_session, employee_id=active_employee.id, role="employee")
+    terminated_employee = await make_employee(
         db_session, email="gone@company.local", employment_status="terminated"
     )
+    await make_account(db_session, employee_id=terminated_employee.id, role="employee")
     account = await _make_admin(db_session)
 
     response = await api_client.get("/api/employees", headers=bearer_header(account))
@@ -502,9 +507,10 @@ async def test_get_employees_hides_terminated_by_default(db_session, api_client)
 
 
 async def test_get_employees_includes_terminated_when_requested(db_session, api_client) -> None:
-    await make_employee(
+    terminated_employee = await make_employee(
         db_session, email="gone2@company.local", employment_status="terminated"
     )
+    await make_account(db_session, employee_id=terminated_employee.id, role="employee")
     account = await _make_admin(db_session)
 
     response = await api_client.get(
@@ -613,7 +619,10 @@ async def test_get_employees_query_count_does_not_grow_with_team_size(
     manager = await make_employee(db_session, email="n1-manager@company.local")
     manager_account = await make_account(db_session, employee_id=manager.id, role="employee")
     for i in range(2):
-        await make_employee(db_session, email=f"n1-small-{i}@company.local", manager_id=manager.id)
+        report = await make_employee(
+            db_session, email=f"n1-small-{i}@company.local", manager_id=manager.id
+        )
+        await make_account(db_session, employee_id=report.id, role="employee")
 
     with _count_sql_statements() as small_team_counter:
         small_response = await api_client.get(
@@ -621,7 +630,10 @@ async def test_get_employees_query_count_does_not_grow_with_team_size(
         )
 
     for i in range(15):
-        await make_employee(db_session, email=f"n1-large-{i}@company.local", manager_id=manager.id)
+        report = await make_employee(
+            db_session, email=f"n1-large-{i}@company.local", manager_id=manager.id
+        )
+        await make_account(db_session, employee_id=report.id, role="employee")
 
     with _count_sql_statements() as large_team_counter:
         large_response = await api_client.get(
@@ -855,3 +867,115 @@ async def test_put_employee_switch_to_ldap_with_password_rejected_by_schema(
     )
 
     assert response.status_code == 422
+
+
+# --- EmployeeOut.auth_type (T-M1-52) -----------------------------------------
+
+
+async def test_get_employee_returns_local_auth_type(db_session, api_client) -> None:
+    employee = await make_employee(db_session, email="auth-local@company.local")
+    await make_account(db_session, employee_id=employee.id, role="employee", auth_type="local")
+    admin_account = await _make_admin(db_session)
+
+    response = await api_client.get(
+        f"/api/employees/{employee.id}", headers=bearer_header(admin_account)
+    )
+
+    assert response.status_code == 200
+    assert response.json()["auth_type"] == "local"
+
+
+async def test_get_employee_returns_ldap_auth_type(db_session, api_client) -> None:
+    employee = await make_employee(db_session, email="auth-ldap@company.local")
+    await make_account(db_session, employee_id=employee.id, role="employee", auth_type="ldap")
+    admin_account = await _make_admin(db_session)
+
+    response = await api_client.get(
+        f"/api/employees/{employee.id}", headers=bearer_header(admin_account)
+    )
+
+    assert response.status_code == 200
+    assert response.json()["auth_type"] == "ldap"
+
+
+async def test_get_employees_list_maps_auth_type_per_employee(db_session, api_client) -> None:
+    # Отрицательный контроль на пакетную сборку (`to_employee_out_list`,
+    # словарь `accounts.employee_id -> Account`): два сотрудника с РАЗНЫМИ
+    # способами входа не должны перепутаться местами.
+    local_employee = await make_employee(db_session, email="list-local@company.local")
+    await make_account(
+        db_session, employee_id=local_employee.id, role="employee", auth_type="local"
+    )
+    ldap_employee = await make_employee(db_session, email="list-ldap@company.local")
+    await make_account(db_session, employee_id=ldap_employee.id, role="employee", auth_type="ldap")
+    admin_account = await _make_admin(db_session)
+
+    response = await api_client.get("/api/employees", headers=bearer_header(admin_account))
+
+    assert response.status_code == 200
+    by_id = {row["id"]: row for row in response.json()}
+    assert by_id[local_employee.id]["auth_type"] == "local"
+    assert by_id[ldap_employee.id]["auth_type"] == "ldap"
+
+
+async def test_put_employee_editing_unrelated_field_preserves_local_auth_and_password(
+    db_session, api_client
+) -> None:
+    """Главный тест `T-M1-52`. Собирает PUT буквально из тела GET (как
+    обязана делать реальная форма — правка одного поля отправляет ПОЛНЫЙ
+    состав, `EmployeeUpdate` не принимает частичный `PATCH`) и правит
+    только `position`. Отрицательный контроль встроен в саму сборку
+    payload'а: до этой задачи `card["auth_type"]` не существовал бы вовсе
+    (`KeyError` уже на этой строке, до какого-либо запроса) — клиенту
+    неоткуда было бы узнать текущий способ входа, кроме как угадать, а
+    неверная догадка ("ldap" по умолчанию у `EmployeeCreate`) обнулила бы
+    `local_password_hash` ниже, хотя правился только `position`."""
+    department = await make_department(db_session)
+    employee = await make_employee(
+        db_session, email="preserve-auth@company.local", department_id=department.id
+    )
+    original_hash = "irrelevant-hash"
+    await make_account(
+        db_session,
+        employee_id=employee.id,
+        role="employee",
+        auth_type="local",
+        password_hash=original_hash,
+    )
+    admin_account = await _make_admin(db_session)
+
+    get_response = await api_client.get(
+        f"/api/employees/{employee.id}", headers=bearer_header(admin_account)
+    )
+    assert get_response.status_code == 200
+    card = get_response.json()
+    assert card["auth_type"] == "local"
+
+    put_payload = {
+        "full_name": card["full_name"],
+        "personnel_number": card["personnel_number"],
+        "department_id": card["department_id"],
+        "position": "Новая должность",  # единственное намеренное изменение
+        "hire_date": card["hire_date"],
+        "manager_id": card["manager_id"],
+        "email": card["email"],
+        "work_schedule_type": card["work_schedule_type"],
+        "leave_category": card["leave_category"],
+        "auth_type": card["auth_type"],
+    }
+
+    put_response = await api_client.put(
+        f"/api/employees/{employee.id}",
+        json=put_payload,
+        headers=bearer_header(admin_account),
+    )
+
+    assert put_response.status_code == 200
+    assert put_response.json()["position"] == "Новая должность"
+    assert put_response.json()["auth_type"] == "local"
+
+    updated_account = (
+        await db_session.execute(select(Account).where(Account.employee_id == employee.id))
+    ).scalar_one()
+    assert updated_account.auth_type == "local"
+    assert updated_account.local_password_hash == original_hash

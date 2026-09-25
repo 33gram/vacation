@@ -1,11 +1,14 @@
-import { useQuery } from "@tanstack/react-query";
-import { Descriptions, Row, Col, Typography } from "antd";
-import { useMemo } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { Button, Descriptions, Row, Col, Space, Typography } from "antd";
+import { useMemo, useState } from "react";
 import { useParams } from "react-router-dom";
 
 import { apiClient } from "../api/client";
+import { fieldError, stringDetail, violationList } from "../api/errors";
 import { formatDate } from "../app/format";
 import { ErrorLoadingState, LoadingState } from "../app/states";
+import { EmployeeForm } from "../components/EmployeeForm";
+import type { EmployeeFormSubmitError, EmployeeFormValues } from "../components/EmployeeForm";
 import { departmentNameById } from "../entities/department";
 import { employeeNameById, resolveName } from "../entities/employee";
 
@@ -62,15 +65,19 @@ function useDepartmentsQuery() {
   });
 }
 
-/** «Карточка записи» (`ui.md` §3), только просмотр — правка и создание
- * приходят следующим срезом (`T-M1-19`). Руководитель разрешается по ПОЛНОМУ
- * списку сотрудников (`include_terminated: true`), а не по тому же
- * списку, что показывает `EmployeesPage` по умолчанию: руководитель может
- * сам быть уволен, но его ФИО в карточке подчинённого всё равно должно
- * разрешиться по имени, а не остаться голым id. */
+/** «Карточка записи» (`ui.md` §3, `T-M1-19`) — просмотр и правка в одном
+ * месте: режим правки не отдельный маршрут, а переключение содержимого
+ * ЭТОЙ страницы (`isEditing`). Руководитель разрешается по ПОЛНОМУ списку
+ * сотрудников (`include_terminated: true`), а не по тому же списку, что
+ * показывает `EmployeesPage` по умолчанию: руководитель может сам быть
+ * уволен, но его ФИО в карточке подчинённого всё равно должно разрешиться
+ * по имени, а не остаться голым id (то же самое верно и для выбора
+ * руководителя в форме правки — уволенных отсеивает сервис, а не список). */
 export function EmployeeCardPage() {
   const { id } = useParams<{ id: string }>();
   const employeeId = Number(id);
+  const queryClient = useQueryClient();
+  const [isEditing, setIsEditing] = useState(false);
 
   const employeeQuery = useEmployeeQuery(employeeId);
   const employeesQuery = useAllEmployeesQuery();
@@ -109,41 +116,104 @@ export function EmployeeCardPage() {
       ? `${statusLabel} с ${formatDate(employee.termination_date)}`
       : statusLabel;
 
+  const handleSubmit = async (values: EmployeeFormValues): Promise<EmployeeFormSubmitError | null> => {
+    // PUT — полная замена (`EmployeeUpdate`): отправляется ВЕСЬ состав
+    // полей формы, а не только изменённое — `EmployeeForm.handleFinish`
+    // строит `values` из формы целиком, здесь ничего не подмешивается и
+    // ничего не убирается.
+    const { data, error } = await apiClient.PUT("/api/employees/{employee_id}", {
+      params: { path: { employee_id: employeeId } },
+      body: {
+        full_name: values.full_name,
+        personnel_number: values.personnel_number,
+        department_id: values.department_id,
+        position: values.position,
+        hire_date: values.hire_date,
+        manager_id: values.manager_id,
+        email: values.email,
+        work_schedule_type: values.work_schedule_type,
+        leave_category: values.leave_category,
+        auth_type: values.auth_type,
+        new_password: values.password,
+      },
+    });
+
+    if (error) {
+      const matchedFieldError = fieldError(error.detail);
+      const violations = violationList(error.detail);
+      return {
+        fieldErrors: matchedFieldError ? [matchedFieldError] : [],
+        violatedCodes: violations ? new Set(violations.map((violation) => violation.code)) : null,
+        generalError:
+          !matchedFieldError && !violations
+            ? (stringDetail(error.detail) ?? "Не удалось сохранить карточку.")
+            : null,
+      };
+    }
+
+    await queryClient.setQueryData(["employee", employeeId], data);
+    await queryClient.invalidateQueries({ queryKey: ["employees"] });
+    setIsEditing(false);
+    return null;
+  };
+
   return (
     <div>
-      <Typography.Title level={3}>{employee.full_name}</Typography.Title>
-      <Typography.Text type={employee.employment_status === "terminated" ? "danger" : "success"}>
-        {statusText}
-      </Typography.Text>
+      <Space align="center" style={{ width: "100%", justifyContent: "space-between" }}>
+        <div>
+          <Typography.Title level={3} style={{ margin: 0 }}>
+            {employee.full_name}
+          </Typography.Title>
+          <Typography.Text type={employee.employment_status === "terminated" ? "danger" : "success"}>
+            {statusText}
+          </Typography.Text>
+        </div>
+        {!isEditing && (
+          <Button onClick={() => setIsEditing(true)}>Редактировать</Button>
+        )}
+      </Space>
 
-      <Row gutter={32} style={{ marginTop: 24 }}>
-        <Col span={12}>
-          <Descriptions column={1} title="Организационные данные" bordered size="small">
-            <Descriptions.Item label="Табельный номер">
-              <span style={{ fontVariantNumeric: "tabular-nums" }}>{employee.personnel_number}</span>
-            </Descriptions.Item>
-            <Descriptions.Item label="Подразделение">
-              {resolveName(employee.department_id, departmentNames)}
-            </Descriptions.Item>
-            <Descriptions.Item label="Должность">{employee.position}</Descriptions.Item>
-            <Descriptions.Item label="Дата приёма">{formatDate(employee.hire_date)}</Descriptions.Item>
-            <Descriptions.Item label="Руководитель">
-              {resolveName(employee.manager_id, managerNames)}
-            </Descriptions.Item>
-          </Descriptions>
-        </Col>
-        <Col span={12}>
-          <Descriptions column={1} title="Условия работы" bordered size="small">
-            <Descriptions.Item label="E-mail">{employee.email}</Descriptions.Item>
-            <Descriptions.Item label="График работы">
-              {WORK_SCHEDULE_LABELS[employee.work_schedule_type] ?? employee.work_schedule_type}
-            </Descriptions.Item>
-            <Descriptions.Item label="Категория для расчёта">
-              {employee.leave_category ?? "—"}
-            </Descriptions.Item>
-          </Descriptions>
-        </Col>
-      </Row>
+      {isEditing ? (
+        <div style={{ marginTop: 24, maxWidth: 480 }}>
+          <EmployeeForm
+            mode="edit"
+            initialValues={employee}
+            departments={departmentsQuery.data ?? []}
+            managerOptions={employeesQuery.data ?? []}
+            onSubmit={handleSubmit}
+          />
+          <Button onClick={() => setIsEditing(false)}>Отмена</Button>
+        </div>
+      ) : (
+        <Row gutter={32} style={{ marginTop: 24 }}>
+          <Col span={12}>
+            <Descriptions column={1} title="Организационные данные" bordered size="small">
+              <Descriptions.Item label="Табельный номер">
+                <span style={{ fontVariantNumeric: "tabular-nums" }}>{employee.personnel_number}</span>
+              </Descriptions.Item>
+              <Descriptions.Item label="Подразделение">
+                {resolveName(employee.department_id, departmentNames)}
+              </Descriptions.Item>
+              <Descriptions.Item label="Должность">{employee.position}</Descriptions.Item>
+              <Descriptions.Item label="Дата приёма">{formatDate(employee.hire_date)}</Descriptions.Item>
+              <Descriptions.Item label="Руководитель">
+                {resolveName(employee.manager_id, managerNames)}
+              </Descriptions.Item>
+            </Descriptions>
+          </Col>
+          <Col span={12}>
+            <Descriptions column={1} title="Условия работы" bordered size="small">
+              <Descriptions.Item label="E-mail">{employee.email}</Descriptions.Item>
+              <Descriptions.Item label="График работы">
+                {WORK_SCHEDULE_LABELS[employee.work_schedule_type] ?? employee.work_schedule_type}
+              </Descriptions.Item>
+              <Descriptions.Item label="Категория для расчёта">
+                {employee.leave_category ?? "—"}
+              </Descriptions.Item>
+            </Descriptions>
+          </Col>
+        </Row>
+      )}
     </div>
   );
 }

@@ -1,11 +1,11 @@
-import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Alert, Button, Form, Input, Layout, List, Typography } from "antd";
+import { useQueryClient } from "@tanstack/react-query";
+import { Alert, Button, Form, Input, Layout, Typography } from "antd";
 import { useState } from "react";
 
 import { apiClient } from "../api/client";
 import { stringDetail, violationList } from "../api/errors";
-import { ErrorLoadingState, LoadingState } from "../app/states";
 import { useLogout } from "../app/useLogout";
+import { PasswordPolicyChecklist } from "../components/PasswordPolicyChecklist";
 
 const { Header, Content } = Layout;
 
@@ -31,18 +31,6 @@ export function ChangePasswordPage() {
   const [generalError, setGeneralError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
-  const policyQuery = useQuery({
-    queryKey: ["password-policy"],
-    queryFn: async () => {
-      const { data, response } = await apiClient.GET("/api/auth/password-policy");
-      if (!data) {
-        throw new Error(`GET /api/auth/password-policy failed with status ${response.status}`);
-      }
-      return data;
-    },
-    retry: false,
-  });
-
   const handleLogout = useLogout();
 
   const handleFinish = async (values: ChangePasswordFormValues) => {
@@ -59,11 +47,10 @@ export function ChangePasswordPage() {
       if (violations) {
         setViolatedCodes(new Set(violations.map((violation) => violation.code)));
       } else {
-        // T-M1-47 ещё не сделана: "Invalid current password" (401) и "Only
-        // local accounts have a password to change" (400) временно
-        // приходят по-английски. Показываются как есть — переписывать
-        // серверный текст на клиенте запрещено (ui.md §7); свой перевод
-        // здесь не заводится.
+        // "Неверный текущий пароль" (401) и "Сменить пароль можно только
+        // для локальной учётной записи" (400) приходят с сервера уже
+        // по-русски (T-M1-47) — показываются как есть, переписывать
+        // серверный текст на клиенте запрещено (ui.md §7).
         setGeneralError(stringDetail(error.detail) ?? "Не удалось изменить пароль.");
       }
       return;
@@ -88,32 +75,7 @@ export function ChangePasswordPage() {
           Перед первым входом в систему необходимо задать новый пароль.
         </Typography.Paragraph>
 
-        {policyQuery.isLoading && <LoadingState />}
-        {policyQuery.isError && (
-          <ErrorLoadingState onRetry={() => policyQuery.refetch()} />
-        )}
-        {policyQuery.data && (
-          <List
-            size="small"
-            header={<Typography.Text strong>Требования к паролю</Typography.Text>}
-            dataSource={policyQuery.data}
-            style={{ marginBottom: 24 }}
-            renderItem={(hint) => {
-              const violated = violatedCodes?.has(hint.code) ?? false;
-              return (
-                <List.Item>
-                  {/* Нарушение отмечается и текстом, не только цветом
-                      (type="danger") — красный сам по себе не годится ни
-                      для доступности (ui.md §9), ни для проверки в тестах
-                      "по подписи, не по структуре разметки". */}
-                  <Typography.Text type={violated ? "danger" : undefined}>
-                    {violated ? `${hint.hint} — не выполнено` : hint.hint}
-                  </Typography.Text>
-                </List.Item>
-              );
-            }}
-          />
-        )}
+        <PasswordPolicyChecklist violatedCodes={violatedCodes} />
 
         {generalError && (
           <Alert type="error" message={generalError} showIcon style={{ marginBottom: 16 }} />

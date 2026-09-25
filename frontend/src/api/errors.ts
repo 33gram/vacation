@@ -19,6 +19,35 @@ export function stringDetail(detail: unknown): string | null {
  * массива синтаксически, но с разными полями. `Array.isArray` одной
  * проверкой их не различает; здесь сверяется форма элемента (`code` +
  * `message`), которая есть только у нарушений парольной политики. */
+// T-M1-19: поля форм сотрудника/подразделения, для которых сервис
+// (`employee_service.py`/`department_service.py`/`unique_violations.py`)
+// добавляет к тексту машиночитаемый префикс `"<поле>: "` (T-M1-47) — по
+// нему интерфейс кладёт ошибку под нужное поле формы, а сам префикс
+// пользователю не показывается (`ui.md` §7: место ошибки — под полем).
+// Список закрыт и совпадает с полями, которые сервис размечает так
+// сегодня — новое поле с этим же соглашением придётся добавить сюда явно,
+// молчаливого совпадения по любому `"слово: "` в начале строки не будет:
+// текст ошибки не обязан быть в этой форме (например, `WeakPasswordError`
+// начинается с "Пароль", а не с имени поля).
+const FIELD_ERROR_PREFIXES = ["manager_id", "email", "personnel_number", "department_id"] as const;
+
+/** Разбирает `stringDetail`-совместимый текст на `{field, message}`, если
+ * он начинается с одного из известных префиксов, или возвращает `null`
+ * (не наш случай — общая ошибка операции, `ui.md` §7). */
+export function fieldError(detail: unknown): { field: string; message: string } | null {
+  const text = stringDetail(detail);
+  if (text === null) {
+    return null;
+  }
+  for (const field of FIELD_ERROR_PREFIXES) {
+    const prefix = `${field}: `;
+    if (text.startsWith(prefix)) {
+      return { field, message: text.slice(prefix.length) };
+    }
+  }
+  return null;
+}
+
 export function violationList(detail: unknown): { code: string; message: string }[] | null {
   if (
     Array.isArray(detail) &&

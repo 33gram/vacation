@@ -3,6 +3,7 @@ import type { RouteObject } from "react-router-dom";
 
 import { ChangePasswordPage } from "../pages/ChangePasswordPage";
 import { DepartmentsPage } from "../pages/DepartmentsPage";
+import { EmployeeCardPage } from "../pages/EmployeeCardPage";
 import { EmployeesPage } from "../pages/EmployeesPage";
 import { LoginPage } from "../pages/LoginPage";
 import { LdapSettingsPage } from "../pages/admin/LdapSettingsPage";
@@ -45,6 +46,19 @@ export const routes: RouteObject[] = [
                 element: (
                   <RoleGuard path="/employees">
                     <EmployeesPage />
+                  </RoleGuard>
+                ),
+              },
+              {
+                // Не пункт меню (`roles.ts`, `NON_MENU_ROUTES`) — карточка
+                // сотрудника открывается по клику из списка, а не из
+                // сайдбара. Путь ниже — литерал `"/employees/:id"`, как он
+                // зарегистрирован в `NON_MENU_ROUTES`, а не подставленный id:
+                // `RoleGuard` сравнивает именно паттерн маршрута.
+                path: "employees/:id",
+                element: (
+                  <RoleGuard path="/employees/:id">
+                    <EmployeeCardPage />
                   </RoleGuard>
                 ),
               },

@@ -1,7 +1,224 @@
-import { Typography } from "antd";
+import { useQuery } from "@tanstack/react-query";
+import { Alert, Button, Input, Select, Space, Switch, Table, Typography } from "antd";
+import type { ColumnsType } from "antd/es/table";
+import { useMemo, useState } from "react";
+import { Link, useNavigate } from "react-router-dom";
 
-/** Раздел появится в `T-M1-19` — здесь только маршрут и guard (`T-M1-18`
- * отвечает за оболочку, не за содержимое разделов). */
+import { apiClient } from "../api/client";
+import { formatDate } from "../app/format";
+import { EmptyState, ErrorLoadingState, LoadingState } from "../app/states";
+import { departmentNameById } from "../entities/department";
+import type { DepartmentOut } from "../entities/department";
+import { employeeNameById, resolveName } from "../entities/employee";
+import type { EmployeeOut } from "../entities/employee";
+
+const WORK_SCHEDULE_LABELS: Record<string, string> = {
+  standard: "Стандартный",
+  shift: "Сменный",
+};
+
+const EMPLOYMENT_STATUS_LABELS: Record<string, string> = {
+  active: "Активен",
+  terminated: "Уволен",
+};
+
+// Стабильные ссылки на пустой массив для состояния "данные ещё не пришли" —
+// инлайновое `?? []` создавало бы новый массив на каждый рендер и срывало
+// мемоизацию `useMemo` ниже (react-hooks/exhaustive-deps).
+const NO_DEPARTMENTS: DepartmentOut[] = [];
+const NO_EMPLOYEES: EmployeeOut[] = [];
+
+function useEmployeesQuery(includeTerminated: boolean) {
+  return useQuery({
+    queryKey: ["employees", includeTerminated],
+    queryFn: async () => {
+      const { data, response } = await apiClient.GET("/api/employees", {
+        params: { query: { include_terminated: includeTerminated } },
+      });
+      if (!data) {
+        throw new Error(`GET /api/employees failed with status ${response.status}`);
+      }
+      return data;
+    },
+  });
+}
+
+function useDepartmentsQuery() {
+  return useQuery({
+    queryKey: ["departments"],
+    queryFn: async () => {
+      const { data, response } = await apiClient.GET("/api/departments");
+      if (!data) {
+        throw new Error(`GET /api/departments failed with status ${response.status}`);
+      }
+      return data;
+    },
+  });
+}
+
+/** «Список с фильтрами» (`ui.md` §3, `FR-EMP-001`). `GET /api/employees`
+ * отдаёт ВЕСЬ видимый список одним ответом (`employee_service.
+ * list_visible_employees`, `NFR-SCALE-001`) — единственный серверный
+ * параметр — `include_terminated` (уволенные скрыты по умолчанию); ФИО/
+ * табельный номер и подразделение фильтруются на уже полученном списке, не
+ * повторным запросом. */
 export function EmployeesPage() {
-  return <Typography.Title level={3}>Сотрудники</Typography.Title>;
+  const navigate = useNavigate();
+  const [showTerminated, setShowTerminated] = useState(false);
+  const [searchText, setSearchText] = useState("");
+  const [departmentFilter, setDepartmentFilter] = useState<number | null>(null);
+
+  const employeesQuery = useEmployeesQuery(showTerminated);
+  const departmentsQuery = useDepartmentsQuery();
+
+  const departments: DepartmentOut[] = departmentsQuery.data ?? NO_DEPARTMENTS;
+  const employees: EmployeeOut[] = employeesQuery.data ?? NO_EMPLOYEES;
+
+  const departmentNames = useMemo(() => departmentNameById(departments), [departments]);
+  const managerNames = useMemo(() => employeeNameById(employees), [employees]);
+
+  const filtersActive = searchText.trim() !== "" || departmentFilter !== null;
+
+  const filteredEmployees = useMemo(() => {
+    const normalizedSearch = searchText.trim().toLowerCase();
+    return employees.filter((employee) => {
+      if (departmentFilter !== null && employee.department_id !== departmentFilter) {
+        return false;
+      }
+      if (normalizedSearch === "") {
+        return true;
+      }
+      return (
+        employee.full_name.toLowerCase().includes(normalizedSearch) ||
+        employee.personnel_number.toLowerCase().includes(normalizedSearch)
+      );
+    });
+  }, [employees, searchText, departmentFilter]);
+
+  const resetFilters = () => {
+    setSearchText("");
+    setDepartmentFilter(null);
+  };
+
+  if (employeesQuery.isLoading || departmentsQuery.isLoading) {
+    return <LoadingState />;
+  }
+  if (employeesQuery.isError) {
+    return <ErrorLoadingState onRetry={() => employeesQuery.refetch()} />;
+  }
+  if (departmentsQuery.isError) {
+    return <ErrorLoadingState onRetry={() => departmentsQuery.refetch()} />;
+  }
+
+  const columns: ColumnsType<EmployeeOut> = [
+    {
+      title: "ФИО",
+      dataIndex: "full_name",
+      key: "full_name",
+      render: (fullName: string, employee) => <Link to={`/employees/${employee.id}`}>{fullName}</Link>,
+    },
+    {
+      title: "Табельный номер",
+      dataIndex: "personnel_number",
+      key: "personnel_number",
+      align: "right",
+      render: (personnelNumber: string) => (
+        <span style={{ fontVariantNumeric: "tabular-nums" }}>{personnelNumber}</span>
+      ),
+    },
+    {
+      title: "Подразделение",
+      key: "department",
+      render: (_, employee) => resolveName(employee.department_id, departmentNames),
+    },
+    {
+      title: "Должность",
+      dataIndex: "position",
+      key: "position",
+    },
+    {
+      title: "Дата приёма",
+      dataIndex: "hire_date",
+      key: "hire_date",
+      render: (hireDate: string) => formatDate(hireDate),
+    },
+    {
+      title: "Руководитель",
+      key: "manager",
+      render: (_, employee) => resolveName(employee.manager_id, managerNames),
+    },
+    {
+      title: "График",
+      dataIndex: "work_schedule_type",
+      key: "work_schedule_type",
+      render: (type: string) => WORK_SCHEDULE_LABELS[type] ?? type,
+    },
+    {
+      title: "Статус",
+      dataIndex: "employment_status",
+      key: "employment_status",
+      render: (status: string) => EMPLOYMENT_STATUS_LABELS[status] ?? status,
+    },
+  ];
+
+  return (
+    <Space direction="vertical" size="large" style={{ width: "100%" }}>
+      <Space align="center" style={{ width: "100%", justifyContent: "space-between" }}>
+        <Typography.Title level={3} style={{ margin: 0 }}>
+          Сотрудники ({filteredEmployees.length})
+        </Typography.Title>
+        <Space>
+          <Button type="primary" onClick={() => navigate("/employees/new")}>
+            Добавить сотрудника
+          </Button>
+        </Space>
+      </Space>
+
+      <Space wrap align="center" size="middle">
+        <Input
+          aria-label="ФИО или табельный номер"
+          placeholder="ФИО или табельный номер"
+          value={searchText}
+          onChange={(event) => setSearchText(event.target.value)}
+          style={{ width: 260 }}
+          allowClear
+        />
+        <Select<number | null>
+          aria-label="Подразделение"
+          placeholder="Все подразделения"
+          value={departmentFilter}
+          onChange={(value) => setDepartmentFilter(value)}
+          allowClear
+          style={{ width: 220 }}
+          options={departments.map((department) => ({ value: department.id, label: department.name }))}
+        />
+        <Space align="center">
+          <Switch
+            checked={showTerminated}
+            onChange={setShowTerminated}
+            aria-label="Показывать уволенных"
+          />
+          <Typography.Text>Показывать уволенных</Typography.Text>
+        </Space>
+        {filtersActive && (
+          <Typography.Link onClick={resetFilters} role="link">
+            Сбросить
+          </Typography.Link>
+        )}
+      </Space>
+
+      {employees.length === 0 ? (
+        <EmptyState title="Сотрудников нет" description="В системе пока не заведено ни одного сотрудника." />
+      ) : filteredEmployees.length === 0 ? (
+        <Alert type="info" message="По заданным фильтрам ничего не найдено." showIcon />
+      ) : (
+        <Table<EmployeeOut>
+          rowKey="id"
+          columns={columns}
+          dataSource={filteredEmployees}
+          pagination={{ position: ["bottomCenter"] }}
+        />
+      )}
+    </Space>
+  );
 }

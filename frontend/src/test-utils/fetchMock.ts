@@ -1,13 +1,20 @@
 import { vi } from "vitest";
 
-/** Обработчик одного запроса теста: получает метод и путь (без origin —
- * `baseUrl` клиента пуст, T-M1-18) и решает, что ответить. `null` — запрос
- * этому тесту не интересен и не ожидался, тест должен упасть явной
- * ошибкой, а не тихо повиснуть. */
+/** Обработчик одного запроса теста: получает метод, путь (без origin —
+ * `baseUrl` клиента пуст, T-M1-18) и query-параметры отдельно от него, и
+ * решает, что ответить. `null` — запрос этому тесту не интересен и не
+ * ожидался, тест должен упасть явной ошибкой, а не тихо повиснуть.
+ *
+ * `search` — четвёртый параметр, а не часть `pathname` (T-M1-19,
+ * `GET /api/employees?include_terminated=...` — единственный на сегодня
+ * запрос с квери-параметром): существующие обработчики сравнивают
+ * `pathname` строкой ("/api/employees" целиком), и вклеивание строки
+ * запроса в него сломало бы это сравнение для каждого такого теста. */
 export type FetchHandler = (
   method: string,
   pathname: string,
   init: RequestInit,
+  search: URLSearchParams,
 ) => { status: number; body?: unknown } | null;
 
 let currentHandler: FetchHandler | null = null;
@@ -70,7 +77,7 @@ export function installFetchMock(): void {
     if (!currentHandler) {
       throw new Error(`Fetch mock not configured for ${method} ${url.pathname} — call setFetchHandler()`);
     }
-    const result = currentHandler(method, url.pathname, { ...(init ?? {}), body });
+    const result = currentHandler(method, url.pathname, { ...(init ?? {}), body }, url.searchParams);
     if (!result) {
       throw new Error(`Unhandled request in test: ${method} ${url.pathname}`);
     }

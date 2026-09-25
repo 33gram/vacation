@@ -1,6 +1,8 @@
 import type { components } from "../api/generated/schema";
 
 type MeResponse = components["schemas"]["MeResponse"];
+type EmployeeOut = components["schemas"]["EmployeeOut"];
+type DepartmentOut = components["schemas"]["DepartmentOut"];
 
 export function meResponse(overrides: Partial<MeResponse> = {}): MeResponse {
   return {
@@ -25,3 +27,31 @@ export const PASSWORD_POLICY_HINTS = [
   { code: "insufficient_character_classes", hint: "Пароль должен содержать символы минимум трёх типов из четырёх." },
   { code: "common_password", hint: "Пароль входит в список распространённых паролей." },
 ];
+
+export function employeeResponse(overrides: Partial<EmployeeOut> = {}): EmployeeOut {
+  return {
+    id: 1,
+    full_name: "Иванов Иван Иванович",
+    personnel_number: "1001",
+    department_id: 1,
+    position: "Инженер",
+    hire_date: "2024-01-15",
+    manager_id: null,
+    email: "ivanov@company.local",
+    work_schedule_type: "standard",
+    employment_status: "active",
+    termination_date: null,
+    leave_category: null,
+    ...overrides,
+  };
+}
+
+export function departmentResponse(overrides: Partial<DepartmentOut> = {}): DepartmentOut {
+  return {
+    id: 1,
+    name: "Отдел разработки",
+    parent_id: null,
+    head_employee_id: null,
+    ...overrides,
+  };
+}

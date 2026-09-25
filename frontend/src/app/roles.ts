@@ -75,6 +75,7 @@ interface NonMenuRouteConfig {
 
 export const NON_MENU_ROUTES: readonly NonMenuRouteConfig[] = [
   { path: "/employees/new", roles: ["hr_admin", "system_admin"] },
+  { path: "/employees/import", roles: ["hr_admin", "system_admin"] },
   { path: "/employees/:id", roles: ["hr_admin", "system_admin"] },
 ];
 

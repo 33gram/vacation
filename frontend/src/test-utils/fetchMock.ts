@@ -45,11 +45,29 @@ export function installFetchMock(): void {
   // Патч только для тестов, по тому же принципу, что и `matchMedia` ниже.
   const OriginalRequest = globalThis.Request;
   class TestRequest extends OriginalRequest {
+    formDataBody?: FormData;
+
     constructor(input: RequestInfo | URL, init?: RequestInit) {
       const absolute =
         typeof input === "string" && input.startsWith("/")
           ? new URL(input, "http://localhost")
           : input;
+      // jsdom 30's `Request` constructor crashes ("Cannot read properties
+      // of undefined (reading '_buffer')") when `init.body` is a
+      // `FormData` holding ANY Blob-derived entry (`File`, or a plain
+      // `Blob` appended with a filename) — reproduced with an EMPTY
+      // `Blob`/`File` too, so it isn't about the data, it's
+      // vitest's node-compat shim (`makeCompatBlob`) expecting an
+      // internal shape jsdom's `Blob` doesn't have. `POST /api/employees/
+      // import` (T-M1-19) is the first and, today, only multipart request
+      // in this app — its mock only needs method+path, not byte-accurate
+      // body reconstruction, so the `FormData` is captured here instead
+      // of being handed to the real constructor.
+      if (init?.body instanceof FormData) {
+        super(absolute, { ...init, body: undefined });
+        this.formDataBody = init.body;
+        return;
+      }
       super(absolute, init);
     }
   }
@@ -72,7 +90,13 @@ export function installFetchMock(): void {
     // `undefined` for every such call before this, unnoticed because no
     // earlier test asserted on a request body). `Request.body` is a stream,
     // read once — `.clone()` first so the real client can still read it too.
-    const body = init?.body ?? (input instanceof Request ? await input.clone().text() : undefined);
+    const body =
+      init?.body ??
+      (input instanceof TestRequest && input.formDataBody
+        ? input.formDataBody
+        : input instanceof Request
+          ? await input.clone().text()
+          : undefined);
 
     if (!currentHandler) {
       throw new Error(`Fetch mock not configured for ${method} ${url.pathname} — call setFetchHandler()`);

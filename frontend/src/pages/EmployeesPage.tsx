@@ -168,6 +168,7 @@ export function EmployeesPage() {
           Сотрудники ({filteredEmployees.length})
         </Typography.Title>
         <Space>
+          <Button onClick={() => navigate("/employees/import")}>Импорт</Button>
           <Button type="primary" onClick={() => navigate("/employees/new")}>
             Добавить сотрудника
           </Button>

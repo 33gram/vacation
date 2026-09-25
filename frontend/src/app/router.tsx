@@ -5,6 +5,7 @@ import { ChangePasswordPage } from "../pages/ChangePasswordPage";
 import { DepartmentsPage } from "../pages/DepartmentsPage";
 import { EmployeeCardPage } from "../pages/EmployeeCardPage";
 import { EmployeeCreatePage } from "../pages/EmployeeCreatePage";
+import { EmployeeImportPage } from "../pages/EmployeeImportPage";
 import { EmployeesPage } from "../pages/EmployeesPage";
 import { LoginPage } from "../pages/LoginPage";
 import { LdapSettingsPage } from "../pages/admin/LdapSettingsPage";
@@ -60,6 +61,14 @@ export const routes: RouteObject[] = [
                 element: (
                   <RoleGuard path="/employees/new">
                     <EmployeeCreatePage />
+                  </RoleGuard>
+                ),
+              },
+              {
+                path: "employees/import",
+                element: (
+                  <RoleGuard path="/employees/import">
+                    <EmployeeImportPage />
                   </RoleGuard>
                 ),
               },

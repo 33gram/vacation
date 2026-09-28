@@ -12,7 +12,7 @@ from app.models.employee import Employee
 from app.modules.auth import ldap_service, local_service
 from app.modules.auth.embedded_mode import is_embedded_mode
 from app.modules.auth.password_policy import get_password_policy_hints, validate_password_strength
-from app.modules.auth.rbac import get_current_account
+from app.modules.auth.rbac import get_current_account_allowing_password_change
 from app.modules.auth.tokens import AuthResult
 from app.schemas.auth import (
     LoginRequest,
@@ -96,11 +96,12 @@ async def _identity_context(
 )
 async def change_password(
     payload: PasswordChangeRequest,
-    account: Account = Depends(get_current_account),
+    account: Account = Depends(get_current_account_allowing_password_change),
     session: AsyncSession = Depends(get_db_session),
 ) -> None:
-    """Доступен и при `must_change_password=True` (не идёт через
-    `require_roles`) — иначе первичный пароль было бы нечем сменить."""
+    """Доступен и при `must_change_password=True` (`get_current_account_
+    allowing_password_change`, T-M1-46) — иначе первичный пароль было бы
+    нечем сменить."""
     if account.auth_type != "local" or account.local_password_hash is None:
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST,
@@ -110,7 +111,8 @@ async def change_password(
     # намеренно НЕ ограничен `MAX_PASSWORD_BYTES`, в отличие от входа
     # (`local_service.authenticate_local`) и `new_password` ниже.
     # Отличие оправдано: вызывающий уже аутентифицирован (`Depends(
-    # get_current_account)`), а `account.local_password_hash` по
+    # get_current_account_allowing_password_change)`), а `account.
+    # local_password_hash` по
     # построению никогда не хэширован из пароля длиннее 72 байт — все
     # четыре места, где приложение вызывает `hash_password` (здесь,
     # `bootstrap.py`, `employee_service.py` × 2), проверяют это ДО
@@ -139,32 +141,40 @@ async def change_password(
 
 @router.get("/password-policy", response_model=list[PasswordPolicyHintOut])
 async def get_password_policy(
-    _: Account = Depends(get_current_account),
+    _: Account = Depends(get_current_account_allowing_password_change),
 ) -> list[PasswordPolicyHintOut]:
     """T-M1-45: состав действующих правил парольной политики с уже
     подставленными параметрами на русском (NFR-LOC-001), чтобы
     интерфейс не хардкодил ни тексты, ни значения (минимальная длина —
     бизнес-параметр, `T-M2-09`). Под авторизацией (`Depends(
-    get_current_account)`) — не публичный эндпоинт: состав правил сам
-    по себе не секрет, но раскрывать детали механизма аутентификации
-    без аутентификации не требуется."""
+    get_current_account_allowing_password_change)`, T-M1-46 — доступен и
+    до смены первичного пароля, иначе экран смены не может показать её
+    требования) — не публичный эндпоинт: состав правил сам по себе не
+    секрет, но раскрывать детали механизма аутентификации без
+    аутентификации не требуется."""
     return [
         PasswordPolicyHintOut(code=h.code, hint=h.message) for h in get_password_policy_hints()
     ]
 
 
 @router.post("/logout", status_code=status.HTTP_204_NO_CONTENT, response_model=None)
-async def logout(_: Account = Depends(get_current_account)) -> None:
+async def logout(_: Account = Depends(get_current_account_allowing_password_change)) -> None:
     """См. обоснование выбора (stateless JWT, не отзывается) в теле
-    коммита T-M1-13: клиент обязан удалить оба токена локально."""
+    коммита T-M1-13: клиент обязан удалить оба токена локально. Доступен
+    и до смены первичного пароля (`get_current_account_allowing_
+    password_change`, T-M1-46) — выйти можно всегда."""
     return None
 
 
 @router.get("/me", response_model=MeResponse)
 async def me(
-    account: Account = Depends(get_current_account),
+    account: Account = Depends(get_current_account_allowing_password_change),
     session: AsyncSession = Depends(get_db_session),
 ) -> MeResponse:
+    """Доступен и до смены первичного пароля (`get_current_account_
+    allowing_password_change`, T-M1-46) — сам `must_change_password`
+    приходит только отсюда, гейтить чтение этого поля им самим было бы
+    противоречием."""
     return MeResponse(
         id=account.id,
         role=account.role,

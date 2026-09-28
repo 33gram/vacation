@@ -80,8 +80,9 @@ export interface paths {
         put?: never;
         /**
          * Change Password
-         * @description Доступен и при `must_change_password=True` (не идёт через
-         *     `require_roles`) — иначе первичный пароль было бы нечем сменить.
+         * @description Доступен и при `must_change_password=True` (`get_current_account_
+         *     allowing_password_change`, T-M1-46) — иначе первичный пароль было бы
+         *     нечем сменить.
          */
         post: operations["change_password_api_auth_password_change_post"];
         delete?: never;
@@ -103,9 +104,11 @@ export interface paths {
          *     подставленными параметрами на русском (NFR-LOC-001), чтобы
          *     интерфейс не хардкодил ни тексты, ни значения (минимальная длина —
          *     бизнес-параметр, `T-M2-09`). Под авторизацией (`Depends(
-         *     get_current_account)`) — не публичный эндпоинт: состав правил сам
-         *     по себе не секрет, но раскрывать детали механизма аутентификации
-         *     без аутентификации не требуется.
+         *     get_current_account_allowing_password_change)`, T-M1-46 — доступен и
+         *     до смены первичного пароля, иначе экран смены не может показать её
+         *     требования) — не публичный эндпоинт: состав правил сам по себе не
+         *     секрет, но раскрывать детали механизма аутентификации без
+         *     аутентификации не требуется.
          */
         get: operations["get_password_policy_api_auth_password_policy_get"];
         put?: never;
@@ -128,7 +131,9 @@ export interface paths {
         /**
          * Logout
          * @description См. обоснование выбора (stateless JWT, не отзывается) в теле
-         *     коммита T-M1-13: клиент обязан удалить оба токена локально.
+         *     коммита T-M1-13: клиент обязан удалить оба токена локально. Доступен
+         *     и до смены первичного пароля (`get_current_account_allowing_
+         *     password_change`, T-M1-46) — выйти можно всегда.
          */
         post: operations["logout_api_auth_logout_post"];
         delete?: never;
@@ -144,7 +149,13 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Me */
+        /**
+         * Me
+         * @description Доступен и до смены первичного пароля (`get_current_account_
+         *     allowing_password_change`, T-M1-46) — сам `must_change_password`
+         *     приходит только отсюда, гейтить чтение этого поля им самим было бы
+         *     противоречием.
+         */
         get: operations["me_api_auth_me_get"];
         put?: never;
         post?: never;

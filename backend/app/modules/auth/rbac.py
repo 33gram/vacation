@@ -40,10 +40,14 @@ MAX_MANAGEMENT_CHAIN_DEPTH = 1000
 bearer_scheme = HTTPBearer(auto_error=False)
 
 
-async def get_current_account(
-    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
-    session: AsyncSession = Depends(get_db_session),
+async def _load_current_account(
+    credentials: HTTPAuthorizationCredentials | None,
+    session: AsyncSession,
 ) -> Account:
+    """Общая часть между `get_current_account` и
+    `get_current_account_allowing_password_change` (T-M1-46) — токен,
+    учётная запись, `enforce_access`; ничего не решает про
+    `must_change_password`, это забота вызывающих функций."""
     if credentials is None:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Требуется аутентификация")
 
@@ -70,36 +74,64 @@ async def get_current_account(
     return account
 
 
+async def get_current_account_allowing_password_change(
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+    session: AsyncSession = Depends(get_db_session),
+) -> Account:
+    """T-M1-46, FR-AUTH-002 (раздел 13, п. 23): то же самое, что
+    `get_current_account`, но БЕЗ гейта `must_change_password` — единственный
+    способ обработчику оказаться доступным до смены первичного пароля,
+    и поэтому единственное место, где такое исключение объявляется. Не
+    «умолчание, из которого можно не выйти» — наоборот: обычная зависимость
+    (`get_current_account`) гейтит сама по себе, а сюда нужно перейти явно,
+    и это видно в дифе и находится грепом по имени функции.
+
+    Сегодня на эту зависимость опираются ровно четыре обработчика
+    (`auth/router.py`) — `GET /api/auth/me`, `POST /api/auth/password/
+    change`, `GET /api/auth/password-policy`, `POST /api/auth/logout`:
+    без первых двух пароль нечем сменить, без третьего экран смены не
+    может показать требования действующей политики, выйти можно всегда
+    (FR-AUTH-002). Перечень — сам список обработчиков, использующих эту
+    функцию (`grep -rn get_current_account_allowing_password_change`), а
+    не решение по месту в каждом из них; полнота перечня — предмет
+    `tests/test_password_change_gate.py`."""
+    return await _load_current_account(credentials, session)
+
+
+async def get_current_account(
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+    session: AsyncSession = Depends(get_db_session),
+) -> Account:
+    account = await _load_current_account(credentials, session)
+
+    # T-M1-46, FR-AUTH-002 (раздел 13, п. 23): гейт обязательной смены
+    # пароля — здесь, а не в `require_roles` (было раньше). Раньше он
+    # проверялся только для обработчиков, авторизованных по роли
+    # (`require_roles`), и любой обработчик, зависящий от ЭТОЙ функции
+    # напрямую, гейт обходил — так до этой правки обходили `GET /api/
+    # departments`, `GET /api/employees`, `GET /api/employees/
+    # {employee_id}` (обнаружено при ревью PR #143). `get_current_account`
+    # — то, от чего зависит АБСОЛЮТНО ЛЮБОЙ авторизованный обработчик, прямо
+    # или через `require_roles` (её `_dependency` ниже зависит от этой же
+    # функции) — поэтому гейт здесь безопасен по умолчанию: новый
+    # обработчик, объявивший обычную `Depends(get_current_account)`,
+    # гейтится сам, ничего для этого не делая. Явное исключение —
+    # `get_current_account_allowing_password_change` выше, с перечнем
+    # причин у себя в докстринге.
+    if account.must_change_password:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "Перед тем как продолжить, необходимо сменить пароль",
+        )
+    return account
+
+
 def require_roles(*roles: str) -> Callable[[Account], Awaitable[Account]]:
-    """T-M1-13: `must_change_password` проверяется только здесь, не в
-    `get_current_account` — любой эндпоинт, висящий на `get_current_
-    account` напрямую (без `require_roles`), доступен и при
-    `must_change_password = True`. Проверено по коду (PR #143 review,
-    замечание 2), а не переписано «примерно»: таких эндпоинтов СЕМЬ, не
-    два —
-    `GET /api/auth/me`, `POST /api/auth/password/change`,
-    `GET /api/auth/password-policy` (T-M1-45),
-    `POST /api/auth/logout`, `GET /api/departments`,
-    `GET /api/employees`, `GET /api/employees/{employee_id}`.
-    Первые четыре — намеренно (нечем сменить пароль, если `/me` и
-    `/password/change` недоступны; подсказки политики нужны ДО смены
-    пароля; выйти можно всегда). Три последних — просмотр оргструктуры
-    и карточек сотрудников, доступный «любому аутентифицированному» по
-    замыслу (`plan.md` §5.1), но не проверялся на пересечение с этим
-    состоянием: сотрудник с непогашенным `must_change_password` может
-    просматривать список/карточки сотрудников и подразделения ДО смены
-    пароля. Сам гейт стоит не там — привязан к авторизации по роли
-    (`require_roles`), а не к сессии, и с самообслуживанием M2/M3
-    (авторизация по `accounts.employee_id`, не по роли) число эндпоинтов
-    в его обход будет расти само собой; перенос гейта на уровень сессии
-    — `T-M1-46`."""
+    """Роль проверяется здесь; гейт обязательной смены пароля — уровнем
+    ниже, в `get_current_account` (T-M1-46) — эта зависимость наследует
+    его автоматически, отдельной проверки не делает."""
 
     async def _dependency(account: Account = Depends(get_current_account)) -> Account:
-        if account.must_change_password:
-            raise HTTPException(
-                status.HTTP_403_FORBIDDEN,
-                "Перед тем как продолжить, необходимо сменить пароль",
-            )
         if account.role not in roles:
             raise HTTPException(status.HTTP_403_FORBIDDEN, "Недостаточно прав для этого действия")
         return account

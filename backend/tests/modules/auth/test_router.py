@@ -590,8 +590,9 @@ async def test_deactivated_employee_card_denies_every_request_not_only_login(
 ) -> None:
     # Токен валиден, `accounts.is_active` не трогали — только карточку
     # сотрудника переводим в неактивный статус *после* выдачи токена, как
-    # при увольнении. И `GET /api/auth/me` (голый `get_current_account`),
-    # и эндпоинт за `require_roles` должны отказать одинаково.
+    # при увольнении. И `GET /api/auth/me` (`get_current_account_allowing_
+    # password_change`, T-M1-46), и эндпоинт за `require_roles` должны
+    # отказать одинаково — `enforce_access` вызывается в обоих случаях.
     employee = await make_employee(db_session, email="fired-mid-session@company.local")
     account = await make_account(
         db_session, employee_id=employee.id, auth_type="local", role="system_admin"
@@ -702,10 +703,9 @@ async def test_password_policy_is_available_before_first_password_change(
     которого эндпоинт вообще существует, — учётная запись ещё не
     сменила первичный пароль (`must_change_password = True`) и должна
     увидеть действующие правила ДО того, как сможет их пройти. Эндпоинт
-    висит на `get_current_account` напрямую, без `require_roles`
-    (см. `rbac.require_roles`), поэтому `must_change_password` его не
-    блокирует — здесь это проверяется прогоном, а не выводится из
-    чтения кода."""
+    зависит от `get_current_account_allowing_password_change`, а не от
+    гейтящего `get_current_account` (T-M1-46, `rbac.py`) — здесь это
+    проверяется прогоном, а не выводится из чтения кода."""
     employee = await make_employee(db_session, email="must-change@company.local")
     account = await make_account(
         db_session,

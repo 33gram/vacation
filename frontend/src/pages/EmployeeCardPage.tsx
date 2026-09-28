@@ -5,23 +5,17 @@ import { useMemo, useState } from "react";
 import { useParams } from "react-router-dom";
 
 import { apiClient } from "../api/client";
-import { stringDetail, fieldError, violationList } from "../api/errors";
+import { stringDetail } from "../api/errors";
 import { formatDate } from "../app/format";
 import { ErrorLoadingState, LoadingState } from "../app/states";
 import { EmployeeForm } from "../components/EmployeeForm";
-import type { EmployeeFormSubmitError, EmployeeFormValues } from "../components/EmployeeForm";
+import type { EmployeeFormValues } from "../components/EmployeeForm";
+import { parseEmployeeFormError } from "../components/employeeFormError";
+import type { EmployeeFormSubmitError } from "../components/employeeFormError";
 import { departmentNameById } from "../entities/department";
-import { employeeNameById, resolveName } from "../entities/employee";
-
-const WORK_SCHEDULE_LABELS: Record<string, string> = {
-  standard: "Стандартный",
-  shift: "Сменный",
-};
-
-const EMPLOYMENT_STATUS_LABELS: Record<string, string> = {
-  active: "Активен",
-  terminated: "Уволен",
-};
+import { EMPLOYMENT_STATUS_LABELS, WORK_SCHEDULE_LABELS, employeeNameById, resolveName } from "../entities/employee";
+import { useDepartmentsQuery } from "../entities/useDepartmentsQuery";
+import { useAllEmployeesQuery } from "../entities/useEmployeesQuery";
 
 function useEmployeeQuery(employeeId: number) {
   return useQuery({
@@ -32,34 +26,6 @@ function useEmployeeQuery(employeeId: number) {
       });
       if (!data) {
         throw new Error(`GET /api/employees/${employeeId} failed with status ${response.status}`);
-      }
-      return data;
-    },
-  });
-}
-
-function useAllEmployeesQuery() {
-  return useQuery({
-    queryKey: ["employees", true],
-    queryFn: async () => {
-      const { data, response } = await apiClient.GET("/api/employees", {
-        params: { query: { include_terminated: true } },
-      });
-      if (!data) {
-        throw new Error(`GET /api/employees failed with status ${response.status}`);
-      }
-      return data;
-    },
-  });
-}
-
-function useDepartmentsQuery() {
-  return useQuery({
-    queryKey: ["departments"],
-    queryFn: async () => {
-      const { data, response } = await apiClient.GET("/api/departments");
-      if (!data) {
-        throw new Error(`GET /api/departments failed with status ${response.status}`);
       }
       return data;
     },
@@ -144,16 +110,7 @@ export function EmployeeCardPage() {
     });
 
     if (error) {
-      const matchedFieldError = fieldError(error.detail);
-      const violations = violationList(error.detail);
-      return {
-        fieldErrors: matchedFieldError ? [matchedFieldError] : [],
-        violatedCodes: violations ? new Set(violations.map((violation) => violation.code)) : null,
-        generalError:
-          !matchedFieldError && !violations
-            ? (stringDetail(error.detail) ?? "Не удалось сохранить карточку.")
-            : null,
-      };
+      return parseEmployeeFormError(error.detail, "Не удалось сохранить карточку.");
     }
 
     await queryClient.setQueryData(["employee", employeeId], data);

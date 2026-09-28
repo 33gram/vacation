@@ -1,40 +1,15 @@
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQueryClient } from "@tanstack/react-query";
 import { Typography } from "antd";
 import { useNavigate } from "react-router-dom";
 
 import { apiClient } from "../api/client";
-import { fieldError, stringDetail, violationList } from "../api/errors";
 import { ErrorLoadingState, LoadingState } from "../app/states";
 import { EmployeeForm } from "../components/EmployeeForm";
-import type { EmployeeFormSubmitError, EmployeeFormValues } from "../components/EmployeeForm";
-
-function useDepartmentsQuery() {
-  return useQuery({
-    queryKey: ["departments"],
-    queryFn: async () => {
-      const { data, response } = await apiClient.GET("/api/departments");
-      if (!data) {
-        throw new Error(`GET /api/departments failed with status ${response.status}`);
-      }
-      return data;
-    },
-  });
-}
-
-function useAllEmployeesQuery() {
-  return useQuery({
-    queryKey: ["employees", true],
-    queryFn: async () => {
-      const { data, response } = await apiClient.GET("/api/employees", {
-        params: { query: { include_terminated: true } },
-      });
-      if (!data) {
-        throw new Error(`GET /api/employees failed with status ${response.status}`);
-      }
-      return data;
-    },
-  });
-}
+import type { EmployeeFormValues } from "../components/EmployeeForm";
+import { parseEmployeeFormError } from "../components/employeeFormError";
+import type { EmployeeFormSubmitError } from "../components/employeeFormError";
+import { useDepartmentsQuery } from "../entities/useDepartmentsQuery";
+import { useAllEmployeesQuery } from "../entities/useEmployeesQuery";
 
 /** Форма создания (`ui.md` §3, `FR-EMP-001`) — поля и обработка ошибок
  * общие с правкой карточки, см. `EmployeeForm`. */
@@ -72,14 +47,7 @@ export function EmployeeCreatePage() {
     });
 
     if (error) {
-      const matchedFieldError = fieldError(error.detail);
-      const violations = violationList(error.detail);
-      return {
-        fieldErrors: matchedFieldError ? [matchedFieldError] : [],
-        violatedCodes: violations ? new Set(violations.map((violation) => violation.code)) : null,
-        generalError:
-          !matchedFieldError && !violations ? (stringDetail(error.detail) ?? "Не удалось создать карточку.") : null,
-      };
+      return parseEmployeeFormError(error.detail, "Не удалось создать карточку.");
     }
 
     await queryClient.invalidateQueries({ queryKey: ["employees"] });

@@ -4,6 +4,7 @@ import { useState } from "react";
 
 import type { EmployeeOut } from "../entities/employee";
 import type { DepartmentOut } from "../entities/department";
+import type { EmployeeFormSubmitError } from "./employeeFormError";
 import { PasswordPolicyChecklist } from "./PasswordPolicyChecklist";
 
 type AuthType = "ldap" | "local";
@@ -41,12 +42,6 @@ interface FormInternalValues {
   leave_category: string | null | undefined;
   auth_type: AuthType;
   password: string | undefined;
-}
-
-export interface EmployeeFormSubmitError {
-  fieldErrors: { field: string; message: string }[];
-  violatedCodes: Set<string> | null;
-  generalError: string | null;
 }
 
 /** Общая форма создания/правки карточки (`ui.md` «Карточка записи» —

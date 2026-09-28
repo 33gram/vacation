@@ -1,69 +1,27 @@
-import { useQuery } from "@tanstack/react-query";
 import { Button, Input, Select, Space, Switch, Table, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 
-import { apiClient } from "../api/client";
 import { formatDate } from "../app/format";
 import { EmptyState, ErrorLoadingState, LoadingState } from "../app/states";
 import { departmentNameById } from "../entities/department";
 import type { DepartmentOut } from "../entities/department";
-import { employeeNameById, resolveName } from "../entities/employee";
+import {
+  EMPLOYMENT_STATUS_LABELS,
+  WORK_SCHEDULE_LABELS,
+  employeeNameById,
+  resolveName,
+} from "../entities/employee";
 import type { EmployeeOut } from "../entities/employee";
-
-const WORK_SCHEDULE_LABELS: Record<string, string> = {
-  standard: "Стандартный",
-  shift: "Сменный",
-};
-
-const EMPLOYMENT_STATUS_LABELS: Record<string, string> = {
-  active: "Активен",
-  terminated: "Уволен",
-};
+import { useDepartmentsQuery } from "../entities/useDepartmentsQuery";
+import { useAllEmployeesQuery } from "../entities/useEmployeesQuery";
 
 // Стабильные ссылки на пустой массив для состояния "данные ещё не пришли" —
 // инлайновое `?? []` создавало бы новый массив на каждый рендер и срывало
 // мемоизацию `useMemo` ниже (react-hooks/exhaustive-deps).
 const NO_DEPARTMENTS: DepartmentOut[] = [];
 const NO_EMPLOYEES: EmployeeOut[] = [];
-
-function useAllEmployeesQuery() {
-  // `include_terminated: true` ВСЕГДА — тот же ключ кэша, что и
-  // `EmployeeCardPage`/`EmployeeCreatePage`: список нуждается в уволенных
-  // сотрудниках не только чтобы показать их строки (переключатель ниже),
-  // но и чтобы разрешить ФИО РУКОВОДИТЕЛЯ, если тот сам уволен — иначе
-  // строка подчинённого показывала бы «—», неотличимо от «руководителя
-  // нет вовсе» (FR-EMP-001, вершина иерархии), хотя руководитель есть,
-  // просто не входит в отфильтрованный по умолчанию список. «Показывать
-  // уволенных» — клиентский фильтр наряду с поиском и подразделением, а
-  // не серверный параметр.
-  return useQuery({
-    queryKey: ["employees", true],
-    queryFn: async () => {
-      const { data, response } = await apiClient.GET("/api/employees", {
-        params: { query: { include_terminated: true } },
-      });
-      if (!data) {
-        throw new Error(`GET /api/employees failed with status ${response.status}`);
-      }
-      return data;
-    },
-  });
-}
-
-function useDepartmentsQuery() {
-  return useQuery({
-    queryKey: ["departments"],
-    queryFn: async () => {
-      const { data, response } = await apiClient.GET("/api/departments");
-      if (!data) {
-        throw new Error(`GET /api/departments failed with status ${response.status}`);
-      }
-      return data;
-    },
-  });
-}
 
 /** «Список с фильтрами» (`ui.md` §3, `FR-EMP-001`). `GET /api/employees`
  * отдаёт ВЕСЬ видимый список одним ответом (`employee_service.

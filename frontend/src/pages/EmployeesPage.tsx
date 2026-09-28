@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { Alert, Button, Input, Select, Space, Switch, Table, Typography } from "antd";
+import { Button, Input, Select, Space, Switch, Table, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
@@ -28,12 +28,21 @@ const EMPLOYMENT_STATUS_LABELS: Record<string, string> = {
 const NO_DEPARTMENTS: DepartmentOut[] = [];
 const NO_EMPLOYEES: EmployeeOut[] = [];
 
-function useEmployeesQuery(includeTerminated: boolean) {
+function useAllEmployeesQuery() {
+  // `include_terminated: true` ВСЕГДА — тот же ключ кэша, что и
+  // `EmployeeCardPage`/`EmployeeCreatePage`: список нуждается в уволенных
+  // сотрудниках не только чтобы показать их строки (переключатель ниже),
+  // но и чтобы разрешить ФИО РУКОВОДИТЕЛЯ, если тот сам уволен — иначе
+  // строка подчинённого показывала бы «—», неотличимо от «руководителя
+  // нет вовсе» (FR-EMP-001, вершина иерархии), хотя руководитель есть,
+  // просто не входит в отфильтрованный по умолчанию список. «Показывать
+  // уволенных» — клиентский фильтр наряду с поиском и подразделением, а
+  // не серверный параметр.
   return useQuery({
-    queryKey: ["employees", includeTerminated],
+    queryKey: ["employees", true],
     queryFn: async () => {
       const { data, response } = await apiClient.GET("/api/employees", {
-        params: { query: { include_terminated: includeTerminated } },
+        params: { query: { include_terminated: true } },
       });
       if (!data) {
         throw new Error(`GET /api/employees failed with status ${response.status}`);
@@ -58,17 +67,21 @@ function useDepartmentsQuery() {
 
 /** «Список с фильтрами» (`ui.md` §3, `FR-EMP-001`). `GET /api/employees`
  * отдаёт ВЕСЬ видимый список одним ответом (`employee_service.
- * list_visible_employees`, `NFR-SCALE-001`) — единственный серверный
- * параметр — `include_terminated` (уволенные скрыты по умолчанию); ФИО/
- * табельный номер и подразделение фильтруются на уже полученном списке, не
- * повторным запросом. */
+ * list_visible_employees`, `NFR-SCALE-001`) — запрашивается ВСЕГДА с
+ * `include_terminated: true` (см. `useAllEmployeesQuery`), ФИО/табельный
+ * номер, подразделение и «Показывать уволенных» фильтруются на уже
+ * полученном списке, не повторным запросом. `include_terminated` на
+ * сервере — чистое расширение фильтра (`list_visible_employees` сначала
+ * решает видимость по роли и только потом применяет его), поэтому
+ * запрашивать полный список безопасно для любой роли, включая
+ * `employee`, который видит только себя и свою команду. */
 export function EmployeesPage() {
   const navigate = useNavigate();
   const [showTerminated, setShowTerminated] = useState(false);
   const [searchText, setSearchText] = useState("");
   const [departmentFilter, setDepartmentFilter] = useState<number | null>(null);
 
-  const employeesQuery = useEmployeesQuery(showTerminated);
+  const employeesQuery = useAllEmployeesQuery();
   const departmentsQuery = useDepartmentsQuery();
 
   const departments: DepartmentOut[] = departmentsQuery.data ?? NO_DEPARTMENTS;
@@ -82,6 +95,9 @@ export function EmployeesPage() {
   const filteredEmployees = useMemo(() => {
     const normalizedSearch = searchText.trim().toLowerCase();
     return employees.filter((employee) => {
+      if (!showTerminated && employee.employment_status === "terminated") {
+        return false;
+      }
       if (departmentFilter !== null && employee.department_id !== departmentFilter) {
         return false;
       }
@@ -93,11 +109,30 @@ export function EmployeesPage() {
         employee.personnel_number.toLowerCase().includes(normalizedSearch)
       );
     });
-  }, [employees, searchText, departmentFilter]);
+  }, [employees, searchText, departmentFilter, showTerminated]);
 
+  // Сброс строки поиска/подразделения (ссылка «Сбросить» в строке
+  // фильтров) — переключатель уволенных сюда не входит: он и так по
+  // умолчанию выключен, включать его в ответ на очистку ПОИСКА было бы
+  // неожиданным побочным эффектом для этого действия.
   const resetFilters = () => {
     setSearchText("");
     setDepartmentFilter(null);
+  };
+
+  // «Сбросить фильтры» в состоянии «Не найдено» — отдельное, более
+  // сильное действие: единственный сценарий, где это состояние вообще
+  // возможно при непустом `employees`, — весь показанный срез скрыт
+  // текущими фильтрами, и переключатель уволенных здесь равноправная
+  // тому причина, что и поиск/подразделение. Возврат «уволенных» к
+  // умолчанию (`false`, то есть «не менять») ничего не исправил бы,
+  // если весь штат уволен, — кнопка обязана снять именно то, что скрывает
+  // данные, поэтому переключатель ставится в `true`, а не в исходное
+  // значение.
+  const resetAllFiltersFromEmptyState = () => {
+    setSearchText("");
+    setDepartmentFilter(null);
+    setShowTerminated(true);
   };
 
   if (employeesQuery.isLoading || departmentsQuery.isLoading) {
@@ -209,9 +244,23 @@ export function EmployeesPage() {
       </Space>
 
       {employees.length === 0 ? (
-        <EmptyState title="Сотрудников нет" description="В системе пока не заведено ни одного сотрудника." />
+        // Данных нет ВООБЩЕ — весь список (включая уволенных, т.к.
+        // `employees` теперь всегда с `include_terminated: true`) пуст.
+        <EmptyState
+          title="Сотрудников нет"
+          description="В системе пока не заведено ни одного сотрудника."
+          action={{ label: "Добавить сотрудника", onClick: () => navigate("/employees/new") }}
+        />
       ) : filteredEmployees.length === 0 ? (
-        <Alert type="info" message="По заданным фильтрам ничего не найдено." showIcon />
+        // Данные есть, но ни одна строка не проходит фильтры — включая
+        // выключенный переключатель «Показывать уволенных» (если весь
+        // штат уволен). Отдельный текст от «данных нет вообще» (ui.md
+        // §4) и кнопка сброса ВСЕХ трёх фильтров, а не голый Alert.
+        <EmptyState
+          title="Не найдено"
+          description="По заданным фильтрам ничего не найдено."
+          action={{ label: "Сбросить фильтры", onClick: resetAllFiltersFromEmptyState }}
+        />
       ) : (
         <Table<EmployeeOut>
           rowKey="id"

@@ -123,4 +123,72 @@ describe("employees list (T-M1-19, FR-EMP-001)", () => {
     expect(row.queryByText("2", { selector: "td" })).not.toBeInTheDocument();
     expect(row.queryByText("1", { selector: "td" })).not.toBeInTheDocument();
   });
+
+  it("shows a TERMINATED manager's full name, not '—' as if there were none", async () => {
+    const TERMINATED_MANAGER = employeeResponse({
+      id: 1,
+      full_name: "Иванов Иван Иванович",
+      employment_status: "terminated",
+      termination_date: "2026-01-10",
+    });
+    const REPORT = employeeResponse({
+      id: 2,
+      full_name: "Петров Пётр Петрович",
+      manager_id: 1,
+    });
+    mockBackend({ shown: [REPORT], hidden: [TERMINATED_MANAGER] });
+
+    renderApp("/employees");
+
+    const petrovRow = (await screen.findByText("Петров Пётр Петрович")).closest("tr");
+    if (!petrovRow) {
+      throw new Error("Petrov's table row was not found");
+    }
+    // Руководитель уволен, но у него есть имя — список обязан разрешить
+    // его ФИО так же, как карточка (include_terminated: true), а не
+    // писать «—», неотличимо от «руководителя нет вовсе» (FR-EMP-001).
+    expect(within(petrovRow).getByText("Иванов Иван Иванович")).toBeInTheDocument();
+    expect(within(petrovRow).queryByText("—")).not.toBeInTheDocument();
+  });
+});
+
+describe("employees list empty states (T-M1-19, ui.md §4)", () => {
+  it("shows 'no employees at all' with an add-employee action when the full list is empty", async () => {
+    mockBackend({ shown: [], hidden: [] });
+
+    renderApp("/employees");
+
+    expect(await screen.findByText("Сотрудников нет")).toBeInTheDocument();
+    // Два — шапка раздела (всегда) и действие самого пустого состояния
+    // (ui.md §4: у «данных нет вообще» есть кнопка основного действия).
+    expect(screen.getAllByRole("button", { name: "Добавить сотрудника" })).toHaveLength(2);
+    // Отрицательный контроль: другой текст состояния «не найдено» здесь
+    // не показан — это разные состояния (ui.md §4).
+    expect(screen.queryByText("Не найдено")).not.toBeInTheDocument();
+  });
+
+  it("shows 'not found by filters' — not 'no employees at all' — when the whole staff is terminated and the switch is off, and resets all three filters", async () => {
+    const ONLY_TERMINATED = employeeResponse({
+      id: 1,
+      full_name: "Иванов Иван Иванович",
+      employment_status: "terminated",
+      termination_date: "2026-01-10",
+    });
+    mockBackend({ shown: [], hidden: [ONLY_TERMINATED] });
+
+    renderApp("/employees");
+
+    expect(await screen.findByText("Не найдено")).toBeInTheDocument();
+    // Отрицательный контроль: раз данные в системе ЕСТЬ (просто все
+    // уволены), текст «данных нет вообще» здесь лгал бы — и не должен
+    // появляться.
+    expect(screen.queryByText("Сотрудников нет")).not.toBeInTheDocument();
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Сбросить фильтры" }));
+
+    expect(await screen.findByRole("link", { name: "Иванов Иван Иванович" })).toBeInTheDocument();
+    // Сброс включает переключатель уволенных — один из трёх фильтров.
+    expect(screen.getByRole("switch", { name: "Показывать уволенных" })).toBeChecked();
+  });
 });

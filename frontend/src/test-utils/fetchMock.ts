@@ -9,13 +9,20 @@ import { vi } from "vitest";
  * `GET /api/employees?include_terminated=...` — единственный на сегодня
  * запрос с квери-параметром): существующие обработчики сравнивают
  * `pathname` строкой ("/api/employees" целиком), и вклеивание строки
- * запроса в него сломало бы это сравнение для каждого такого теста. */
+ * запроса в него сломало бы это сравнение для каждого такого теста.
+ *
+ * Возврат может быть `Promise`, а не только прямым значением (T-M1-53):
+ * тест, которому нужно проверить DOM, пока конкретный запрос "висит"
+ * (например, чтобы отличить данные, реально пришедшие по сети, от уже
+ * закэшированных react-query, а не гадать по времени выполнения реальных
+ * промисов), держит его на отложенном `Promise` и разрешает вручную в
+ * нужный момент — вместо гонки с настоящим таймингом. */
 export type FetchHandler = (
   method: string,
   pathname: string,
   init: RequestInit,
   search: URLSearchParams,
-) => { status: number; body?: unknown } | null;
+) => { status: number; body?: unknown } | null | Promise<{ status: number; body?: unknown } | null>;
 
 let currentHandler: FetchHandler | null = null;
 
@@ -101,7 +108,7 @@ export function installFetchMock(): void {
     if (!currentHandler) {
       throw new Error(`Fetch mock not configured for ${method} ${url.pathname} — call setFetchHandler()`);
     }
-    const result = currentHandler(method, url.pathname, { ...(init ?? {}), body }, url.searchParams);
+    const result = await currentHandler(method, url.pathname, { ...(init ?? {}), body }, url.searchParams);
     if (!result) {
       throw new Error(`Unhandled request in test: ${method} ${url.pathname}`);
     }

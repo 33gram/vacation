@@ -207,6 +207,30 @@ describe("menu composition by role (ui.md §2.1/§2.2)", () => {
 
 describe("logout clears the session cache (PR #144 review)", () => {
   it("shows the NEW role's menu after logging out and back in as someone else, not a stale cached one", async () => {
+    // T-M1-53 (PR #153 review): раньше здесь же проверялось
+    // `queryClient.getQueryData(["me"]) === undefined` сразу после клика
+    // «Выйти» — промежуточный момент между СИНХРОННЫМ `queryClient.clear()`
+    // и ВОЗМОЖНЫМ авто-рефетчем ещё не отписавшегося `QueryObserver`
+    // (`@tanstack/query-core`, `QueryObserver.setOptions` -> `#updateQuery`
+    // -> `#executeFetch`) — у этих двух событий нет заданного порядка, и
+    // при вытеснении под конкуренцией за CPU обгонял то один, то другой
+    // (PR #151 это не устранило, T-M1-53 измерила: 3 из 6 прогонов на
+    // двухъядерной машине).
+    //
+    // Тот же авто-рефетч, воспроизведено ЗДЕСЬ (детерминированно, без
+    // нагрузки на CPU): двухшаговая замена обработчика (401 сразу после
+    // клика, затем — гейт на /me новой сессии, после ввода логина) сама
+    // была источником той же гонки на один такт раньше — рефетч ещё не
+    // отписавшегося наблюдателя `["me"]` мог уйти С ПЕРВЫМ (ещё hr_admin)
+    // обработчиком ДО того, как следующая строка теста успевала
+    // подменить его на 401 (тот же порядок операций, что описан выше, и
+    // с тем же отсутствием гарантии). Поэтому обработчик после «Выйти»
+    // ставится ОДИН, сразу закрывающий весь остаток теста: до входа новым
+    // пользователем — 401 (любой рефетч, в том числе от старого
+    // наблюдателя, в любой момент), после — отложенный промис-гейт
+    // (`meGate`). Ни один момент между логаутом и открытием гейта больше
+    // не может увидеть hr_admin-ответ — второй обработчик для него просто
+    // не существует.
     setAccessToken("token-a");
     setFetchHandler((method, pathname) => {
       if (method === "GET" && pathname === "/api/auth/me") {
@@ -215,57 +239,55 @@ describe("logout clears the session cache (PR #144 review)", () => {
       return null;
     });
 
-    const { queryClient } = renderApp("/");
+    renderApp("/");
     const user = userEvent.setup();
 
     await screen.findByText("Подразделения");
 
-    await user.click(screen.getByRole("button", { name: "Выйти" }));
-    // PR #151: сразу после клика — прежде чем ждать редиректа на /login —
-    // /me начинает отвечать 401. Без этого возможная гонка (react-query
-    // способен переиспользовать ещё не отписавшегося наблюдателя `useMe()`
-    // и перезапросить `/me` на следующем рендере ДО реального размонтирования
-    // `SessionGate`, см. `QueryObserver.setOptions` -> `#updateQuery` ->
-    // `#executeFetch` в `@tanstack/query-core`) может успеть вернуть тот же
-    // hr_admin-ответ и заново заполнить кэш `["me"]` уже ПОСЛЕ `clear()`,
-    // прежде чем сработает ассерт ниже — тест проверял бы, кто успел раньше,
-    // а не сам факт очистки. Отвечая 401 на любой /me с этого момента,
-    // делаем не важно, случится ли этот повторный запрос вообще.
-    setFetchHandler((method, pathname) => {
-      if (method === "GET" && pathname === "/api/auth/me") {
-        return { status: 401, body: { detail: "Неверный логин или пароль" } };
-      }
-      return null;
+    const meGateResolver: { resolve: (() => void) | null } = { resolve: null };
+    const meGate = new Promise<void>((resolve) => {
+      meGateResolver.resolve = resolve;
     });
-    await screen.findByLabelText("Логин или e-mail");
-
-    // Проверка САМОГО механизма, не только его симптома: без
-    // `queryClient.clear()` в `useLogout()` кэш `["me"]` пережил бы выход —
-    // react-query держит неактивные запросы в кэше по умолчанию 5 минут
-    // после размонтирования последнего наблюдателя, а не удаляет сразу по
-    // размонтированию. Проверять это на составе меню НИЖЕ было бы
-    // ненадёжно: react-query переспрашивает `/me` при повторном монтировании
-    // компонента (`staleTime` по умолчанию — 0), и устаревшее меню могло бы
-    // успеть замениться правильным раньше, чем успеет сработать любой ассерт.
-    expect(queryClient.getQueryData(["me"])).toBeUndefined();
-
+    let loggedInAsNewUser = false;
     setFetchHandler((method, pathname) => {
       if (method === "POST" && pathname === "/api/auth/login") {
+        loggedInAsNewUser = true;
         return { status: 200, body: { access_token: "token-b" } };
       }
       if (method === "GET" && pathname === "/api/auth/me") {
-        return { status: 200, body: meResponse({ role: "employee", must_change_password: false }) };
+        if (!loggedInAsNewUser) {
+          return { status: 401, body: { detail: "Неверный логин или пароль" } };
+        }
+        return meGate.then(() => ({
+          status: 200,
+          body: meResponse({ role: "employee", must_change_password: false }),
+        }));
       }
       return null;
     });
 
+    await user.click(screen.getByRole("button", { name: "Выйти" }));
+    await screen.findByLabelText("Логин или e-mail");
+
     // employee — роль без единого пункта меню в M1 (`ui.md` §2.2), в отличие
-    // от hr_admin выше: если бы `["me"]` остался в кэше от прежней сессии,
-    // здесь всё ещё было бы видно меню hr_admin вместо страницы-заглушки.
+    // от hr_admin выше.
     await user.type(screen.getByLabelText("Логин или e-mail"), "petrova2");
     await user.type(screen.getByLabelText("Пароль"), "PetrovaPass1!");
     await user.click(screen.getByRole("button", { name: "Войти" }));
 
+    // Дожидаемся ухода СО страницы входа — сам переход маршрута
+    // асинхронный (react-router), а /me новой сессии ещё НЕ отвечал
+    // (гейт держится нарочно): если пункт меню hr_admin виден здесь, он
+    // взялся не из сети (обработчик для hr_admin-ответа с логаута больше
+    // не существует), а из непочищенного кэша прежней сессии — `SessionGate`
+    // отдал бы его синхронно (stale-while-revalidate, кэш есть — до
+    // какого-либо ответа сети).
+    await waitFor(() => {
+      expect(screen.queryByLabelText("Логин или e-mail")).not.toBeInTheDocument();
+    });
+    expect(screen.queryByText("Подразделения")).not.toBeInTheDocument();
+
+    meGateResolver.resolve?.();
     await screen.findByText("Разделы этой роли ещё не готовы");
     expect(screen.queryByText("Подразделения")).not.toBeInTheDocument();
   });

@@ -1,6 +1,6 @@
 import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { setAccessToken } from "../app/auth";
 import { setFetchHandler } from "../test-utils/fetchMock";
@@ -87,5 +87,49 @@ describe("employee create form (T-M1-19, FR-EMP-001)", () => {
     expect(emailItem).toContainElement(errorText);
     // Отрицательный контроль: сам префикс пользователю не показан.
     expect(screen.queryByText(/^email:/)).not.toBeInTheDocument();
+  });
+
+  it("puts the typed password into initial_password when auth_type is local", async () => {
+    let postBody: Record<string, unknown> | null = null;
+    mockBackend((body) => {
+      postBody = body;
+      return { status: 201, body: { id: 42, ...body } };
+    });
+
+    renderApp("/employees/new");
+    const user = userEvent.setup();
+
+    await fillRequiredFields(user);
+    await user.click(screen.getByRole("radio", { name: "Локальный пароль" }));
+    await screen.findByText("Требования к паролю");
+    await user.type(screen.getByLabelText("Первичный пароль"), "StrongPass1!");
+    await user.click(screen.getByRole("button", { name: "Создать" }));
+
+    await vi.waitFor(() => expect(postBody).not.toBeNull());
+    expect(postBody).toMatchObject({ auth_type: "local", initial_password: "StrongPass1!" });
+  });
+
+  it("does not send an actual password value in initial_password when auth_type stays ldap", async () => {
+    // Отрицательный контроль: если бы код когда-нибудь подставил сюда
+    // реальный пароль вместо `null` (например, скопировав его из другого
+    // поля), эта проверка должна упасть — сравнение именно со строкой,
+    // а не просто `toBeFalsy()`, которое пропустило бы пустую строку.
+    let postBody: Record<string, unknown> | null = null;
+    mockBackend((body) => {
+      postBody = body;
+      return { status: 201, body: { id: 43, ...body } };
+    });
+
+    renderApp("/employees/new");
+    const user = userEvent.setup();
+
+    await fillRequiredFields(user);
+    // Способ входа по умолчанию — LDAP (`EmployeeCreate.auth_type`), поле
+    // пароля не трогаем — оно и не показано.
+    expect(screen.queryByLabelText("Первичный пароль")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Создать" }));
+
+    await vi.waitFor(() => expect(postBody).not.toBeNull());
+    expect(postBody).toMatchObject({ auth_type: "ldap", initial_password: null });
   });
 });

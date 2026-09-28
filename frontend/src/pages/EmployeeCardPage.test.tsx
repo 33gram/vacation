@@ -72,6 +72,19 @@ describe("employee card (T-M1-19, FR-EMP-001)", () => {
   });
 
   it("sends the FULL set of fields on PUT after editing only one of them", async () => {
+    // `auth_type: "local"`, не фикстурный дефолт "ldap" — сверка ниже
+    // сравнивает с литералом "local", а не с `LOCAL_EMPLOYEE.auth_type`:
+    // тест обязан упасть, если код где-то подставит "ldap" вместо
+    // прочитанного значения (T-M1-52 — именно так туда и проникает
+    // регрессия, молча стирая пароль локального сотрудника), а сверка со
+    // значением из той же фикстуры прошла бы даже при такой подмене.
+    const LOCAL_EMPLOYEE = employeeResponse({
+      id: 2,
+      full_name: "Петров Пётр Петрович",
+      department_id: 1,
+      manager_id: 1,
+      auth_type: "local",
+    });
     setAccessToken("token");
     let putBody: Record<string, unknown> | null = null;
     setFetchHandler((method, pathname, init) => {
@@ -82,14 +95,14 @@ describe("employee card (T-M1-19, FR-EMP-001)", () => {
         return { status: 200, body: DEPARTMENTS };
       }
       if (method === "GET" && pathname === "/api/employees") {
-        return { status: 200, body: [MANAGER, EMPLOYEE] };
+        return { status: 200, body: [MANAGER, LOCAL_EMPLOYEE] };
       }
       if (method === "GET" && pathname === "/api/employees/2") {
-        return { status: 200, body: EMPLOYEE };
+        return { status: 200, body: LOCAL_EMPLOYEE };
       }
       if (method === "PUT" && pathname === "/api/employees/2") {
         putBody = JSON.parse(init.body as string) as Record<string, unknown>;
-        return { status: 200, body: { ...EMPLOYEE, position: putBody.position } };
+        return { status: 200, body: { ...LOCAL_EMPLOYEE, position: putBody.position } };
       }
       return null;
     });
@@ -109,19 +122,120 @@ describe("employee card (T-M1-19, FR-EMP-001)", () => {
     await screen.findByRole("button", { name: "Редактировать" });
 
     expect(putBody).not.toBeNull();
-    // ПОЛНЫЙ состав полей — не только изменённое `position`.
+    // ПОЛНЫЙ состав полей — не только изменённое `position`, и
+    // `auth_type` буквально "local", а не то, что лежит в фикстуре.
     expect(putBody).toMatchObject({
-      full_name: EMPLOYEE.full_name,
-      personnel_number: EMPLOYEE.personnel_number,
-      department_id: EMPLOYEE.department_id,
+      full_name: LOCAL_EMPLOYEE.full_name,
+      personnel_number: LOCAL_EMPLOYEE.personnel_number,
+      department_id: LOCAL_EMPLOYEE.department_id,
       position: "Ведущий инженер",
-      hire_date: EMPLOYEE.hire_date,
-      manager_id: EMPLOYEE.manager_id,
-      email: EMPLOYEE.email,
-      work_schedule_type: EMPLOYEE.work_schedule_type,
-      leave_category: EMPLOYEE.leave_category,
-      auth_type: EMPLOYEE.auth_type,
+      hire_date: LOCAL_EMPLOYEE.hire_date,
+      manager_id: LOCAL_EMPLOYEE.manager_id,
+      email: LOCAL_EMPLOYEE.email,
+      work_schedule_type: LOCAL_EMPLOYEE.work_schedule_type,
+      leave_category: LOCAL_EMPLOYEE.leave_category,
+      auth_type: "local",
     });
+  });
+
+  it("editing a local-auth employee without changing the login method hides the password field and sends new_password: null", async () => {
+    const LOCAL_EMPLOYEE = employeeResponse({
+      id: 2,
+      full_name: "Петров Пётр Петрович",
+      department_id: 1,
+      manager_id: 1,
+      auth_type: "local",
+    });
+    setAccessToken("token");
+    let putBody: Record<string, unknown> | null = null;
+    setFetchHandler((method, pathname, init) => {
+      if (method === "GET" && pathname === "/api/auth/me") {
+        return { status: 200, body: meResponse({ role: "hr_admin", must_change_password: false }) };
+      }
+      if (method === "GET" && pathname === "/api/departments") {
+        return { status: 200, body: DEPARTMENTS };
+      }
+      if (method === "GET" && pathname === "/api/employees") {
+        return { status: 200, body: [MANAGER, LOCAL_EMPLOYEE] };
+      }
+      if (method === "GET" && pathname === "/api/employees/2") {
+        return { status: 200, body: LOCAL_EMPLOYEE };
+      }
+      if (method === "PUT" && pathname === "/api/employees/2") {
+        putBody = JSON.parse(init.body as string) as Record<string, unknown>;
+        return { status: 200, body: LOCAL_EMPLOYEE };
+      }
+      return null;
+    });
+
+    renderApp("/employees/2");
+    const user = userEvent.setup();
+
+    await screen.findByRole("heading", { name: "Петров Пётр Петрович" });
+    await user.click(screen.getByRole("button", { name: "Редактировать" }));
+    await screen.findByLabelText("Должность");
+
+    // Способ входа уже локальный (радио-кнопка предзаполнена) — поле
+    // пароля не должно появляться, пока способ входа не меняется
+    // (T-M1-34: сервис отклоняет пароль без смены способа входа).
+    expect(screen.queryByLabelText("Новый пароль")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Сохранить" }));
+    await screen.findByRole("button", { name: "Редактировать" });
+
+    expect(putBody).not.toBeNull();
+    expect(putBody).toMatchObject({ auth_type: "local", new_password: null });
+  });
+
+  it("switching from LDAP to local auth shows the password field, and the typed password goes into new_password", async () => {
+    const LDAP_EMPLOYEE = employeeResponse({
+      id: 2,
+      full_name: "Петров Пётр Петрович",
+      department_id: 1,
+      manager_id: 1,
+      auth_type: "ldap",
+    });
+    setAccessToken("token");
+    let putBody: Record<string, unknown> | null = null;
+    setFetchHandler((method, pathname, init) => {
+      if (method === "GET" && pathname === "/api/auth/me") {
+        return { status: 200, body: meResponse({ role: "hr_admin", must_change_password: false }) };
+      }
+      if (method === "GET" && pathname === "/api/departments") {
+        return { status: 200, body: DEPARTMENTS };
+      }
+      if (method === "GET" && pathname === "/api/employees") {
+        return { status: 200, body: [MANAGER, LDAP_EMPLOYEE] };
+      }
+      if (method === "GET" && pathname === "/api/employees/2") {
+        return { status: 200, body: LDAP_EMPLOYEE };
+      }
+      if (method === "GET" && pathname === "/api/auth/password-policy") {
+        return { status: 200, body: [] };
+      }
+      if (method === "PUT" && pathname === "/api/employees/2") {
+        putBody = JSON.parse(init.body as string) as Record<string, unknown>;
+        return { status: 200, body: { ...LDAP_EMPLOYEE, auth_type: "local" } };
+      }
+      return null;
+    });
+
+    renderApp("/employees/2");
+    const user = userEvent.setup();
+
+    await screen.findByRole("heading", { name: "Петров Пётр Петрович" });
+    await user.click(screen.getByRole("button", { name: "Редактировать" }));
+    await screen.findByLabelText("Должность");
+
+    expect(screen.queryByLabelText("Новый пароль")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("radio", { name: "Локальный пароль" }));
+    const passwordInput = await screen.findByLabelText("Новый пароль");
+    await user.type(passwordInput, "NewPassword1!");
+    await user.click(screen.getByRole("button", { name: "Сохранить" }));
+    await screen.findByRole("button", { name: "Редактировать" });
+
+    expect(putBody).not.toBeNull();
+    expect(putBody).toMatchObject({ auth_type: "local", new_password: "NewPassword1!" });
   });
 
   it("deactivates only after confirming in the modal, as its own action, not part of PUT", async () => {

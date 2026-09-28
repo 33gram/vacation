@@ -289,4 +289,43 @@ describe("employee card (T-M1-19, FR-EMP-001)", () => {
     expect(deactivateCalled).toBe(true);
     expect(putCalled).toBe(false);
   });
+
+  it.each([
+    ["ldap", "Корпоративный каталог (LDAP)"],
+    ["local", "Локальный пароль"],
+  ])(
+    "shows 'Способ входа' in view mode for auth_type %s, without opening the edit form",
+    async (authType, expectedLabel) => {
+      const employeeWithAuthType = employeeResponse({
+        id: 2,
+        full_name: "Петров Пётр Петрович",
+        department_id: 1,
+        manager_id: 1,
+        auth_type: authType as "ldap" | "local",
+      });
+      setAccessToken("token");
+      setFetchHandler((method, pathname) => {
+        if (method === "GET" && pathname === "/api/auth/me") {
+          return { status: 200, body: meResponse({ role: "hr_admin", must_change_password: false }) };
+        }
+        if (method === "GET" && pathname === "/api/departments") {
+          return { status: 200, body: DEPARTMENTS };
+        }
+        if (method === "GET" && pathname === "/api/employees") {
+          return { status: 200, body: [MANAGER, employeeWithAuthType] };
+        }
+        if (method === "GET" && pathname === "/api/employees/2") {
+          return { status: 200, body: employeeWithAuthType };
+        }
+        return null;
+      });
+
+      renderApp("/employees/2");
+
+      await screen.findByRole("heading", { name: "Петров Пётр Петрович" });
+      // Без нажатия «Редактировать» — до T-M1-19 review способ входа было
+      // видно только в форме правки.
+      expect(screen.getByText(expectedLabel)).toBeInTheDocument();
+    },
+  );
 });

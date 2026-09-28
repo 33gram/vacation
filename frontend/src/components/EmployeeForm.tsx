@@ -2,6 +2,7 @@ import { Alert, Button, DatePicker, Form, Input, Radio, Select, Space } from "an
 import dayjs, { type Dayjs } from "dayjs";
 import { useState } from "react";
 
+import { AUTH_TYPE_LABELS } from "../entities/employee";
 import type { EmployeeOut } from "../entities/employee";
 import type { DepartmentOut } from "../entities/department";
 import type { EmployeeFormSubmitError } from "./employeeFormError";
@@ -187,8 +188,8 @@ export function EmployeeForm({
       <Form.Item label="Способ входа" name="auth_type" rules={[{ required: true }]}>
         <Radio.Group
           options={[
-            { value: "ldap", label: "Корпоративный каталог (LDAP)" },
-            { value: "local", label: "Локальный пароль" },
+            { value: "ldap", label: AUTH_TYPE_LABELS.ldap },
+            { value: "local", label: AUTH_TYPE_LABELS.local },
           ]}
         />
       </Form.Item>

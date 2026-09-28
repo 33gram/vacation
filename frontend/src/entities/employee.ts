@@ -15,6 +15,14 @@ export const EMPLOYMENT_STATUS_LABELS: Record<string, string> = {
   terminated: "Уволен",
 };
 
+// Общий источник подписей для `EmployeeForm` (выбор способа входа) и
+// просмотра карточки (`EmployeeCardPage`, T-M1-19 review, п. 5) — те же
+// подписи в обоих местах, заданные один раз.
+export const AUTH_TYPE_LABELS: Record<string, string> = {
+  ldap: "Корпоративный каталог (LDAP)",
+  local: "Локальный пароль",
+};
+
 /** Заглушка для нераскрытой ссылки (`department_id`/`manager_id`,
  * `T-M1-19`) — используется и для «вершины иерархии» (руководителя
  * действительно нет, `manager_id: null`, `FR-EMP-001`), и для случая,

@@ -13,7 +13,13 @@ import type { EmployeeFormValues } from "../components/EmployeeForm";
 import { parseEmployeeFormError } from "../components/employeeFormError";
 import type { EmployeeFormSubmitError } from "../components/employeeFormError";
 import { departmentNameById } from "../entities/department";
-import { EMPLOYMENT_STATUS_LABELS, WORK_SCHEDULE_LABELS, employeeNameById, resolveName } from "../entities/employee";
+import {
+  AUTH_TYPE_LABELS,
+  EMPLOYMENT_STATUS_LABELS,
+  WORK_SCHEDULE_LABELS,
+  employeeNameById,
+  resolveName,
+} from "../entities/employee";
 import { useDepartmentsQuery } from "../entities/useDepartmentsQuery";
 import { useAllEmployeesQuery } from "../entities/useEmployeesQuery";
 
@@ -226,6 +232,9 @@ export function EmployeeCardPage() {
               </Descriptions.Item>
               <Descriptions.Item label="Категория для расчёта">
                 {employee.leave_category ?? "—"}
+              </Descriptions.Item>
+              <Descriptions.Item label="Способ входа">
+                {AUTH_TYPE_LABELS[employee.auth_type] ?? employee.auth_type}
               </Descriptions.Item>
             </Descriptions>
           </Col>

@@ -34,6 +34,7 @@ from app.schemas.employee import (
     EmployeeCardFields,
     EmployeeCreate,
     EmployeeDeactivate,
+    EmployeeOut,
     EmployeeUpdate,
 )
 
@@ -79,6 +80,78 @@ class EmployeeNotFoundError(Exception):
     `department_id`/`manager_id`, дубликат), которая остаётся
     `ValueError`/400 (см. `department_service.DepartmentNotFoundError`,
     тот же принцип)."""
+
+
+class EmployeeAccountMissingError(Exception):
+    """`T-M1-52`: карточка сотрудника без связанной строки `accounts`.
+    Не должно происходить — `create_employee` и `import_service.
+    import_employees` создают обе строки одной транзакцией, а строк
+    `employees`/`accounts` в кодовой базе нигде не удаляют (проверено:
+    ни одного `session.delete`/`DELETE FROM` за пределами тестов). Это
+    гарантия соблюдения инварианта приложением, а НЕ ограничение БД —
+    `ck_accounts_employee_or_login` ограничивает форму строки `accounts`
+    (ровно одно из `employee_id`/`login`), а не то, что такая строка
+    существует для каждого `employees.id`. Если это исключение всплыло —
+    инвариант нарушен в обход API (например, прямым SQL), а не штатной
+    работой сервиса."""
+
+
+def _employee_out(employee: Employee, account: Account) -> EmployeeOut:
+    return EmployeeOut(
+        id=employee.id,
+        full_name=employee.full_name,
+        personnel_number=employee.personnel_number,
+        department_id=employee.department_id,
+        position=employee.position,
+        hire_date=employee.hire_date,
+        manager_id=employee.manager_id,
+        email=employee.email,
+        work_schedule_type=employee.work_schedule_type,
+        employment_status=employee.employment_status,
+        termination_date=employee.termination_date,
+        leave_category=employee.leave_category,
+        auth_type=account.auth_type,
+    )
+
+
+async def to_employee_out(session: AsyncSession, employee: Employee) -> EmployeeOut:
+    """`T-M1-52`: собирает `EmployeeOut`, включая `auth_type` — живёт на
+    связанной `accounts` строке, не на `employee`, поэтому здесь отдельный
+    запрос, а не голый `EmployeeOut.model_validate(employee)`, как раньше.
+    Роутер вызывает это для каждого ответа `EmployeeOut` (`get`/`post`/
+    `put`/`deactivate`) — в путях правки/деактивации `account` уже был
+    прочитан сервисом раньше по той же причине (`_apply_auth_type_change`,
+    проверка перед деактивацией), этот запрос там избыточен, но не
+    ошибочен: повторное чтение по уникальному индексу `accounts.
+    employee_id` на штате до 750 человек (`NFR-SCALE-001`) не стоит того,
+    чтобы ради него менять сигнатуру `update_employee`/`deactivate_
+    employee` (обе возвращают `Employee`, а не пару с `Account`, и вызываются
+    напрямую тестами)."""
+    account = await get_account_by_employee_id(session, employee.id)
+    if account is None:
+        raise EmployeeAccountMissingError(f"У сотрудника {employee.id} нет учётной записи")
+    return _employee_out(employee, account)
+
+
+async def to_employee_out_list(
+    session: AsyncSession, employees: list[Employee]
+) -> list[EmployeeOut]:
+    """Пакетный вариант `to_employee_out` для `GET /api/employees` — один
+    запрос счётов на весь список, а не N+1 на штате до 750 человек
+    (`NFR-SCALE-001`)."""
+    if not employees:
+        return []
+    employee_ids = [employee.id for employee in employees]
+    result = await session.execute(select(Account).where(Account.employee_id.in_(employee_ids)))
+    accounts_by_employee_id = {account.employee_id: account for account in result.scalars().all()}
+
+    out: list[EmployeeOut] = []
+    for employee in employees:
+        account = accounts_by_employee_id.get(employee.id)
+        if account is None:
+            raise EmployeeAccountMissingError(f"У сотрудника {employee.id} нет учётной записи")
+        out.append(_employee_out(employee, account))
+    return out
 
 
 async def get_employee(session: AsyncSession, employee_id: int) -> Employee | None:

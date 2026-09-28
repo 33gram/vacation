@@ -58,7 +58,7 @@ async def get_employees(
     employees = await employee_service.list_visible_employees(
         session, account, include_terminated=include_terminated
     )
-    return [EmployeeOut.model_validate(e) for e in employees]
+    return await employee_service.to_employee_out_list(session, employees)
 
 
 @router.post(
@@ -79,7 +79,7 @@ async def create_employee(
         employee = await employee_service.create_employee(session, payload)
     except ValueError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
-    return EmployeeOut.model_validate(employee)
+    return await employee_service.to_employee_out(session, employee)
 
 
 @router.post("/import", response_model=ImportSummary)
@@ -135,7 +135,7 @@ async def get_employee(
         raise HTTPException(
             status.HTTP_403_FORBIDDEN, "Недостаточно прав для просмотра карточки сотрудника"
         )
-    return EmployeeOut.model_validate(employee)
+    return await employee_service.to_employee_out(session, employee)
 
 
 @router.put("/{employee_id}", response_model=EmployeeOut, responses={400: {"model": ErrorDetail}})
@@ -156,7 +156,7 @@ async def update_employee(
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
-    return EmployeeOut.model_validate(employee)
+    return await employee_service.to_employee_out(session, employee)
 
 
 @router.post("/{employee_id}/deactivate", response_model=EmployeeOut)
@@ -172,4 +172,4 @@ async def deactivate_employee(
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
-    return EmployeeOut.model_validate(employee)
+    return await employee_service.to_employee_out(session, employee)

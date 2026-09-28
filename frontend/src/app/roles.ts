@@ -60,14 +60,33 @@ export function menuItemsForRole(role: Role): MenuItemConfig[] {
   return MENU_ITEMS.filter((item) => item.roles.includes(role));
 }
 
+// T-M1-19: маршруты, доступные роли, но не являющиеся пунктом меню —
+// карточка записи, форма создания. Отдельный от `MENU_ITEMS` реестр, а не
+// расширение `RoleGuard` параметром ролей на каждом маршруте: права
+// остаются в ЕДИНОМ месте (см. комментарий у `MENU_ITEMS` выше), и новый
+// маршрут вне меню так же обязан явно себя зарегистрировать, как и пункт
+// меню, — по той же логике «неизвестный путь запрещён» ниже. `/employees/
+// {id}` сюда и добавлен — пунктом меню он не станет никогда, но роли на
+// него те же, что и у самого раздела «Сотрудники».
+interface NonMenuRouteConfig {
+  path: string;
+  roles: readonly Role[];
+}
+
+export const NON_MENU_ROUTES: readonly NonMenuRouteConfig[] = [
+  { path: "/employees/new", roles: ["hr_admin", "system_admin"] },
+  { path: "/employees/import", roles: ["hr_admin", "system_admin"] },
+  { path: "/employees/:id", roles: ["hr_admin", "system_admin"] },
+];
+
 export function isPathAllowedForRole(role: Role, path: string): boolean {
-  const item = MENU_ITEMS.find((candidate) => candidate.path === path);
-  // Путь вне MENU_ITEMS — запрет, не разрешение: правильная сторона
+  const item =
+    MENU_ITEMS.find((candidate) => candidate.path === path) ??
+    NON_MENU_ROUTES.find((candidate) => candidate.path === path);
+  // Путь вне обоих реестров — запрет, не разрешение: правильная сторона
   // умолчания для проверки доступа — новый маршрут ОБЯЗАН явно объявить
-  // свои роли в MENU_ITEMS, а не получить доступ молча тем, что забыли его
-  // туда добавить. T-M1-19 добавит `/employees/{id}`, которого в составе
-  // меню нет и не будет (это карточка записи, не пункт меню) — без этого
-  // правила такой маршрут был бы открыт всем ролям по умолчанию.
+  // свои роли в одном из них, а не получить доступ молча тем, что забыли
+  // его туда добавить.
   if (!item) {
     return false;
   }

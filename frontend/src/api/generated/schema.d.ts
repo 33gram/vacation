@@ -427,6 +427,11 @@ export interface components {
             termination_date: string | null;
             /** Leave Category */
             leave_category: string | null;
+            /**
+             * Auth Type
+             * @enum {string}
+             */
+            auth_type: "ldap" | "local";
         };
         /**
          * EmployeeUpdate

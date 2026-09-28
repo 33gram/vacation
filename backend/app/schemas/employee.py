@@ -28,6 +28,15 @@ class EmployeeOut(BaseModel):
     employment_status: str
     termination_date: datetime.date | None
     leave_category: str | None
+    # T-M1-52: живёт на связанной `accounts` строке, не на `employees` —
+    # `EmployeeOut` больше не строится голым `model_validate(employee)`
+    # (`from_attributes=True` не дотянулся бы до другой таблицы), значение
+    # собирает `employee_service.to_employee_out`/`to_employee_out_list`.
+    # Без этого поля `PUT /api/employees/{id}` (обязательное на каждый
+    # запрос, полная замена) заставлял клиента угадывать текущий способ
+    # входа — угадав неверно, правка любого постороннего поля молча
+    # переводила бы сотрудника на другой способ входа.
+    auth_type: EmployeeAuthType
 
 
 class EmployeeCardFields(BaseModel):

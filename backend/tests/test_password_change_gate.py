@@ -1,6 +1,9 @@
 """Гейт обязательной смены пароля (T-M1-46, FR-AUTH-002 в редакции v1.13,
 раздел 13 п. 23) — учётная запись с непогашенным `must_change_password`
 не должна пройти ни на один эндпоинт, кроме явного перечня исключений.
+Обе половины правила — здесь: «вне перечня отказ всегда» (первый тест) и
+«внутри перечня доступ всегда» (остальные) — они должны ломаться в одном
+файле и читаться вместе, а не расходиться по модулям.
 
 Проверка идёт ПО ПОВЕДЕНИЮ, а не интроспекцией объектов FastAPI — та же
 причина, что и в `test_endpoint_auth_coverage.py` (обход `app.routes`/
@@ -99,3 +102,57 @@ async def test_every_endpoint_outside_the_exemption_list_denies_pending_password
             failures.append((method.upper(), path_template, response.status_code, detail))
 
     assert failures == []
+
+
+# --- Вторая половина: перечень должен пропускать, а не только другие —
+# отказывать (T-M1-53 review). Из четырёх исключений
+# `_EXEMPT_FROM_PASSWORD_CHANGE_GATE` этим прогоном покрыты только два:
+# `POST /api/auth/password/change` (`test_password_change_succeeds`,
+# `tests/modules/auth/test_router.py`) и `GET /api/auth/password-policy`
+# (`test_password_policy_is_available_before_first_password_change`, тот
+# же файл) — оба уже вызываются с `must_change_password=True`, здесь не
+# дублируются. `GET /api/auth/me` и `POST /api/auth/logout` — нет: все
+# существующие тесты на них используют учётную запись с флагом по
+# умолчанию (`False`), поэтому перевод любого из двух на гейтящую
+# `get_current_account` (имя отличается от исключающей
+# `get_current_account_allowing_password_change` на один довесок) не
+# уронил бы ни одного теста — только эти двое ниже.
+#
+# Последствие такого пробела — не гипотетическое: `SessionGate.tsx`
+# (фронтенд) — единственное место, вызывающее `/me`; при ошибке ответа
+# оно рисует `ErrorLoadingState` (кнопка «Повторить», не переход
+# никуда), а `api/client.ts` обрабатывает глобально только 401, не 403.
+# Если бы `/me` попал под гейт, учётная запись с непогашенным
+# `must_change_password` осталась бы на этом экране навсегда — кнопка
+# «Выйти» живёт в `AppShell`, а он в этом состоянии не рендерится
+# (`SessionGate` не пропускает дальше `<Outlet/>`). Первой в это
+# упёрлась бы bootstrap-учётная запись администратора при первом
+# запуске — ей `must_change_password=True` ставится сразу (`FR-AUTH-005`).
+
+
+async def test_me_succeeds_with_pending_password_change(
+    db_session: AsyncSession, api_client: AsyncClient
+) -> None:
+    account = await make_account(
+        db_session, login="me-before-change", role="employee", must_change_password=True
+    )
+
+    response = await api_client.get("/api/auth/me", headers=bearer_header(account))
+
+    assert response.status_code == 200
+    # Именно отсюда интерфейс узнаёт, что пароль нужно сменить
+    # (`SessionGate.tsx`, `me.must_change_password`) — принципиально
+    # проверить не только код ответа, но и это поле.
+    assert response.json()["must_change_password"] is True
+
+
+async def test_logout_succeeds_with_pending_password_change(
+    db_session: AsyncSession, api_client: AsyncClient
+) -> None:
+    account = await make_account(
+        db_session, login="logout-before-change", role="employee", must_change_password=True
+    )
+
+    response = await api_client.post("/api/auth/logout", headers=bearer_header(account))
+
+    assert response.status_code == 204

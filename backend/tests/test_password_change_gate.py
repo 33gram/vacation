@@ -105,7 +105,7 @@ async def test_every_endpoint_outside_the_exemption_list_denies_pending_password
 
 
 # --- Вторая половина: перечень должен пропускать, а не только другие —
-# отказывать (T-M1-53 review). Из четырёх исключений
+# отказывать (T-M1-46). Из четырёх исключений
 # `_EXEMPT_FROM_PASSWORD_CHANGE_GATE` этим прогоном покрыты только два:
 # `POST /api/auth/password/change` (`test_password_change_succeeds`,
 # `tests/modules/auth/test_router.py`) и `GET /api/auth/password-policy`

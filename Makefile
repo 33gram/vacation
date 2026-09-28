@@ -1,6 +1,6 @@
 COMPOSE = docker compose --env-file .env -f infra/docker-compose.yml
 
-.PHONY: up down logs test-backend test-frontend lint-backend lint-frontend openapi-export openapi-client
+.PHONY: up down logs test-backend test-frontend lint-backend lint-frontend openapi-export openapi-client check-conflict-markers
 
 up:
 	@test -f .env || { echo "Нет .env — выполните: cp .env.example .env"; exit 1; }
@@ -42,3 +42,8 @@ openapi-export:
 
 openapi-client: openapi-export
 	cd frontend && npm run generate:api
+
+# T-M1-51: только git + python3, без docker — прогоняется локально перед
+# пушем, а не только в CI.
+check-conflict-markers:
+	python3 scripts/check_conflict_markers.py

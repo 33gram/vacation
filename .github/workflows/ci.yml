@@ -113,6 +113,22 @@ jobs:
       - name: Build
         run: npm run build
 
+  conflict-marker-check:
+    # T-M1-51: 24.09.2026 при слиянии PR #149 файл docs/tasks.md попал в
+    # main со служебными маркерами git внутри (исправлено в PR #151) — ни
+    # тесты, ни CI на такие строки не смотрели, поэтому автоматически
+    # этого не заметил никто. Отдельный job, не шаг внутри backend-tests/
+    # frontend-tests: проверка репозитория целиком (docs/, скрипты,
+    # workflow-файлы и т.д.), не только backend или frontend, и не должна
+    # зависеть от того, ставятся ли их зависимости.
+    name: No merge conflict markers
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Check for conflict markers
+        run: python3 scripts/check_conflict_markers.py
+
   openapi-client-check:
     # T-M1-28: этот шаг проверяет расхождение между схемой backend и
     # сгенерированным TS-клиентом. Добавлен в первой ветке, где вообще

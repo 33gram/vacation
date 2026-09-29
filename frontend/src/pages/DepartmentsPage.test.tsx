@@ -1,6 +1,6 @@
 import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { setAccessToken } from "../app/auth";
 import { setFetchHandler } from "../test-utils/fetchMock";
@@ -107,5 +107,171 @@ describe("departments tree, read only (T-M1-20, FR-EMP-002)", () => {
     // показаны сами по себе.
     expect(screen.queryByText("42")).not.toBeInTheDocument();
     expect(screen.queryByText("7")).not.toBeInTheDocument();
+  });
+});
+
+describe("departments create and rename (T-M1-20, FR-EMP-002)", () => {
+  it("creates a root department (parent_id: null) via POST and shows it after refetch", async () => {
+    let departments = [departmentResponse({ id: 1, name: "Существующий отдел", parent_id: null })];
+    let postBody: Record<string, unknown> | null = null;
+    setAccessToken("token");
+    setFetchHandler((method, pathname, init) => {
+      if (method === "GET" && pathname === "/api/auth/me") {
+        return { status: 200, body: meResponse({ role: "hr_admin", must_change_password: false }) };
+      }
+      if (method === "GET" && pathname === "/api/employees") {
+        return { status: 200, body: [] };
+      }
+      if (method === "GET" && pathname === "/api/departments") {
+        return { status: 200, body: departments };
+      }
+      if (method === "POST" && pathname === "/api/departments") {
+        postBody = JSON.parse(init.body as string) as Record<string, unknown>;
+        const created = departmentResponse({
+          id: 2,
+          name: postBody.name as string,
+          parent_id: (postBody.parent_id as number | null) ?? null,
+          head_employee_id: null,
+        });
+        departments = [...departments, created];
+        return { status: 201, body: created };
+      }
+      return null;
+    });
+
+    renderApp("/departments");
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole("button", { name: "Добавить подразделение" }));
+    await user.type(screen.getByLabelText("Название"), "Новый отдел");
+    await user.click(screen.getByRole("button", { name: "Создать" }));
+
+    await vi.waitFor(() => expect(postBody).not.toBeNull());
+    expect(postBody).toEqual({ name: "Новый отдел", parent_id: null });
+    expect(await screen.findByText(/Новый отдел/)).toBeInTheDocument();
+  });
+
+  it("creates a child department (parent_id: the clicked node's id) via POST", async () => {
+    let departments = [departmentResponse({ id: 1, name: "Родитель", parent_id: null })];
+    let postBody: Record<string, unknown> | null = null;
+    setAccessToken("token");
+    setFetchHandler((method, pathname, init) => {
+      if (method === "GET" && pathname === "/api/auth/me") {
+        return { status: 200, body: meResponse({ role: "hr_admin", must_change_password: false }) };
+      }
+      if (method === "GET" && pathname === "/api/employees") {
+        return { status: 200, body: [] };
+      }
+      if (method === "GET" && pathname === "/api/departments") {
+        return { status: 200, body: departments };
+      }
+      if (method === "POST" && pathname === "/api/departments") {
+        postBody = JSON.parse(init.body as string) as Record<string, unknown>;
+        const created = departmentResponse({
+          id: 2,
+          name: postBody.name as string,
+          parent_id: (postBody.parent_id as number | null) ?? null,
+          head_employee_id: null,
+        });
+        departments = [...departments, created];
+        return { status: 201, body: created };
+      }
+      return null;
+    });
+
+    renderApp("/departments");
+    const user = userEvent.setup();
+
+    await screen.findByText(/Родитель/);
+    await user.click(screen.getByRole("button", { name: "Добавить дочернее" }));
+    await user.type(screen.getByLabelText("Название"), "Дочерний отдел");
+    await user.click(screen.getByRole("button", { name: "Создать" }));
+
+    await vi.waitFor(() => expect(postBody).not.toBeNull());
+    expect(postBody).toEqual({ name: "Дочерний отдел", parent_id: 1 });
+  });
+
+  it("renaming sends the full three-field body — parent_id and head_employee_id unchanged", async () => {
+    const department = departmentResponse({
+      id: 1,
+      name: "Старое название",
+      parent_id: 5,
+      head_employee_id: 9,
+    });
+    let putBody: Record<string, unknown> | null = null;
+    setAccessToken("token");
+    setFetchHandler((method, pathname, init) => {
+      if (method === "GET" && pathname === "/api/auth/me") {
+        return { status: 200, body: meResponse({ role: "hr_admin", must_change_password: false }) };
+      }
+      if (method === "GET" && pathname === "/api/employees") {
+        return { status: 200, body: [] };
+      }
+      if (method === "GET" && pathname === "/api/departments") {
+        // Родитель (5) не входит в список специально — узел всё равно
+        // должен стать корнем (сирота, см. buildDepartmentTree) и
+        // остаться кликабельным, что важно только для рендера, не для
+        // самого запроса; сам PUT ниже проверяется по телу, не по DOM.
+        return { status: 200, body: [department] };
+      }
+      if (method === "PUT" && pathname === "/api/departments/1") {
+        putBody = JSON.parse(init.body as string) as Record<string, unknown>;
+        return { status: 200, body: { ...department, name: putBody.name } };
+      }
+      return null;
+    });
+
+    renderApp("/departments");
+    const user = userEvent.setup();
+
+    await screen.findByText(/Старое название/);
+    await user.click(screen.getByRole("button", { name: "Переименовать" }));
+    const nameInput = screen.getByLabelText("Название");
+    await user.clear(nameInput);
+    await user.type(nameInput, "Новое название");
+    await user.click(screen.getByRole("button", { name: "Сохранить" }));
+
+    await vi.waitFor(() => expect(putBody).not.toBeNull());
+    expect(putBody).toEqual({ name: "Новое название", parent_id: 5, head_employee_id: 9 });
+  });
+
+  it("invalidates the departments cache key after a mutation, so the employee form sees the new department too", async () => {
+    let departments = [departmentResponse({ id: 1, name: "Существующий отдел", parent_id: null })];
+    setAccessToken("token");
+    let departmentsGetCount = 0;
+    setFetchHandler((method, pathname, init) => {
+      if (method === "GET" && pathname === "/api/auth/me") {
+        return { status: 200, body: meResponse({ role: "hr_admin", must_change_password: false }) };
+      }
+      if (method === "GET" && pathname === "/api/employees") {
+        return { status: 200, body: [] };
+      }
+      if (method === "GET" && pathname === "/api/departments") {
+        departmentsGetCount += 1;
+        return { status: 200, body: departments };
+      }
+      if (method === "POST" && pathname === "/api/departments") {
+        const body = JSON.parse(init.body as string) as Record<string, unknown>;
+        const created = departmentResponse({ id: 2, name: body.name as string, parent_id: null });
+        departments = [...departments, created];
+        return { status: 201, body: created };
+      }
+      return null;
+    });
+
+    renderApp("/departments");
+    const user = userEvent.setup();
+
+    await screen.findByText(/Существующий отдел/);
+    const countBeforeMutation = departmentsGetCount;
+
+    await user.click(screen.getByRole("button", { name: "Добавить подразделение" }));
+    await user.type(screen.getByLabelText("Название"), "Ещё один отдел");
+    await user.click(screen.getByRole("button", { name: "Создать" }));
+
+    await screen.findByText(/Ещё один отдел/);
+    // Инвалидация ключа ["departments"], а не локальное обновление —
+    // GET перезапрашивается заново после мутации.
+    expect(departmentsGetCount).toBeGreaterThan(countBeforeMutation);
   });
 });

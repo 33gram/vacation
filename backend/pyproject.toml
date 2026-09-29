@@ -43,6 +43,15 @@ target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP"]
+# W605 (invalid escape sequence in a non-raw string, e.g. `\d` outside
+# `r"..."`) - PR #156 review: scripts/check_task_checkbox.py's module
+# docstring had exactly this, undetected because the W group wasn't
+# selected. Only W605 here, not the whole W group: a repo-wide run of
+# `ruff check --select W .` on the current tree finds nothing else in
+# that group at all - the rest of it stays off since nothing today
+# needs it, rather than opening up pycodestyle's full warning surface
+# (line length, blank-line whitespace, etc.) on a guess.
+extend-select = ["W605"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

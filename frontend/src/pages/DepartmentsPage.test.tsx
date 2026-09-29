@@ -1,4 +1,4 @@
-import { screen } from "@testing-library/react";
+import { fireEvent, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
@@ -344,5 +344,163 @@ describe("departments assign the head (T-M1-20, FR-EMP-002)", () => {
     await vi.waitFor(() => expect(putBody).not.toBeNull());
     // parent_id — прежний (5), не изменённый этим действием.
     expect(putBody).toEqual({ name: "Отдел", parent_id: 5, head_employee_id: 1 });
+  });
+});
+
+// rc-tree (antd Tree) отслеживает перетаскиваемый узел сама, по тому,
+// какой DOM-элемент получил `dragstart` — не по `event.dataTransfer`
+// (`TreeNode.onDragStart` читает `dataTransfer.setData` в try/catch,
+// молча проглатывая исключение, если его нет). jsdom (30.1.1, эта
+// репа) не реализует `DataTransfer`/`DragEvent` вовсе — проверено
+// прогоном (`typeof new (require('jsdom').JSDOM）().window.
+// DataTransfer === "undefined"`) — поэтому `dataTransfer` в вызовах
+// `fireEvent` ниже не передаётся, простого `Event`-фолбэка
+// `fireEvent`'а достаточно.
+function findTreeNode(text: RegExp | string): HTMLElement {
+  const titleElement = screen.getByText(text);
+  const treeNode = titleElement.closest(".ant-tree-treenode");
+  if (!(treeNode instanceof HTMLElement)) {
+    throw new Error(`Tree node element not found for ${String(text)}`);
+  }
+  return treeNode;
+}
+
+function dragOnto(source: HTMLElement, target: HTMLElement): void {
+  fireEvent.dragStart(source);
+  fireEvent.dragEnter(target);
+  fireEvent.dragOver(target);
+  fireEvent.drop(target);
+  fireEvent.dragEnd(source);
+}
+
+describe("departments reparenting by drag and drop (T-M1-20, FR-EMP-002)", () => {
+  it("moving a node onto another sends all three fields — new parent_id, unchanged name/head", async () => {
+    const departmentA = departmentResponse({ id: 1, name: "Подразделение A", parent_id: null, head_employee_id: null });
+    const departmentB = departmentResponse({ id: 2, name: "Подразделение B", parent_id: null, head_employee_id: null });
+    const child = departmentResponse({ id: 3, name: "Ребёнок", parent_id: 1, head_employee_id: 9 });
+    let putBody: Record<string, unknown> | null = null;
+    setAccessToken("token");
+    setFetchHandler((method, pathname, init) => {
+      if (method === "GET" && pathname === "/api/auth/me") {
+        return { status: 200, body: meResponse({ role: "hr_admin", must_change_password: false }) };
+      }
+      if (method === "GET" && pathname === "/api/employees") {
+        return { status: 200, body: [] };
+      }
+      if (method === "GET" && pathname === "/api/departments") {
+        return { status: 200, body: [departmentA, departmentB, child] };
+      }
+      if (method === "PUT" && pathname === "/api/departments/3") {
+        putBody = JSON.parse(init.body as string) as Record<string, unknown>;
+        return { status: 200, body: { ...child, parent_id: putBody.parent_id } };
+      }
+      return null;
+    });
+
+    renderApp("/departments");
+    await screen.findByText(/Ребёнок/);
+
+    const sourceNode = findTreeNode(/Ребёнок — /);
+    const targetNode = findTreeNode(/Подразделение B — /);
+    dragOnto(sourceNode, targetNode);
+
+    await vi.waitFor(() => expect(putBody).not.toBeNull());
+    expect(putBody).toEqual({ name: "Ребёнок", parent_id: 2, head_employee_id: 9 });
+  });
+
+  it("a server rejection (cycle) shows the server's own text and reverts the tree to its pre-move state", async () => {
+    // Та же топология, что доказанно работает в предыдущем тесте:
+    // перетаскиваемый узел — ВЛОЖЕННЫЙ (не корень), цель — отдельный
+    // корень. Важно для устойчивости теста к тому, как именно jsdom без
+    // реальных layout-размеров (`getBoundingClientRect` возвращает
+    // нули) сосчитает геометрию сброса: воспроизведено прогоном, что
+    // сброс КОРНЯ на КОРЕНЬ в таких условиях у `rc-tree` интерпретиру-
+    // ется как вставка В ЗАЗОР на том же уровне (`dropToGap`), где
+    // новый `parent_id` цели — `null` — и совпадает со starting-значе-
+    // нием переносимого корня, из-за чего тест ничего не доказывает.
+    // У вложенного узла исходный `parent_id` (1) НЕ совпадает ни с
+    // одним из двух возможных исходов сброса на другой корень (id цели
+    // ИЛИ `null`), поэтому тест устойчив к обеим геометриям.
+    //
+    // Настоящий цикл ("подразделение — потомок собственного потомка")
+    // проверяет СЕРВЕР, не тестовый стенд: то, что здесь отклоняется
+    // именно этот запрос текстом про цикл, — решение мока, а не
+    // топология дерева в тесте. Это не ослабляет тест: проверяется
+    // механизм отката при ЛЮБОМ отказе сервера, конкретную причину
+    // (настоящий цикл) проверяет бэкенд отдельно (правило 5).
+    const root = departmentResponse({ id: 1, name: "Родитель", parent_id: null });
+    const nested = departmentResponse({ id: 2, name: "Вложенный", parent_id: 1 });
+    const otherRoot = departmentResponse({ id: 3, name: "Другой корень", parent_id: null });
+    setAccessToken("token");
+
+    // Второй GET /api/departments (вызванный `invalidateQueries` в
+    // `onSettled` ПОСЛЕ отклонённого PUT) держится на гейте — сервер в
+    // реальности вернул бы то же самое исходное состояние (он никогда
+    // не принимал отклонённую правку), и без отдельного отката в
+    // `onError` сам этот рефетч, рано или поздно, тоже стёр бы
+    // оптимистичную ложь — тест, который проверяет кэш ПОСЛЕ того, как
+    // этот GET успел разрешиться, ничего не доказывает: он прошёл бы и
+    // без отката, откат в `onError` при этом можно вырезать незаметно
+    // (проверено прогоном ниже). Гейт (тот же приём, что и `meGate` в
+    // `authShell.test.tsx`, T-M1-53) держит именно ЭТО окно — между
+    // отказом PUT и завершением инвалидации — под наблюдением.
+    let departmentsGetCount = 0;
+    const secondGet: { resolve: (() => void) | null } = { resolve: null };
+    const secondGetGate = new Promise<void>((resolve) => {
+      secondGet.resolve = resolve;
+    });
+    setFetchHandler((method, pathname) => {
+      if (method === "GET" && pathname === "/api/auth/me") {
+        return { status: 200, body: meResponse({ role: "hr_admin", must_change_password: false }) };
+      }
+      if (method === "GET" && pathname === "/api/employees") {
+        return { status: 200, body: [] };
+      }
+      if (method === "GET" && pathname === "/api/departments") {
+        departmentsGetCount += 1;
+        if (departmentsGetCount === 1) {
+          return { status: 200, body: [root, nested, otherRoot] };
+        }
+        return secondGetGate.then(() => ({ status: 200, body: [root, nested, otherRoot] }));
+      }
+      if (method === "PUT" && pathname === "/api/departments/2") {
+        return {
+          status: 400,
+          body: { detail: "Подразделение не может стать потомком собственного потомка" },
+        };
+      }
+      return null;
+    });
+
+    const { queryClient } = renderApp("/departments");
+    await screen.findByText(/Вложенный/);
+
+    const sourceNode = findTreeNode(/Вложенный — /);
+    const targetNode = findTreeNode(/Другой корень — /);
+    dragOnto(sourceNode, targetNode);
+
+    // К моменту, когда текст ошибки появился на экране, `onError` уже
+    // отработал целиком (откат кэша — первая строка того же
+    // синхронного обработчика, до `setReparentError`) — а второй GET
+    // всё ещё висит на гейте, ничего ещё не перезаписал сам.
+    expect(
+      await screen.findByText("Подразделение не может стать потомком собственного потомка"),
+    ).toBeInTheDocument();
+
+    // Главный отрицательный контроль: ИМЕННО в этом окне, до открытия
+    // гейта, кэш обязан УЖЕ быть откачен — единственное, что могло его
+    // откатить здесь, это `onError`, а не рефетч (он ещё не завершён).
+    const duringGate = queryClient.getQueryData<{ id: number; parent_id: number | null }[]>([
+      "departments",
+    ]);
+    expect(duringGate?.find((d) => d.id === 2)?.parent_id).toBe(1);
+
+    secondGet.resolve?.();
+    await vi.waitFor(() => {
+      const afterRefetch = queryClient.getQueryData<{ id: number; parent_id: number | null }[]>([
+        "departments",
+      ]);
+      expect(afterRefetch?.find((d) => d.id === 2)?.parent_id).toBe(1);
+    });
   });
 });

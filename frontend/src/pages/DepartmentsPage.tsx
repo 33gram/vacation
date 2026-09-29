@@ -1,6 +1,6 @@
-import { useQueryClient } from "@tanstack/react-query";
-import { Button, Space, Tree, Typography } from "antd";
-import type { DataNode } from "antd/es/tree";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { Alert, Button, Space, Tree, Typography } from "antd";
+import type { DataNode, TreeProps } from "antd/es/tree";
 import { useMemo, useState } from "react";
 
 import { apiClient } from "../api/client";
@@ -26,15 +26,24 @@ type NameModalState =
   | { kind: "rename"; department: DepartmentOut }
   | null;
 
+/** `DataNode` антда не несёт доменных данных — расширяем его исходным
+ * `DepartmentOut` узла, чтобы `onDrop` (ниже) мог прочитать `id`/
+ * `parent_id` перетаскиваемого и целевого узла напрямую из `info.
+ * dragNode`/`info.node`, а не искать их по `key` в отдельной карте. */
+interface DepartmentDataNode extends DataNode {
+  department: DepartmentOut;
+}
+
 function toTreeData(
   nodes: DepartmentTreeNode[],
   managerNames: Map<number, string>,
   onAddChild: (parentId: number) => void,
   onRename: (department: DepartmentOut) => void,
   onAssignHead: (department: DepartmentOut) => void,
-): DataNode[] {
+): DepartmentDataNode[] {
   return nodes.map((node) => ({
     key: node.id,
+    department: node,
     title: (
       <Space>
         <span>
@@ -103,6 +112,7 @@ export function DepartmentsPage() {
   const employeesQuery = useAllEmployeesQuery();
   const [nameModal, setNameModal] = useState<NameModalState>(null);
   const [headModalDepartment, setHeadModalDepartment] = useState<DepartmentOut | null>(null);
+  const [reparentError, setReparentError] = useState<string | null>(null);
 
   const managerNames = useMemo(
     () => employeeNameById(employeesQuery.data ?? []),
@@ -119,6 +129,61 @@ export function DepartmentsPage() {
     [employeesQuery.data],
   );
 
+  // Перенос узла (`T-M1-20`, коммит 4) — оптимистичный: `treeData` строится
+  // из кэша `["departments"]` (`useDepartmentsQuery`), поэтому дерево
+  // «переезжает» сразу по клику, без ожидания ответа сервера — `onMutate`
+  // правит кэш локально, `onError` возвращает снятый снимок, если сервер
+  // отказал (цикл, несуществующий родитель — правила целостности НЕ
+  // дублируются на клиенте, правило 5: текст ошибки — ровно тот, что
+  // вернул сервер). Без `onMutate`/`onError`, симметричных друг другу,
+  // дерево осталось бы в отклонённом сервером положении до следующей
+  // непричастной инвалидации кэша — то есть врало бы о структуре.
+  // `onSettled` — `invalidateQueries` в любом случае, чтобы подтверждённое
+  // сервером состояние (успех) тоже дошло, а не осталось равным
+  // оптимистичной догадке (например, если бы сервер сам изменил что-то
+  // ещё, о чём клиент не знает).
+  const reparentMutation = useMutation({
+    mutationFn: async ({
+      department,
+      newParentId,
+    }: {
+      department: DepartmentOut;
+      newParentId: number | null;
+    }) => {
+      const { error } = await apiClient.PUT("/api/departments/{department_id}", {
+        params: { path: { department_id: department.id } },
+        body: {
+          name: department.name,
+          parent_id: newParentId,
+          head_employee_id: department.head_employee_id,
+        },
+      });
+      if (error) {
+        throw new Error(stringDetail(error.detail) ?? "Не удалось перенести подразделение.");
+      }
+    },
+    onMutate: async ({ department, newParentId }) => {
+      setReparentError(null);
+      await queryClient.cancelQueries({ queryKey: ["departments"] });
+      const previous = queryClient.getQueryData<DepartmentOut[]>(["departments"]);
+      queryClient.setQueryData<DepartmentOut[]>(["departments"], (old) =>
+        (old ?? []).map((existing) =>
+          existing.id === department.id ? { ...existing, parent_id: newParentId } : existing,
+        ),
+      );
+      return { previous };
+    },
+    onError: (error, _variables, context) => {
+      if (context?.previous) {
+        queryClient.setQueryData(["departments"], context.previous);
+      }
+      setReparentError(error instanceof Error ? error.message : "Не удалось перенести подразделение.");
+    },
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: ["departments"] });
+    },
+  });
+
   if (departmentsQuery.isLoading || employeesQuery.isLoading) {
     return <LoadingState />;
   }
@@ -130,6 +195,29 @@ export function DepartmentsPage() {
   }
 
   const departments = departmentsQuery.data ?? [];
+
+  // Бросок узла на самого себя — единственное, что проверяется на
+  // клиенте (правило 5 не запрещает то, что не является правилом
+  // целостности само по себе, а тривиальным no-op'ом): цикл и
+  // несуществующего родителя проверяет сервер, текст его отказа
+  // показывается как есть (см. `onError` мутации выше).
+  //
+  // `dropToGap` — перенос в корень (`T-M1-20`, коммит 4, задача просит
+  // решить и назвать способ): бросок МЕЖДУ узлами одного уровня (не НА
+  // узел) переносит перетаскиваемый узел туда же, где уже находится
+  // целевой — берётся `parent_id` целевого узла, а не его `id`. Для
+  // целевого узла КОРНЕВОГО уровня это `null` — ровно перенос в корень,
+  // без отдельной выделенной зоны сброса: гэп между корневыми узлами и
+  // ЕСТЬ этот случай, других не потребовалось.
+  const handleDrop: TreeProps<DepartmentDataNode>["onDrop"] = (info) => {
+    const dragged = info.dragNode.department;
+    const target = info.node.department;
+    if (dragged.id === target.id) {
+      return;
+    }
+    const newParentId = info.dropToGap ? target.parent_id : target.id;
+    reparentMutation.mutate({ department: dragged, newParentId });
+  };
 
   const handleCreateSubmit = async (name: string): Promise<string | null> => {
     if (nameModal?.kind !== "create") {
@@ -206,6 +294,17 @@ export function DepartmentsPage() {
         </Button>
       </Space>
 
+      {reparentError && (
+        <Alert
+          type="error"
+          message={reparentError}
+          showIcon
+          closable
+          onClose={() => setReparentError(null)}
+          style={{ marginTop: 16 }}
+        />
+      )}
+
       {departments.length === 0 ? (
         <EmptyState
           title="Подразделений нет"
@@ -216,7 +315,7 @@ export function DepartmentsPage() {
           }}
         />
       ) : (
-        <Tree
+        <Tree<DepartmentDataNode>
           style={{ marginTop: 16 }}
           treeData={toTreeData(
             buildDepartmentTree(departments),
@@ -227,6 +326,8 @@ export function DepartmentsPage() {
           )}
           defaultExpandAll
           showLine
+          draggable={{ icon: false }}
+          onDrop={handleDrop}
         />
       )}
 

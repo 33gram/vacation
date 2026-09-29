@@ -262,6 +262,20 @@ def test_partial_closure_line_must_name_the_right_task_id() -> None:
     assert [v.task_id for v in violations] == ["T-M1-01"]
 
 
+def test_duplicate_task_id_uses_the_first_occurrence() -> None:
+    # PR #156 review, круг 3: докстринг заявляет это как проверенное
+    # прогоном, а не унаследованное из более ранней формулировки -
+    # здесь тот самый прогон.
+    tasks_md = (
+        "- [ ] **T-M1-99** первое вхождение, не отмечено.\n"
+        "- [x] **T-M1-99** второе вхождение, отмечено.\n"
+    )
+
+    violations = find_violations(["T-M1-99: something"], tasks_md, pr_body="")
+
+    assert [v.task_id for v in violations] == ["T-M1-99"]
+
+
 # --- PR #156 review, замечание 1: unknown_task vs unrecognized_checkbox_line
 
 
@@ -338,13 +352,31 @@ def test_partial_closure_with_a_real_reason_exempts() -> None:
     assert violations == []
 
 
-def test_partial_closure_recognized_inside_a_blockquote() -> None:
-    # Известное, задокументированное расширение (PR #156 review,
-    # замечание 4): разметку не вырезаем, `>`-цитата не мешает.
+def test_partial_closure_inside_a_blockquote_does_not_exempt() -> None:
+    # PR #156 review, круг 3: цитата — это не заявление автора PR, а
+    # чужой текст, который в него попал (например, процитированный
+    # пример из инструкции по этой же задаче) - распознавать её как
+    # настоящее закрытие было бы молчаливым снятием блокировки без
+    # намерения автора. Предыдущая версия ошибочно расширяла шаблон
+    # под непроверенное утверждение, что цитата тоже распознаётся -
+    # здесь закреплено обратное, подтверждённое прогоном.
     violations = find_violations(
         ["T-M1-01: something"],
         _SAMPLE_TASKS_MD,
         pr_body="> частично: T-M1-01 — процитированная причина",
+    )
+
+    assert [v.task_id for v in violations] == ["T-M1-01"]
+
+
+def test_partial_closure_on_a_plain_line_still_exempts() -> None:
+    # Тот же текст без цитаты - должен снимать блокировку. Пара к
+    # test_partial_closure_inside_a_blockquote_does_not_exempt: сужение
+    # регулярного выражения не должно было задеть обычный случай.
+    violations = find_violations(
+        ["T-M1-01: something"],
+        _SAMPLE_TASKS_MD,
+        pr_body="частично: T-M1-01 — процитированная причина",
     )
 
     assert violations == []

@@ -150,14 +150,32 @@ jobs:
     name: Task checkbox is ticked when its commits land
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
+    # PR #156 review: без этого блока действует набор прав GITHUB_TOKEN
+    # по умолчанию, в который чтение PR НЕ входит — `gh api .../pulls/
+    # {n}/commits` отвечает 403 Resource not accessible by integration
+    # (подтверждено настоящим прогоном на этом PR, не предположено).
+    # `contents: read` нужен `actions/checkout`, `pull-requests: read` —
+    # собственно чтению списка коммитов PR через `gh api`. Права выданы
+    # только этому job'у, не всему workflow (`on:`/верхний уровень) —
+    # остальные job'ы (backend-tests, frontend-tests и т.д.) не читают
+    # PR через API и не должны получать более широкие права, чем нужно
+    # им самим. Следующему читателю: не убирать этот блок как лишний —
+    # без него job красный на каждом PR, не только иногда.
+    permissions:
+      contents: read
+      pull-requests: read
     steps:
       - uses: actions/checkout@v7
 
       - name: Check task checkbox
         env:
-          # `github.token` — тот же предустановленный токен, что и у
-          # остальных шагов этого workflow; scope по умолчанию достаточен
-          # для чтения (не записи) списка коммитов PR того же репозитория.
+          # `github.token` (= GITHUB_TOKEN) — тот же токен, что и у
+          # остальных шагов этого workflow, но НЕ тот же набор прав: без
+          # `permissions:` этого job'а (выше) чтение PR через `gh api`
+          # отвечает 403 — утверждение "scope по умолчанию достаточен",
+          # написанное в предыдущей версии этого комментария, было
+          # опровергнуто именно этим прогоном (правило 8, не
+          # переписывать вывод по рассуждению).
           GH_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}

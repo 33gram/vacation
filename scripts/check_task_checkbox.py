@@ -307,9 +307,21 @@ def _pr_commit_titles(repo: str, pr_number: str) -> list[str]:
         check=False,
     )
     if result.returncode != 0:
+        # PR #156 review: 403 почти всегда означает нехватку прав токена
+        # (GITHUB_TOKEN без `permissions: pull-requests: read` у этого
+        # job'а), а не отсутствие PR - подсказка, а не смена поведения:
+        # код возврата (2) и сам факт падения не меняются.
+        hint = ""
+        if "403" in result.stderr:
+            hint = (
+                "\nКод 403 почти всегда означает нехватку прав токена, а "
+                "не отсутствие PR - проверить блок `permissions:` этого "
+                "job'а в .github/workflows/ci.yml (нужны как минимум "
+                "`contents: read` и `pull-requests: read`)."
+            )
         print(
             f"не удалось получить список коммитов PR через gh api (код "
-            f"{result.returncode}): {result.stderr.strip()}",
+            f"{result.returncode}): {result.stderr.strip()}{hint}",
             file=sys.stderr,
         )
         sys.exit(2)

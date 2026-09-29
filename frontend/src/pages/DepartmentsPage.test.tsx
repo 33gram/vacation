@@ -275,3 +275,74 @@ describe("departments create and rename (T-M1-20, FR-EMP-002)", () => {
     expect(departmentsGetCount).toBeGreaterThan(countBeforeMutation);
   });
 });
+
+describe("departments assign the head (T-M1-20, FR-EMP-002)", () => {
+  it("offers only ACTIVE employees in the head dropdown, not a terminated one", async () => {
+    const department = departmentResponse({ id: 1, name: "Отдел", parent_id: null });
+    const activeEmployee = employeeResponse({ id: 1, full_name: "Иванов Иван Иванович" });
+    const terminatedEmployee = employeeResponse({
+      id: 2,
+      full_name: "Петров Пётр Петрович",
+      employment_status: "terminated",
+      termination_date: "2026-01-10",
+    });
+    mockBackend([department], [activeEmployee, terminatedEmployee]);
+
+    renderApp("/departments");
+    const user = userEvent.setup();
+
+    await screen.findByText(/Отдел/);
+    await user.click(screen.getByRole("button", { name: "Назначить руководителя" }));
+    await user.click(screen.getByLabelText("Руководитель"));
+
+    expect(await screen.findByTitle("Иванов Иван Иванович")).toBeInTheDocument();
+    // Отрицательный контроль: уволенный сервером будет отклонён, в
+    // выпадающем списке его не предлагаем вовсе.
+    expect(screen.queryByTitle("Петров Пётр Петрович")).not.toBeInTheDocument();
+  });
+
+  it("places a field-prefixed 'terminated head' server error under the head field, without the prefix shown", async () => {
+    const department = departmentResponse({ id: 1, name: "Отдел", parent_id: 5, head_employee_id: null });
+    const activeEmployee = employeeResponse({ id: 1, full_name: "Иванов Иван Иванович" });
+    let putBody: Record<string, unknown> | null = null;
+    setAccessToken("token");
+    setFetchHandler((method, pathname, init) => {
+      if (method === "GET" && pathname === "/api/auth/me") {
+        return { status: 200, body: meResponse({ role: "hr_admin", must_change_password: false }) };
+      }
+      if (method === "GET" && pathname === "/api/employees") {
+        return { status: 200, body: [activeEmployee] };
+      }
+      if (method === "GET" && pathname === "/api/departments") {
+        return { status: 200, body: [department] };
+      }
+      if (method === "PUT" && pathname === "/api/departments/1") {
+        putBody = JSON.parse(init.body as string) as Record<string, unknown>;
+        return {
+          status: 400,
+          body: { detail: "head_employee_id: уволенный сотрудник не может быть руководителем подразделения" },
+        };
+      }
+      return null;
+    });
+
+    renderApp("/departments");
+    const user = userEvent.setup();
+
+    await screen.findByText(/Отдел/);
+    await user.click(screen.getByRole("button", { name: "Назначить руководителя" }));
+    await user.click(screen.getByLabelText("Руководитель"));
+    await user.click(await screen.findByTitle("Иванов Иван Иванович"));
+    await user.click(screen.getByRole("button", { name: "Назначить" }));
+
+    const errorText = await screen.findByText("уволенный сотрудник не может быть руководителем подразделения");
+    const headField = screen.getByLabelText("Руководитель").closest(".ant-form-item");
+    expect(headField).toContainElement(errorText);
+    // Отрицательный контроль: служебный префикс пользователю не показан.
+    expect(screen.queryByText(/^head_employee_id:/)).not.toBeInTheDocument();
+
+    await vi.waitFor(() => expect(putBody).not.toBeNull());
+    // parent_id — прежний (5), не изменённый этим действием.
+    expect(putBody).toEqual({ name: "Отдел", parent_id: 5, head_employee_id: 1 });
+  });
+});

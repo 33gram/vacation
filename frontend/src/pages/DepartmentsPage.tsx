@@ -4,12 +4,14 @@ import type { DataNode } from "antd/es/tree";
 import { useMemo, useState } from "react";
 
 import { apiClient } from "../api/client";
-import { stringDetail } from "../api/errors";
+import { fieldError, stringDetail } from "../api/errors";
 import { EmptyState, ErrorLoadingState, LoadingState } from "../app/states";
+import { DepartmentHeadModal } from "../components/DepartmentHeadModal";
 import { DepartmentNameModal } from "../components/DepartmentNameModal";
 import type { DepartmentOut, DepartmentTreeNode } from "../entities/department";
 import { buildDepartmentTree } from "../entities/department";
 import { employeeNameById, resolveName } from "../entities/employee";
+import type { EmployeeOut } from "../entities/employee";
 import { useDepartmentsQuery } from "../entities/useDepartmentsQuery";
 import { useAllEmployeesQuery } from "../entities/useEmployeesQuery";
 
@@ -29,6 +31,7 @@ function toTreeData(
   managerNames: Map<number, string>,
   onAddChild: (parentId: number) => void,
   onRename: (department: DepartmentOut) => void,
+  onAssignHead: (department: DepartmentOut) => void,
 ): DataNode[] {
   return nodes.map((node) => ({
     key: node.id,
@@ -57,9 +60,19 @@ function toTreeData(
         >
           Переименовать
         </Button>
+        <Button
+          size="small"
+          type="link"
+          onClick={(event) => {
+            event.stopPropagation();
+            onAssignHead(node);
+          }}
+        >
+          Назначить руководителя
+        </Button>
       </Space>
     ),
-    children: toTreeData(node.children, managerNames, onAddChild, onRename),
+    children: toTreeData(node.children, managerNames, onAddChild, onRename, onAssignHead),
   }));
 }
 
@@ -89,9 +102,20 @@ export function DepartmentsPage() {
   const departmentsQuery = useDepartmentsQuery();
   const employeesQuery = useAllEmployeesQuery();
   const [nameModal, setNameModal] = useState<NameModalState>(null);
+  const [headModalDepartment, setHeadModalDepartment] = useState<DepartmentOut | null>(null);
 
   const managerNames = useMemo(
     () => employeeNameById(employeesQuery.data ?? []),
+    [employeesQuery.data],
+  );
+  // Только активные — сервер отклоняет уволенного руководителем
+  // (`_require_active_head_reference`), предлагать заведомо
+  // отклоняемый вариант в списке было бы ловушкой для пользователя.
+  // Разрешение ФИО в дереве (`managerNames` выше) остаётся по ПОЛНОМУ
+  // списку — это другая задача (не дать голому id остаться на экране
+  // для уже назначенного, но затем уволенного руководителя).
+  const activeEmployees: EmployeeOut[] = useMemo(
+    () => (employeesQuery.data ?? []).filter((employee) => employee.employment_status === "active"),
     [employeesQuery.data],
   );
 
@@ -144,6 +168,33 @@ export function DepartmentsPage() {
     return null;
   };
 
+  const handleAssignHeadSubmit = async (
+    headEmployeeId: number | null,
+  ): Promise<{ field: string; message: string } | string | null> => {
+    if (headModalDepartment === null) {
+      return null;
+    }
+    // Все три поля — см. докстринг компонента.
+    const { error } = await apiClient.PUT("/api/departments/{department_id}", {
+      params: { path: { department_id: headModalDepartment.id } },
+      body: {
+        name: headModalDepartment.name,
+        parent_id: headModalDepartment.parent_id,
+        head_employee_id: headEmployeeId,
+      },
+    });
+    if (error) {
+      const matchedFieldError = fieldError(error.detail);
+      if (matchedFieldError) {
+        return matchedFieldError;
+      }
+      return stringDetail(error.detail) ?? "Не удалось назначить руководителя.";
+    }
+    await queryClient.invalidateQueries({ queryKey: ["departments"] });
+    setHeadModalDepartment(null);
+    return null;
+  };
+
   return (
     <div>
       <Space align="center" style={{ width: "100%", justifyContent: "space-between" }}>
@@ -172,6 +223,7 @@ export function DepartmentsPage() {
             managerNames,
             (parentId) => setNameModal({ kind: "create", parentId }),
             (department) => setNameModal({ kind: "rename", department }),
+            (department) => setHeadModalDepartment(department),
           )}
           defaultExpandAll
           showLine
@@ -192,6 +244,14 @@ export function DepartmentsPage() {
         initialName={nameModal?.kind === "rename" ? nameModal.department.name : undefined}
         onCancel={() => setNameModal(null)}
         onSubmit={handleRenameSubmit}
+      />
+      <DepartmentHeadModal
+        open={headModalDepartment !== null}
+        departmentName={headModalDepartment?.name ?? ""}
+        currentHeadId={headModalDepartment?.head_employee_id ?? null}
+        employeeOptions={activeEmployees}
+        onCancel={() => setHeadModalDepartment(null)}
+        onSubmit={handleAssignHeadSubmit}
       />
     </div>
   );

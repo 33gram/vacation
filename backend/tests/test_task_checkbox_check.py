@@ -66,8 +66,10 @@ if _SCRIPT_PATH.is_file():
     sys.modules["check_task_checkbox"] = _check_task_checkbox
     _spec.loader.exec_module(_check_task_checkbox)
     find_violations = _check_task_checkbox.find_violations
+    find_partial_closure_notes = _check_task_checkbox.find_partial_closure_notes
 else:
     find_violations = None  # type: ignore[assignment]
+    find_partial_closure_notes = None  # type: ignore[assignment]
 
 pytestmark = pytest.mark.skipif(
     not _SCRIPT_PATH.is_file(),
@@ -258,3 +260,127 @@ def test_partial_closure_line_must_name_the_right_task_id() -> None:
     )
 
     assert [v.task_id for v in violations] == ["T-M1-01"]
+
+
+# --- PR #156 review, замечание 1: unknown_task vs unrecognized_checkbox_line
+
+
+def test_truly_absent_task_id_is_unknown_task() -> None:
+    violations = find_violations(
+        ["T-M9-99: этой задачи никогда не было"],
+        _SAMPLE_TASKS_MD,
+        pr_body="",
+    )
+
+    assert len(violations) == 1
+    assert violations[0].task_id == "T-M9-99"
+    assert violations[0].kind == "unknown_task"
+
+
+def test_id_present_but_not_in_a_checkbox_line_is_a_distinct_kind() -> None:
+    # ID есть в тексте документа, но не в строке вида `- [ ] **ID** ...`
+    # (опечатка в оформлении, а не в самом ID) - "такой задачи нет" было
+    # бы неправдой (PR #156 review, замечание 1).
+    tasks_md = "Где-то в тексте упоминается T-M1-01, но не как чек-бокс.\n"
+
+    violations = find_violations(
+        ["T-M1-01: something"],
+        tasks_md,
+        pr_body="",
+    )
+
+    assert len(violations) == 1
+    assert violations[0].task_id == "T-M1-01"
+    assert violations[0].kind == "unrecognized_checkbox_line"
+    assert violations[0].kind != "unknown_task"
+
+
+# --- PR #156 review, замечание 2: причина у "частично:" обязательна ---
+
+
+def test_partial_closure_without_any_separator_or_reason_does_not_exempt() -> None:
+    violations = find_violations(
+        ["T-M1-01: something"],
+        _SAMPLE_TASKS_MD,
+        pr_body="частично: T-M1-01",
+    )
+
+    assert [v.task_id for v in violations] == ["T-M1-01"]
+
+
+def test_partial_closure_with_a_bare_separator_and_no_text_does_not_exempt() -> None:
+    violations = find_violations(
+        ["T-M1-01: something"],
+        _SAMPLE_TASKS_MD,
+        pr_body="частично: T-M1-01 —",
+    )
+
+    assert [v.task_id for v in violations] == ["T-M1-01"]
+
+
+def test_partial_closure_with_whitespace_only_reason_does_not_exempt() -> None:
+    violations = find_violations(
+        ["T-M1-01: something"],
+        _SAMPLE_TASKS_MD,
+        pr_body="частично: T-M1-01 —    \n",
+    )
+
+    assert [v.task_id for v in violations] == ["T-M1-01"]
+
+
+def test_partial_closure_with_a_real_reason_exempts() -> None:
+    violations = find_violations(
+        ["T-M1-01: something"],
+        _SAMPLE_TASKS_MD,
+        pr_body="частично: T-M1-01 — LDAP-сценарий доведём отдельной веткой",
+    )
+
+    assert violations == []
+
+
+def test_partial_closure_recognized_inside_a_blockquote() -> None:
+    # Известное, задокументированное расширение (PR #156 review,
+    # замечание 4): разметку не вырезаем, `>`-цитата не мешает.
+    violations = find_violations(
+        ["T-M1-01: something"],
+        _SAMPLE_TASKS_MD,
+        pr_body="> частично: T-M1-01 — процитированная причина",
+    )
+
+    assert violations == []
+
+
+# --- PR #156 review, замечание 3: find_partial_closure_notes ------------
+
+
+def test_partial_closure_note_names_the_task_and_the_rule_6_precedent() -> None:
+    notes = find_partial_closure_notes(
+        ["T-M1-01: something"],
+        _SAMPLE_TASKS_MD,
+        pr_body="частично: T-M1-01 — LDAP-сценарий доведём отдельной веткой",
+    )
+
+    assert len(notes) == 1
+    assert "T-M1-01" in notes[0]
+    assert "T-M1-08" in notes[0]
+    assert "T-M1-30" in notes[0]
+
+
+def test_no_note_when_task_is_already_ticked() -> None:
+    notes = find_partial_closure_notes(
+        ["T-M1-02: something"],
+        _SAMPLE_TASKS_MD,
+        pr_body="частично: T-M1-02 — уже не имеет значения",
+    )
+
+    assert notes == []
+
+
+def test_no_note_without_a_partial_closure_line() -> None:
+    notes = find_partial_closure_notes(
+        ["T-M1-01: something"],
+        _SAMPLE_TASKS_MD,
+        pr_body="",
+    )
+
+    assert notes == []

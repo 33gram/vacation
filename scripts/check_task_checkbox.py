@@ -19,16 +19,58 @@ T-M1-49: чек-бокс задачи (правило 6) забывался в �
 (там T-M1-46 и T-M1-47 на момент того PR ещё не отмечены) — ровно
 такую ошибку и ловит `test_pr143_mid_title_mentions_are_silent`.
 
-Идентификатор, которого нет в `docs/tasks.md` вовсе (опечатка, задача
-переименована, перенесена и т.п.) — это не «отметка не поставлена», а
-ссылка в пустоту; отдельное сообщение (`kind="unknown_task"`), не слито
-с основным случаем (`kind="not_ticked"`).
+Два разных случая «в `docs/tasks.md` этого ID не нашлось», а не один
+(PR #156 review, замечание 1). Идентификатора нет в тексте документа
+ВООБЩЕ (опечатка, задача переименована, перенесена и т.п.) — это не
+«отметка не поставлена», а ссылка в пустоту; `kind="unknown_task"`.
+Идентификатор в тексте ЕСТЬ, но не в распознаваемой строке чек-бокса
+(`_TASK_CHECKBOX_LINE` требует строгого `- [ ] **T-Mx-yy** …`) — это
+другой случай, и сообщение «такой задачи нет» для него было бы
+неправдой; `kind="unrecognized_checkbox_line"`, называющее и ID, и то,
+что строка не разобрана. На сегодняшних данных это не воспроизводится:
+все 154 строки задач вида `T-Mx-yy` в `docs/tasks.md` оформлены
+единообразно, дублей нет (проверено `grep` при приёмке этой правки) —
+различие добавлено ради правдивости сообщения на случай будущего
+отклонения формата, а не потому что баг был поймал на реальных данных.
 
-Логика вынесена в `find_violations` — чистую функцию от трёх значений
-(заголовки коммитов, текст `docs/tasks.md`, текст описания PR), без
-какого-либо обращения к git/CI/окружению. Так отрицательные контроли
-(тесты) гоняются на настоящих исторических данных (PR #143, #144),
-взятых `git log`/`git show`, а не имитируются.
+Строка `частично: T-Mx-yy — <причина>` — единственное место, которое
+снимает блокировку CI, поэтому причина после ID обязательна и не может
+быть пустой (PR #156 review, замечание 2): разделитель (`-`/`–`/`—`) и
+хотя бы один непробельный символ после него. Пустая строка, один
+разделитель без текста и разделитель с одними пробелами после него
+причиной не считаются и задачу не освобождают — иначе строка
+`частично: T-Mx-yy` без единого слова обоснования делала бы ровно то
+же, что и содержательная, а сама причина превращалась бы в
+необязательное украшение вопреки собственному докстрингу и тексту
+сообщения.
+
+Послабление снимает БЛОКИРОВКУ CI, а не обязательство по правилу 6
+(PR #156 review, замечание 3): отложенная часть задачи всё равно
+обязана стать отдельной задачей в `docs/tasks.md` со ссылкой на
+блокирующую зависимость — прецедент `T-M1-08`/`T-M1-30`. Строка
+`частично:` в теле PR такого следа сама по себе не оставляет, поэтому
+`find_partial_closure_notes` (ниже) не влияет на код возврата, но
+печатает в `main()` напоминание об этом при каждом срабатывании
+послабления — не как отказ, а как памятку, которую легко упустить,
+раз CI больше не блокирует.
+
+Известные ограничения (PR #156 review, замечание 4; по образцу
+`check_conflict_markers.py` — называть то, что проверено, а не
+предполагать шире): строка `частично:` распознаётся в ЛЮБОМ месте тела
+PR — внутри блока кода, внутри цитаты (`> частично: …`, в том числе
+вложенной), с любым отступом; разметку вырезать не пытаемся — это
+послабление защищает от забывчивости того же человека, который открыл
+PR, а не от намеренного обхода, так что различать «настоящий» и
+«процитированный» текст незачем. При дублирующемся идентификаторе в
+`docs/tasks.md` (сегодня дублей нет, см. выше) берётся состояние ПЕРВОГО
+вхождения, не последнего.
+
+Логика вынесена в `find_violations` и `find_partial_closure_notes` —
+чистые функции от одних и тех же трёх значений (заголовки коммитов,
+текст `docs/tasks.md`, текст описания PR), без какого-либо обращения к
+git/CI/окружению. Так отрицательные контроли (тесты) гоняются на
+настоящих исторических данных (PR #143, #144), взятых `git
+log`/`git show`, а не имитируются.
 
 Источник заголовков коммитов PR — `gh api repos/{repo}/pulls/{n}/commits`
 (REST), а не `gh pr view --json commits` (GraphQL) и не `git log
@@ -94,21 +136,25 @@ from pathlib import Path
 
 _TASK_ID_AT_START = re.compile(r"^(T-M\d+-\d+):")
 _TASK_CHECKBOX_LINE = re.compile(r"^- \[([ x])\] \*\*(T-M\d+-\d+)\*\*", re.MULTILINE)
-_PARTIAL_CLOSURE = re.compile(r"^\s*частично:\s*(T-M\d+-\d+)\b", re.MULTILINE)
+# `[\s>]*` перед «частично:» — распознаётся с любым отступом и внутри
+# цитаты (`>`, в т.ч. вложенной), см. докстринг про известные
+# ограничения. Разделитель и НЕПУСТАЯ причина после ID обязательны
+# (PR #156 review, замечание 2) — без `\S` в конце это совпало бы и на
+# пустой причине.
+_PARTIAL_CLOSURE = re.compile(
+    r"^[\s>]*частично:\s*(T-M\d+-\d+)\s*[-–—]\s*\S",
+    re.MULTILINE,
+)
 
 
 @dataclass(frozen=True)
 class Violation:
     task_id: str
-    kind: str  # "not_ticked" | "unknown_task"
+    kind: str  # "not_ticked" | "unknown_task" | "unrecognized_checkbox_line"
     message: str
 
 
-def find_violations(
-    commit_titles: list[str],
-    tasks_md_text: str,
-    pr_body: str,
-) -> list[Violation]:
+def _task_ids_from_commit_titles(commit_titles: list[str]) -> list[str]:
     task_ids: list[str] = []
     seen: set[str] = set()
     for title in commit_titles:
@@ -119,29 +165,65 @@ def find_violations(
         if task_id not in seen:
             seen.add(task_id)
             task_ids.append(task_id)
+    return task_ids
 
+
+def _checkbox_states(tasks_md_text: str) -> dict[str, str]:
+    checkbox_by_id: dict[str, str] = {}
+    for state, task_id in _TASK_CHECKBOX_LINE.findall(tasks_md_text):
+        # Первое вхождение побеждает при дубликате ID (PR #156 review,
+        # замечание 4) — см. докстринг.
+        checkbox_by_id.setdefault(task_id, state)
+    return checkbox_by_id
+
+
+def _partially_closed_ids(pr_body: str) -> set[str]:
+    return {m.group(1) for m in _PARTIAL_CLOSURE.finditer(pr_body)}
+
+
+def find_violations(
+    commit_titles: list[str],
+    tasks_md_text: str,
+    pr_body: str,
+) -> list[Violation]:
+    task_ids = _task_ids_from_commit_titles(commit_titles)
     if not task_ids:
         return []
 
-    checkbox_by_id: dict[str, str] = {}
-    for state, task_id in _TASK_CHECKBOX_LINE.findall(tasks_md_text):
-        checkbox_by_id.setdefault(task_id, state)
-
-    partially_closed = {m.group(1) for m in _PARTIAL_CLOSURE.finditer(pr_body)}
+    checkbox_by_id = _checkbox_states(tasks_md_text)
+    partially_closed = _partially_closed_ids(pr_body)
 
     violations: list[Violation] = []
     for task_id in task_ids:
         if task_id not in checkbox_by_id:
-            violations.append(
-                Violation(
-                    task_id=task_id,
-                    kind="unknown_task",
-                    message=(
-                        f"{task_id}: коммит начинается с этого ID, но "
-                        f"такой задачи нет в docs/tasks.md"
-                    ),
+            if task_id in tasks_md_text:
+                # ID встречается в тексте, но не в распознаваемой строке
+                # чек-бокса — не то же самое, что "такой задачи нет"
+                # (PR #156 review, замечание 1).
+                violations.append(
+                    Violation(
+                        task_id=task_id,
+                        kind="unrecognized_checkbox_line",
+                        message=(
+                            f"{task_id}: идентификатор встречается в "
+                            f"docs/tasks.md, но не в распознаваемой строке "
+                            f'чек-бокса ("- [ ] **{task_id}** …") — '
+                            f"проверка не может определить, отмечена ли "
+                            f"задача"
+                        ),
+                    )
                 )
-            )
+            else:
+                violations.append(
+                    Violation(
+                        task_id=task_id,
+                        kind="unknown_task",
+                        message=(
+                            f"{task_id}: коммит начинается с этого ID, но "
+                            f"такой задачи нет в docs/tasks.md"
+                        ),
+                    )
+                )
             continue
 
         if checkbox_by_id[task_id] == "x":
@@ -163,6 +245,42 @@ def find_violations(
         )
 
     return violations
+
+
+def find_partial_closure_notes(
+    commit_titles: list[str],
+    tasks_md_text: str,
+    pr_body: str,
+) -> list[str]:
+    """Напоминания для задач, чья CI-блокировка снята строкой `частично:`
+    (PR #156 review, замечание 3) — не влияют на код возврата
+    `main()`, только печатаются: послабление снимает блокировку CI, а
+    не обязательство по правилу 6 (`CLAUDE.md`) заводить отдельную
+    задачу на отложенную часть со ссылкой на блокирующую зависимость
+    (прецедент `T-M1-08`/`T-M1-30`)."""
+    task_ids = _task_ids_from_commit_titles(commit_titles)
+    if not task_ids:
+        return []
+
+    checkbox_by_id = _checkbox_states(tasks_md_text)
+    partially_closed = _partially_closed_ids(pr_body)
+
+    notes: list[str] = []
+    for task_id in task_ids:
+        state = checkbox_by_id.get(task_id)
+        if state is None or state == "x":
+            continue
+        if task_id not in partially_closed:
+            continue
+        notes.append(
+            f"{task_id}: чек-бокс не [x], CI-блокировка снята строкой "
+            f'"частично: {task_id} — <причина>", но правило 6 всё равно '
+            f"требует отдельной задачи на отложенную часть со ссылкой на "
+            f"блокирующую зависимость (прецедент T-M1-08/T-M1-30) — эта "
+            f"строка в теле PR такого следа сама по себе не оставляет"
+        )
+
+    return notes
 
 
 def _pr_commit_titles(repo: str, pr_number: str) -> list[str]:
@@ -222,6 +340,9 @@ def main() -> int:
 
     commit_titles = _pr_commit_titles(repo, pr_number)
     tasks_md_text = Path("docs/tasks.md").read_text(encoding="utf-8")
+
+    for note in find_partial_closure_notes(commit_titles, tasks_md_text, pr_body):
+        print(f"Напоминание (правило 6, послабление снимает только CI): {note}")
 
     violations = find_violations(commit_titles, tasks_md_text, pr_body)
 

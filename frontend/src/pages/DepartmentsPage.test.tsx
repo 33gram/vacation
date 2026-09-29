@@ -373,6 +373,14 @@ function dragOnto(source: HTMLElement, target: HTMLElement): void {
   fireEvent.dragEnd(source);
 }
 
+/** Даёт асинхронному коду (микрозадачи мутации, сам мок `fetch`) шанс
+ * выполниться, прежде чем проверять «ничего не произошло» — синхронная
+ * проверка сразу после `dragOnto` не отличила бы «заблокировано» от
+ * «ещё не успело», отсечка при этом осталась бы непроверенной. */
+async function settle(): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, 50));
+}
+
 describe("departments reparenting by drag and drop (T-M1-20, FR-EMP-002)", () => {
   it("moving a node onto another sends all three fields — new parent_id, unchanged name/head", async () => {
     const departmentA = departmentResponse({ id: 1, name: "Подразделение A", parent_id: null, head_employee_id: null });
@@ -503,4 +511,101 @@ describe("departments reparenting by drag and drop (T-M1-20, FR-EMP-002)", () =>
       expect(afterRefetch?.find((d) => d.id === 2)?.parent_id).toBe(1);
     });
   });
+
+  it("a second drag started before the first PUT resolves does not send a second request, and dragging works again once it settles", async () => {
+    // Тот же приём с гейтом, что и выше — но на этот раз держим сам
+    // первый PUT, а не последующий GET: окно гонки, которое проверяет
+    // этот тест, — между первым `drop` и ответом сервера на его PUT, а
+    // не между отказом и рефетчем.
+    const root = departmentResponse({ id: 1, name: "Родитель", parent_id: null });
+    const nested = departmentResponse({ id: 2, name: "Вложенный", parent_id: 1 });
+    const otherRoot = departmentResponse({ id: 3, name: "Другой корень", parent_id: null });
+    // Независимая пара для проверки «перетаскивание снова работает» —
+    // НЕ те же узлы, что участвуют в заблокированном первом переносе:
+    // после его успешного завершения "Вложенный" физически переезжает
+    // под "Другой корень" в дереве, и его новая позиция зависит от
+    // состояния сворачивания узла-получателя — не то, что здесь
+    // проверяется. Независимая пара остаётся на месте независимо от
+    // первого переноса.
+    const nested2 = departmentResponse({ id: 4, name: "Вложенный2", parent_id: 1 });
+    const otherRoot2 = departmentResponse({ id: 5, name: "Другой корень2", parent_id: null });
+    setAccessToken("token");
+
+    let putCountForNode2 = 0;
+    let putBodyForNode4: Record<string, unknown> | null = null;
+    const firstPut: { resolve: (() => void) | null } = { resolve: null };
+    const firstPutGate = new Promise<void>((resolve) => {
+      firstPut.resolve = resolve;
+    });
+    setFetchHandler((method, pathname, init) => {
+      if (method === "GET" && pathname === "/api/auth/me") {
+        return { status: 200, body: meResponse({ role: "hr_admin", must_change_password: false }) };
+      }
+      if (method === "GET" && pathname === "/api/employees") {
+        return { status: 200, body: [] };
+      }
+      if (method === "GET" && pathname === "/api/departments") {
+        return { status: 200, body: [root, nested, otherRoot, nested2, otherRoot2] };
+      }
+      if (method === "PUT" && pathname === "/api/departments/2") {
+        putCountForNode2 += 1;
+        return firstPutGate.then(() => ({ status: 200, body: { ...nested, parent_id: 3 } }));
+      }
+      if (method === "PUT" && pathname === "/api/departments/4") {
+        putBodyForNode4 = JSON.parse(init.body as string) as Record<string, unknown>;
+        return { status: 200, body: { ...nested2, parent_id: putBodyForNode4.parent_id } };
+      }
+      return null;
+    });
+
+    renderApp("/departments");
+    await screen.findByText(/Вложенный — /);
+
+    const sourceNode = findTreeNode(/^Вложенный — /);
+    const targetNode = findTreeNode(/Другой корень — /);
+
+    dragOnto(sourceNode, targetNode);
+    await vi.waitFor(() => expect(putCountForNode2).toBe(1));
+
+    // Главный отрицательный контроль: пока первый PUT висит на гейте,
+    // ЛЮБОЕ новое перетаскивание — не обязательно того же узла на ту же
+    // цель — не должно отправлять запрос вовсе. Независимая пара, а не
+    // повторный бросок исходной: у самого исходного узла к этому
+    // моменту уже другая позиция в DOM (оптимистичное обновление кэша
+    // из `onMutate` уже отразилось в дереве), и попытка «перетащить его
+    // ещё раз» перестаёт быть чистой проверкой отсечки — она либо не
+    // находит прежний DOM-узел, либо натыкается на смену позиции по
+    // причине, не имеющей отношения к `isPending`. Независимая пара
+    // такого искажения не вносит. Проверка «ничего не произошло»
+    // обязана дать асинхронному коду шанс произойти, а не читать
+    // результат сразу же (тот же тик, где PUT ещё физически не мог быть
+    // отправлен, — с настоящей отсечкой ИЛИ без неё, отличить одно от
+    // другого было бы нечем).
+    dragOnto(findTreeNode(/^Вложенный2 — /), findTreeNode(/Другой корень2 — /));
+    await settle();
+    expect(putBodyForNode4).toBeNull();
+
+    firstPut.resolve?.();
+    await vi.waitFor(() => expect(isDraggable(findTreeNode(/^Вложенный2 — /))).toBe(true));
+
+    // Независимая пара — перетаскивание снова работает. Проверяем по
+    // отправленному телу PUT (как и остальные тесты этого файла), не
+    // по состоянию кэша после отклика: мок GET статичен и не отражает
+    // ни одной мутации, поэтому рефетч, вызванный ЛЮБОЙ инвалидацией
+    // (в т.ч. от этого же переноса), перезаписывает кэш обратно
+    // «немутированными» данными и ничего не доказывает — особенность
+    // мока, а не гонка в продакшен-коде: настоящий сервер отдал бы уже
+    // актуальное состояние.
+    dragOnto(findTreeNode(/^Вложенный2 — /), findTreeNode(/Другой корень2 — /));
+    await vi.waitFor(() => expect(putBodyForNode4).not.toBeNull());
+    expect(putBodyForNode4).toEqual({ name: "Вложенный2", parent_id: 5, head_employee_id: null });
+  });
 });
+
+/** `draggable="false"` на узле, пока перенос ещё не разрешился (см.
+ * тест выше) — этот помощник ждёт, что атрибут вернулся к `"true"`
+ * (антд включает перетаскивание обратно), не полагаясь на побочные
+ * эффекты вроде повторного рендера дерева. */
+function isDraggable(node: HTMLElement): boolean {
+  return node.getAttribute("draggable") === "true";
+}

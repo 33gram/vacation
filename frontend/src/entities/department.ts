@@ -10,6 +10,45 @@ export interface DepartmentTreeNode extends DepartmentOut {
   children: DepartmentTreeNode[];
 }
 
+export interface DepartmentUpdateBody {
+  name: string;
+  parent_id: number | null;
+  head_employee_id: number | null;
+}
+
+/** Единственное место, собирающее тело `PUT /api/departments/{id}`
+ * (`T-M1-20`, PR #157 review, замечание 2) — переименование, назначение
+ * руководителя и перенос узла (`DepartmentsPage`) раньше делали это
+ * вручную, по одной копии на каждое, отличаясь ровно ОДНИМ
+ * переопределяемым полем. `DepartmentUpdate` — полная замена
+ * (`name` обязателен, `parent_id`/`head_employee_id` по умолчанию
+ * `None`): пропуск поля в ОДНОЙ из трёх копий молча стирает чужое
+ * значение при следующей правке — тот же класс ошибки, что в `T-M1-52`
+ * стоил бы сотрудникам паролей.
+ *
+ * `overrides` — `Partial`, а не три обязательных параметра со своими
+ * `?? department.xxx`: `parent_id`/`head_employee_id` — легитимно
+ * `null` (перенос в корень, снятие руководителя), и `null ??
+ * department.parent_id` вернул бы СТАРОЕ значение вместо явно
+ * переданного `null` — ровно та ошибка, которую этот помощник обязан
+ * исключить. Отличают «поле не переопределено» от «поле переопределено
+ * на `null`» через `in`, а не через `??`/`||`. Гарантия — на выходе
+ * ВСЕГДА все три ключа, даже без единого переопределения (тест —
+ * `department.test.ts`, не только через страницу). */
+export function departmentUpdateBody(
+  department: DepartmentOut,
+  overrides: Partial<DepartmentUpdateBody> = {},
+): DepartmentUpdateBody {
+  return {
+    name: "name" in overrides ? (overrides.name as string) : department.name,
+    parent_id: "parent_id" in overrides ? (overrides.parent_id as number | null) : department.parent_id,
+    head_employee_id:
+      "head_employee_id" in overrides
+        ? (overrides.head_employee_id as number | null)
+        : department.head_employee_id,
+  };
+}
+
 /** Строит дерево из плоского списка `GET /api/departments` (`parent_id`,
  * `T-M1-20`). Написана заново для этого экрана, не восстановлена из
  * истории (`entities/department.ts` уже содержала `buildDepartmentTree`,

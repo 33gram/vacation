@@ -9,7 +9,7 @@ import { EmptyState, ErrorLoadingState, LoadingState } from "../app/states";
 import { DepartmentHeadModal } from "../components/DepartmentHeadModal";
 import { DepartmentNameModal } from "../components/DepartmentNameModal";
 import type { DepartmentOut, DepartmentTreeNode } from "../entities/department";
-import { buildDepartmentTree } from "../entities/department";
+import { buildDepartmentTree, departmentUpdateBody } from "../entities/department";
 import { employeeNameById, resolveName } from "../entities/employee";
 import type { EmployeeOut } from "../entities/employee";
 import { useDepartmentsQuery } from "../entities/useDepartmentsQuery";
@@ -97,15 +97,18 @@ function toTreeData(
  *
  * Создание — `POST /api/departments` (`name` + необязательный
  * `parent_id`; руководителя не передаём — схема его не принимает
- * намеренно, `department_service.py`). Переименование — `PUT` с ВСЕМИ
- * тремя полями (`name`/`parent_id`/`head_employee_id`), взятыми из уже
- * прочитанного `DepartmentOut`, а не только изменённым `name`:
- * `DepartmentUpdate` — полная замена, запрос, отправивший только `name`,
- * молча переносит подразделение в корень и снимает руководителя
- * (прецедент `T-M1-52`, тот же риск для паролей сотрудников). После
- * любой мутации — `invalidateQueries(["departments"])`, а не локальное
- * обновление: тот же запрос использует форма сотрудника и карточка
- * (`useDepartmentsQuery`). */
+ * намеренно, `department_service.py`). Переименование, назначение
+ * руководителя и перенос узла — все трое `PUT` с ВСЕМИ тремя полями
+ * (`name`/`parent_id`/`head_employee_id`): `DepartmentUpdate` — полная
+ * замена, запрос, отправивший только изменившееся поле, молча переносит
+ * подразделение в корень и снимает руководителя (прецедент `T-M1-52`,
+ * тот же риск для паролей сотрудников). Тело собирает ОДИН помощник,
+ * `departmentUpdateBody` (`entities/department.ts`), а не три ручные
+ * копии одного и того же литерала (PR #157 review, замечание 2) — тот
+ * же риск однажды забыть поле, только теперь в трёх местах вместо
+ * одного. После любой мутации — `invalidateQueries(["departments"])`, а
+ * не локальное обновление: тот же запрос использует форма сотрудника и
+ * карточка (`useDepartmentsQuery`). */
 export function DepartmentsPage() {
   const queryClient = useQueryClient();
   const departmentsQuery = useDepartmentsQuery();
@@ -152,11 +155,7 @@ export function DepartmentsPage() {
     }) => {
       const { error } = await apiClient.PUT("/api/departments/{department_id}", {
         params: { path: { department_id: department.id } },
-        body: {
-          name: department.name,
-          parent_id: newParentId,
-          head_employee_id: department.head_employee_id,
-        },
+        body: departmentUpdateBody(department, { parent_id: newParentId }),
       });
       if (error) {
         throw new Error(stringDetail(error.detail) ?? "Не удалось перенести подразделение.");
@@ -239,14 +238,9 @@ export function DepartmentsPage() {
       return null;
     }
     const department = nameModal.department;
-    // Все три поля — см. докстринг компонента.
     const { error } = await apiClient.PUT("/api/departments/{department_id}", {
       params: { path: { department_id: department.id } },
-      body: {
-        name,
-        parent_id: department.parent_id,
-        head_employee_id: department.head_employee_id,
-      },
+      body: departmentUpdateBody(department, { name }),
     });
     if (error) {
       return stringDetail(error.detail) ?? "Не удалось переименовать подразделение.";
@@ -262,14 +256,9 @@ export function DepartmentsPage() {
     if (headModalDepartment === null) {
       return null;
     }
-    // Все три поля — см. докстринг компонента.
     const { error } = await apiClient.PUT("/api/departments/{department_id}", {
       params: { path: { department_id: headModalDepartment.id } },
-      body: {
-        name: headModalDepartment.name,
-        parent_id: headModalDepartment.parent_id,
-        head_employee_id: headEmployeeId,
-      },
+      body: departmentUpdateBody(headModalDepartment, { head_employee_id: headEmployeeId }),
     });
     if (error) {
       const matchedFieldError = fieldError(error.detail);
@@ -326,7 +315,19 @@ export function DepartmentsPage() {
           )}
           defaultExpandAll
           showLine
-          draggable={{ icon: false }}
+          // Пока перенос не завершился, дерево не перетаскивается вовсе
+          // (PR #157 review, замечание 1) — не ранний выход внутри
+          // `handleDrop`: у того же эффекта («второй бросок ничего не
+          // делает») не было бы никакого видимого пользователю сигнала —
+          // курсор показывал бы обычное перетаскивание, `drop`
+          // случался бы, и человек не понял бы, почему ничего не
+          // произошло. `draggable={false}` снимает у узлов сам HTML-
+          // атрибут (`rc-tree`, `TreeNode.js`: `isDraggable` завязан на
+          // `context.draggable`, обработчики `onDragStart`/`onDrop` не
+          // навешиваются вовсе, когда он ложный) — второе перетаскивание
+          // видимо не начинается, а не начинается и молча ничего не
+          // отправляет.
+          draggable={reparentMutation.isPending ? false : { icon: false }}
           onDrop={handleDrop}
         />
       )}

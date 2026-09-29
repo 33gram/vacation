@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { departmentResponse } from "../test-utils/fixtures";
-import { buildDepartmentTree } from "./department";
+import { buildDepartmentTree, departmentUpdateBody } from "./department";
 import type { DepartmentTreeNode } from "./department";
 
 function countNodes(tree: DepartmentTreeNode[]): number {
@@ -71,5 +71,47 @@ describe("buildDepartmentTree (T-M1-20)", () => {
     for (const departments of inputs) {
       expect(countNodes(buildDepartmentTree(departments))).toBe(departments.length);
     }
+  });
+});
+
+describe("departmentUpdateBody (T-M1-20, PR #157 review)", () => {
+  const department = departmentResponse({
+    id: 1,
+    name: "Отдел",
+    parent_id: 5,
+    head_employee_id: 9,
+  });
+
+  it("always returns exactly three keys, even with no overrides at all", () => {
+    const body = departmentUpdateBody(department);
+
+    expect(Object.keys(body).sort()).toEqual(["head_employee_id", "name", "parent_id"]);
+    expect(body).toEqual({ name: "Отдел", parent_id: 5, head_employee_id: 9 });
+  });
+
+  it("overrides only the given field, keeping the other two from the department", () => {
+    expect(departmentUpdateBody(department, { name: "Новое имя" })).toEqual({
+      name: "Новое имя",
+      parent_id: 5,
+      head_employee_id: 9,
+    });
+  });
+
+  it("an override of null for parent_id is honored, not treated as absent (move to root)", () => {
+    const body = departmentUpdateBody(department, { parent_id: null });
+
+    expect(body).toEqual({ name: "Отдел", parent_id: null, head_employee_id: 9 });
+  });
+
+  it("an override of null for head_employee_id is honored, not treated as absent (unassign the head)", () => {
+    const body = departmentUpdateBody(department, { head_employee_id: null });
+
+    expect(body).toEqual({ name: "Отдел", parent_id: 5, head_employee_id: null });
+  });
+
+  it("applies more than one override at once", () => {
+    const body = departmentUpdateBody(department, { parent_id: null, head_employee_id: null });
+
+    expect(body).toEqual({ name: "Отдел", parent_id: null, head_employee_id: null });
   });
 });

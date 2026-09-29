@@ -1,6 +1,6 @@
 COMPOSE = docker compose --env-file .env -f infra/docker-compose.yml
 
-.PHONY: up down logs test-backend test-frontend lint-backend lint-frontend openapi-export openapi-client check-conflict-markers
+.PHONY: up down logs test-backend test-frontend lint-backend lint-frontend openapi-export openapi-client check-conflict-markers check-task-checkbox
 
 up:
 	@test -f .env || { echo "Нет .env — выполните: cp .env.example .env"; exit 1; }
@@ -47,3 +47,10 @@ openapi-client: openapi-export
 # пушем, а не только в CI.
 check-conflict-markers:
 	python3 scripts/check_conflict_markers.py
+
+# T-M1-49: без аргументов и без docker — на ветке с открытым PR скрипт
+# сам определяет репозиторий/номер/описание через `gh pr view` (в CI
+# вместо этого читает PR_NUMBER/GITHUB_REPOSITORY/PR_BODY из контекста
+# события; см. docstring scripts/check_task_checkbox.py).
+check-task-checkbox:
+	python3 scripts/check_task_checkbox.py

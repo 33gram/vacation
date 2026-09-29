@@ -39,7 +39,17 @@ jobs:
         ports:
           - 6379:6379
     steps:
+      # T-M1-49: fetch-depth 0, а не дефолтные 1 — tests/
+      # test_task_checkbox_check.py строит фикстуры из настоящей истории
+      # репозитория (`git show`/`git log` на мерж-коммитах PR #143/#144),
+      # а неглубокий чекаут эти объекты не приносит вовсе (проверено
+      # прогоном: `git cat-file -t <мерж-коммит PR #144>` в клоне
+      # `--depth 1` отвечает "Not a valid object name", в полном —
+      # резолвится). Остальные job'ы этого workflow в такую историю не
+      # заглядывают, поэтому не тронуты.
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-python@v7
         with:
@@ -128,6 +138,53 @@ jobs:
 
       - name: Check for conflict markers
         run: python3 scripts/check_conflict_markers.py
+
+  task-checkbox-check:
+    # T-M1-49: чек-бокс задачи (CLAUDE.md, правило 6) забывался в трёх PR
+    # подряд (T-M1-45/PR #143, T-M1-18/PR #144, T-M1-48/PR #146) — ничто
+    # не требовало отметки, она делалась последней в потоке работы и
+    # выпадала. Только на pull_request (не push): у push-события нет ни
+    # номера PR, ни его описания, а угадывать PR по коммиту — ровно тот
+    # риск ложного срабатывания, которого эта проверка должна избегать
+    # (см. scripts/check_task_checkbox.py).
+    name: Task checkbox is ticked when its commits land
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    # PR #156 review: без этого блока действует набор прав GITHUB_TOKEN
+    # по умолчанию, в который чтение PR НЕ входит — `gh api .../pulls/
+    # {n}/commits` отвечает 403 Resource not accessible by integration
+    # (подтверждено настоящим прогоном на этом PR, не предположено).
+    # `contents: read` нужен `actions/checkout`, `pull-requests: read` —
+    # собственно чтению списка коммитов PR через `gh api`. Права выданы
+    # только этому job'у, не всему workflow (`on:`/верхний уровень) —
+    # остальные job'ы (backend-tests, frontend-tests и т.д.) не читают
+    # PR через API и не должны получать более широкие права, чем нужно
+    # им самим. Следующему читателю: не убирать этот блок как лишний —
+    # без него job красный на каждом PR, не только иногда.
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Check task checkbox
+        env:
+          # `github.token` (= GITHUB_TOKEN) — тот же токен, что и у
+          # остальных шагов этого workflow, но НЕ тот же набор прав: без
+          # `permissions:` этого job'а (выше) чтение PR через `gh api`
+          # отвечает 403 — утверждение "scope по умолчанию достаточен",
+          # написанное в предыдущей версии этого комментария, было
+          # опровергнуто именно этим прогоном (правило 8, не
+          # переписывать вывод по рассуждению).
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          # Через env:, не подстановкой в run: — тело PR пишет тот, кто
+          # его открывает, и вставка ${{ github.event.pull_request.body }}
+          # прямо в текст команды была бы инъекцией в shell; так это
+          # только переменная окружения процесса.
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: python3 scripts/check_task_checkbox.py
 
   openapi-client-check:
     # T-M1-28: этот шаг проверяет расхождение между схемой backend и

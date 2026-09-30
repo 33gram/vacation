@@ -1,13 +1,25 @@
 import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { setAccessToken } from "../../app/auth";
+import { daysInYear, isWeekendDate } from "../../entities/productionCalendar";
 import { setFetchHandler } from "../../test-utils/fetchMock";
 import { meResponse } from "../../test-utils/fixtures";
 import { renderApp } from "../../test-utils/renderApp";
 
 const CURRENT_YEAR = new Date().getFullYear();
+
+/** Полностью заполненный год ("рабочий" везде, кроме суббот/воскресений)
+ * — фикстура для тестов правки/сохранения, где сам факт «год не пуст и
+ * не содержит незаданных дней» не является предметом теста (это
+ * отдельно проверяют тесты коммита 2 и коммита 4). */
+function fullYearFixture(year: number): { date: string; day_type: string }[] {
+  return daysInYear(year).map((date) => ({
+    date,
+    day_type: isWeekendDate(date) ? "weekend" : "working",
+  }));
+}
 
 function mockBackend(
   daysByYear: Record<number, { date: string; day_type: string }[]>,
@@ -156,5 +168,114 @@ describe("production calendar is restricted to system_admin (T-M1-22 review)", (
     // запросить у сервера для запрещённой роли — до `GET` дело не
     // доходит (мок вернул бы `null` и тест упал бы явной ошибкой из
     // `fetchMock.ts`, если бы дошло).
+  });
+});
+
+describe("production calendar editing and saving (T-M1-22, FR-ADMIN-003)", () => {
+  it("editing one day sends the FULL year in the PUT body, not just the changed day", async () => {
+    const year = CURRENT_YEAR;
+    const fixture = fullYearFixture(year);
+    type PutBody = { days: { date: string; day_type: string }[] };
+    let putBody: PutBody | null = null;
+    setAccessToken("token");
+    setFetchHandler((method, pathname, init) => {
+      if (method === "GET" && pathname === "/api/auth/me") {
+        return { status: 200, body: meResponse({ role: "system_admin", must_change_password: false }) };
+      }
+      if (method === "GET" && pathname === `/api/admin/production-calendar/${year}`) {
+        return { status: 200, body: { year, days: fixture } };
+      }
+      if (method === "PUT" && pathname === `/api/admin/production-calendar/${year}`) {
+        const parsed = JSON.parse(init.body as string) as PutBody;
+        putBody = parsed;
+        return { status: 200, body: { year, days: parsed.days } };
+      }
+      return null;
+    });
+
+    renderApp("/admin/production-calendar");
+
+    const firstDayTitle = new RegExp(`01\\.01\\.${year} — `);
+    const user = userEvent.setup();
+    await user.click(await screen.findByTitle(firstDayTitle));
+    await user.click(screen.getByRole("button", { name: "Сохранить" }));
+
+    await vi.waitFor(() => expect(putBody).not.toBeNull());
+    const sentBody = putBody!;
+    // Главный отрицательный контроль (проверено прогоном до реализации,
+    // см. тело коммита): тело обязано содержать ВЕСЬ год, а не один
+    // изменённый день.
+    expect(sentBody.days).toHaveLength(daysInYear(year).length);
+    expect(sentBody.days.map((d) => d.date)).toContain(`${year}-06-15`);
+    // И сам клик подействовал: тип 1 января в отправленном теле отличается
+    // от исходного значения фикстуры.
+    const originalJan1 = fixture.find((d) => d.date === `${year}-01-01`)?.day_type;
+    const sentJan1 = sentBody.days.find((d) => d.date === `${year}-01-01`)?.day_type;
+    expect(sentJan1).not.toBe(originalJan1);
+  });
+
+  it("shows the server's own error text on a failed save, above the action, not rewritten", async () => {
+    const year = CURRENT_YEAR;
+    const fixture = fullYearFixture(year);
+    setAccessToken("token");
+    setFetchHandler((method, pathname) => {
+      if (method === "GET" && pathname === "/api/auth/me") {
+        return { status: 200, body: meResponse({ role: "system_admin", must_change_password: false }) };
+      }
+      if (method === "GET" && pathname === `/api/admin/production-calendar/${year}`) {
+        return { status: 200, body: { year, days: fixture } };
+      }
+      if (method === "PUT" && pathname === `/api/admin/production-calendar/${year}`) {
+        return { status: 400, body: { detail: `дата ${year}-01-01 не относится к году ${year + 1}` } };
+      }
+      return null;
+    });
+
+    renderApp("/admin/production-calendar");
+    const user = userEvent.setup();
+    await screen.findByTitle(new RegExp(`01\\.01\\.${year} — `));
+    await user.click(screen.getByRole("button", { name: "Сохранить" }));
+
+    expect(
+      await screen.findByText(`дата ${year}-01-01 не относится к году ${year + 1}`),
+    ).toBeInTheDocument();
+  });
+
+  it("invalidates the cache after a successful save instead of trusting the PUT response — a subsequent GET wins", async () => {
+    const year = CURRENT_YEAR;
+    const fixture = fullYearFixture(year);
+    let getCallCount = 0;
+    setAccessToken("token");
+    setFetchHandler((method, pathname) => {
+      if (method === "GET" && pathname === "/api/auth/me") {
+        return { status: 200, body: meResponse({ role: "system_admin", must_change_password: false }) };
+      }
+      if (method === "GET" && pathname === `/api/admin/production-calendar/${year}`) {
+        getCallCount += 1;
+        return { status: 200, body: { year, days: fixture } };
+      }
+      if (method === "PUT" && pathname === `/api/admin/production-calendar/${year}`) {
+        // Ответ PUT намеренно НЕ совпадает с тем, что подтвердит
+        // следующий GET (мок GET всегда отдаёт `fixture`) — если бы
+        // экран доверял телу ответа мутации вместо инвалидации и
+        // повторного запроса, он показал бы данные ИЗ ЭТОГО ответа, а не
+        // то, что вернул GET.
+        return { status: 200, body: { year, days: [] } };
+      }
+      return null;
+    });
+
+    renderApp("/admin/production-calendar");
+    const user = userEvent.setup();
+    await screen.findByTitle(new RegExp(`01\\.01\\.${year} — `));
+    const countBeforeSave = getCallCount;
+
+    await user.click(screen.getByRole("button", { name: "Сохранить" }));
+
+    await vi.waitFor(() => expect(getCallCount).toBeGreaterThan(countBeforeSave));
+    // Сетка остаётся показанной по данным подтверждающего GET (`fixture`,
+    // не пустой ответ PUT) — если бы клиент правил кэш телом мутации
+    // вслепую, здесь оказался бы пустой год.
+    expect(await screen.findByTitle(new RegExp(`01\\.01\\.${year} — `))).toBeInTheDocument();
   });
 });

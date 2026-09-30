@@ -51,7 +51,16 @@ export const MENU_ITEMS: readonly MenuItemConfig[] = [
     key: "admin-production-calendar",
     path: "/admin/production-calendar",
     label: "Производственный календарь",
-    roles: ["hr_admin", "system_admin"],
+    // T-M1-22 review: было ["hr_admin", "system_admin"], хотя оба
+    // эндпоинта (`GET`/`PUT /api/admin/production-calendar/{year}`)
+    // требуют `system_admin` (`require_roles("system_admin")`,
+    // `production_calendar_router.py`) — hr_admin видел пункт меню,
+    // открывал экран и получал 403 на первом же `GET`, попадая в
+    // состояние «Ошибка загрузки» с бесполезной кнопкой «Повторить».
+    // Меню приведено в соответствие с сервером, а не наоборот: если
+    // календарь должен вести и HR, это решение про права на сервере,
+    // не про то, кому показать пункт меню на клиенте.
+    roles: ["system_admin"],
     group: "Администрирование",
   },
 ];

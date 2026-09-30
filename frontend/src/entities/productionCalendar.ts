@@ -36,7 +36,7 @@ export function nextDayType(current: string | null): KnownDayType {
 
 /** Подпись типа дня для отображения — известное значение переводится,
  * неизвестное показывается как пришло (тот же приём, что и `WORK_SCHEDULE_
- * LABELS[type] ?? type` в `entities/employee.ts`), `null` — «не задан». */
+ * LABELS[type] ?? type` в `pages/EmployeesPage.tsx`), `null` — «не задан». */
 export function dayTypeLabel(dayType: string | null): string {
   if (dayType === null) {
     return "Не задан";
@@ -89,10 +89,16 @@ export function isWeekendDate(isoDate: string): boolean {
 
 /** Собирает полную сетку года из ответа сервера: каждый календарный день
  * года получает свой `dayType` (или `null`, если сервер его не прислал —
- * см. `CalendarDay.dayType`). Сумма присутствующих (`dayType !== null`)
- * дней равна длине `serverDays` при любом входе — ни один день ответа не
- * теряется и не дублируется, потому что каждая дата года встречается в
- * `daysInYear` ровно один раз. */
+ * см. `CalendarDay.dayType`). При входе, каким его гарантирует
+ * `production_calendar_service.get_year` (даты уникальны — `unique=True`
+ * на колонке `date`, — и все внутри запрошенного года — фильтр по
+ * диапазону дат года), сумма присутствующих (`dayType !== null`) дней
+ * равна длине `serverDays`: ни один день ответа не теряется и не
+ * дублируется, потому что каждая дата года встречается в `daysInYear`
+ * ровно один раз. Вход с датой вне года или повторной датой этой
+ * гарантии не даёт — функция не проверяет и не отвергает такой вход, а
+ * просто теряет лишнее (дата вне года — молча, повтор — оставляет
+ * последнее значение по порядку `serverDays`). */
 export function buildYearGrid(
   year: number,
   serverDays: readonly ProductionCalendarDayOut[],

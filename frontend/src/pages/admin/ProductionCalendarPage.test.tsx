@@ -241,9 +241,26 @@ describe("production calendar editing and saving (T-M1-22, FR-ADMIN-003)", () =>
     await screen.findByTitle(new RegExp(`01\\.01\\.${year} — `));
     await user.click(screen.getByRole("button", { name: "Сохранить" }));
 
+    const errorNode = await screen.findByText(
+      `дата ${year}-01-01 не относится к году ${year + 1}`,
+    );
+    // `ui.md` §7, «Место ошибки»: ошибка всей операции — над кнопками
+    // действия. Проверка через положение узлов в документе
+    // (`compareDocumentPosition`), а не через индекс в верстке или CSS:
+    // если ошибка идёт раньше кнопки, у пары (ошибка, кнопка) установлен
+    // бит DOCUMENT_POSITION_FOLLOWING — кнопка СЛЕДУЕТ за ошибкой.
+    // Имя ищем по подстроке, а не строгим равенством: у antd `Button` с
+    // `loading` иконка "загрузки" перестаёт снимать себя из дерева
+    // доступности в jsdom после первого показа (её уход завязан на
+    // событие `transitionend`, которого jsdom не порождает), и доступное
+    // имя остаётся "loadingСохранить" даже когда `saveMutation.isPending`
+    // уже стал `false` в состоянии React. Это артефакт тестовой среды,
+    // не поведение экрана, поэтому его не нужно точно матчить, только
+    // не терять саму кнопку.
+    const saveButton = screen.getByRole("button", { name: /Сохранить/ });
     expect(
-      await screen.findByText(`дата ${year}-01-01 не относится к году ${year + 1}`),
-    ).toBeInTheDocument();
+      errorNode.compareDocumentPosition(saveButton) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
   });
 
   it("invalidates the cache after a successful save instead of trusting the PUT response — a subsequent GET wins", async () => {

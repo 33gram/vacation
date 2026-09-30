@@ -219,6 +219,10 @@ function ProductionCalendarYearView({ year }: { year: number }) {
 
   return (
     <div>
+      {saveError && (
+        <Alert type="error" message={saveError} showIcon style={{ marginBottom: 16 }} />
+      )}
+
       <Space align="center" style={{ marginBottom: 16 }}>
         <Button
           type="primary"
@@ -237,10 +241,6 @@ function ProductionCalendarYearView({ year }: { year: number }) {
           </Typography.Text>
         )}
       </Space>
-
-      {saveError && (
-        <Alert type="error" message={saveError} showIcon style={{ marginBottom: 16 }} />
-      )}
 
       <div style={{ display: "flex", flexWrap: "wrap", gap: 24 }}>
         {MONTH_NAMES.map((_, monthIndex) => (
@@ -288,12 +288,10 @@ function ProductionCalendarYearView({ year }: { year: number }) {
  * образная полная замена тела запроса, тот же риск, что стоил бы
  * сотрудникам паролей в `T-M1-52` и подразделениям — родителя и
  * руководителя в `T-M1-20`. Ошибка сервера показывается текстом сервера,
- * как есть, а не переписывается на клиенте (`ui.md` §7, «Тексты»).
- * Расположение — ПОД кнопкой «Сохранить», не над ней: `ui.md` §7,
- * «Место ошибки», требует для ошибки всей операции «над кнопками
- * действия» — сегодняшняя вёрстка этому не следует (найдено при ревью
- * `PR #158`, замечание не устранено в этом раунде — раунд текстовый, без
- * правок кода).
+ * как есть, а не переписывается на клиенте (`ui.md` §7, «Тексты»), НАД
+ * кнопками «Сохранить»/«Заполнить по умолчанию» — как и требует `ui.md`
+ * §7, «Место ошибки», для ошибки всей операции (`PR #158` review:
+ * изначально `Alert` был отрисован после блока кнопок, а не до).
  *
  * «Заполнить по умолчанию» (`fillDefaults`, `entities/productionCalendar.ts`)
  * — ТОЛЬКО суббота/воскресенье → `weekend`, остальное → `working`; это

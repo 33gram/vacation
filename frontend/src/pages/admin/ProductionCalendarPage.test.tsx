@@ -21,6 +21,11 @@ function fullYearFixture(year: number): { date: string; day_type: string }[] {
   }));
 }
 
+function ddmmyyyy(isoDate: string): string {
+  const [y, m, d] = isoDate.split("-");
+  return `${d}\\.${m}\\.${y}`;
+}
+
 function mockBackend(
   daysByYear: Record<number, { date: string; day_type: string }[]>,
   options: { role?: string; getStatus?: number } = {},
@@ -277,5 +282,77 @@ describe("production calendar editing and saving (T-M1-22, FR-ADMIN-003)", () =>
     // не пустой ответ PUT) — если бы клиент правил кэш телом мутации
     // вслепую, здесь оказался бы пустой год.
     expect(await screen.findByTitle(new RegExp(`01\\.01\\.${year} — `))).toBeInTheDocument();
+  });
+});
+
+describe("production calendar default fill (T-M1-22, commit 4)", () => {
+  it("fills a fully empty year (weekend on Sat/Sun, working otherwise) and unblocks Save", async () => {
+    const year = CURRENT_YEAR;
+    mockBackend({ [year]: [] });
+
+    renderApp("/admin/production-calendar");
+    const user = userEvent.setup();
+    await user.click(
+      await screen.findByRole("button", { name: "Заполнить по умолчанию" }),
+    );
+
+    const jan1Type = isWeekendDate(`${year}-01-01`) ? "Выходной" : "Рабочий";
+    expect(
+      await screen.findByTitle(new RegExp(`01\\.01\\.${year} — ${jan1Type}`)),
+    ).toBeInTheDocument();
+    // Ни одного незаданного дня не осталось — ни метки "Не задан", ни
+    // самой кнопки заполнения (заполнять больше нечего), ни блокировки
+    // сохранения.
+    expect(screen.queryByTitle(/— Не задан/)).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Заполнить по умолчанию" }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Сохранить" })).not.toBeDisabled();
+  });
+
+  it("fills only the unset days of a partially loaded year, never touching a day already set", async () => {
+    const year = CURRENT_YEAR;
+    const allDates = daysInYear(year);
+    const weekendDate = allDates.find((d) => isWeekendDate(d) && d !== `${year}-01-01`)!;
+    const workingDate = allDates.find((d) => !isWeekendDate(d) && d !== `${year}-01-01`)!;
+    // 1 января размечено ВРУЧНУЮ как праздник — заведомо не то значение,
+    // которое дало бы вычисление по дню недели ни в одном году: обычный
+    // рабочий день недели дал бы "working", выходной — "weekend", и обе
+    // ветки отличаются от "holiday".
+    mockBackend({ [year]: [{ date: `${year}-01-01`, day_type: "holiday" }] });
+
+    renderApp("/admin/production-calendar");
+    const user = userEvent.setup();
+    await user.click(
+      await screen.findByRole("button", { name: "Заполнить по умолчанию" }),
+    );
+
+    // Главный отрицательный контроль: уже заданный день (1 января,
+    // "Праздник") остаётся КАК ЕСТЬ, а не переписывается вычислением по
+    // дню недели.
+    expect(
+      await screen.findByTitle(new RegExp(`01\\.01\\.${year} — Праздник`)),
+    ).toBeInTheDocument();
+    // Ранее незаданные дни заполнены по дню недели.
+    expect(
+      screen.getByTitle(new RegExp(`${ddmmyyyy(weekendDate)} — Выходной`)),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByTitle(new RegExp(`${ddmmyyyy(workingDate)} — Рабочий`)),
+    ).toBeInTheDocument();
+    expect(screen.queryByTitle(/— Не задан/)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Сохранить" })).not.toBeDisabled();
+  });
+
+  it("does not offer the default-fill action for a year with no unset days", async () => {
+    const year = CURRENT_YEAR;
+    mockBackend({ [year]: fullYearFixture(year) });
+
+    renderApp("/admin/production-calendar");
+    await screen.findByTitle(new RegExp(`01\\.01\\.${year} — `));
+
+    expect(
+      screen.queryByRole("button", { name: "Заполнить по умолчанию" }),
+    ).not.toBeInTheDocument();
   });
 });

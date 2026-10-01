@@ -295,3 +295,166 @@ describe("saving the connection parameters (T-M1-21, commit 2)", () => {
     expect(screen.queryByText(/Режим внедрения без LDAP/)).not.toBeInTheDocument();
   });
 });
+
+describe("testing the connection without saving (T-M1-21, commit 3)", () => {
+  function savedFixture() {
+    return ldapSettingsResponse({
+      last_tested_at: "2026-09-01T10:00:00",
+      last_test_status: "success",
+    });
+  }
+
+  it("explains which case is active: saved record by default, draft once a field changes", async () => {
+    mockBackend(savedFixture());
+
+    renderApp("/admin/ldap-settings");
+    await screen.findByText(
+      "Будет проверена сохранённая запись; результат зафиксируется на сервере.",
+    );
+
+    const user = userEvent.setup();
+    await user.clear(screen.getByLabelText("Порт"));
+    await user.type(screen.getByLabelText("Порт"), "636");
+
+    expect(
+      await screen.findByText(
+        "Будут проверены введённые, но ещё не сохранённые значения — само сохранение не выполняется.",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("sends an empty body when the form has no unsaved changes, verifying the saved record", async () => {
+    const saved = savedFixture();
+    type TestBody = Record<string, unknown>;
+    let testBody: TestBody | undefined;
+    setAccessToken("token");
+    setFetchHandler((method, pathname, init) => {
+      if (method === "GET" && pathname === "/api/auth/me") {
+        return { status: 200, body: meResponse({ role: "system_admin", must_change_password: false }) };
+      }
+      if (method === "GET" && pathname === "/api/admin/ldap-settings") {
+        return { status: 200, body: saved };
+      }
+      if (method === "POST" && pathname === "/api/admin/ldap-settings/test") {
+        testBody = JSON.parse(init.body as string) as TestBody;
+        return { status: 200, body: { success: true, detail: "Соединение установлено" } };
+      }
+      // Намеренно нет ветки для PUT: если бы проверка сохранённой записи
+      // случайно дёрнула сохранение, диспетчер мока бросил бы
+      // «Unhandled request», и тест упал бы именно на этом.
+      return null;
+    });
+
+    renderApp("/admin/ldap-settings");
+    await screen.findByLabelText("Адрес сервера");
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Тестовое подключение" }));
+
+    await vi.waitFor(() => expect(testBody).toBeDefined());
+    expect(testBody).toEqual({});
+    expect(await screen.findByText("Соединение установлено")).toBeInTheDocument();
+  });
+
+  it("sends the filled draft fields (not an empty body) when the form has unsaved changes", async () => {
+    const saved = savedFixture();
+    type TestBody = Record<string, unknown>;
+    let testBody: TestBody | undefined;
+    setAccessToken("token");
+    setFetchHandler((method, pathname, init) => {
+      if (method === "GET" && pathname === "/api/auth/me") {
+        return { status: 200, body: meResponse({ role: "system_admin", must_change_password: false }) };
+      }
+      if (method === "GET" && pathname === "/api/admin/ldap-settings") {
+        return { status: 200, body: saved };
+      }
+      if (method === "POST" && pathname === "/api/admin/ldap-settings/test") {
+        testBody = JSON.parse(init.body as string) as TestBody;
+        return { status: 200, body: { success: true, detail: "Соединение установлено" } };
+      }
+      return null;
+    });
+
+    renderApp("/admin/ldap-settings");
+    await screen.findByLabelText("Адрес сервера");
+    const user = userEvent.setup();
+    await user.clear(screen.getByLabelText("Порт"));
+    await user.type(screen.getByLabelText("Порт"), "636");
+    await user.click(screen.getByRole("button", { name: "Тестовое подключение" }));
+
+    await vi.waitFor(() => expect(testBody).toBeDefined());
+    expect(testBody).not.toEqual({});
+    expect(testBody?.server_url).toBe(saved.server_url);
+    expect(testBody?.port).toBe(636);
+    // Пустое поле пароля в черновике не означает "" — это отсутствие
+    // ключа, то же правило, что и у сохранения (опасность 2 применена и
+    // здесь: сервер должен подставить сохранённый пароль, а не получить
+    // пустую строку).
+    expect("bind_password" in (testBody ?? {})).toBe(false);
+  });
+
+  it("shows a failed test's own result text without touching the recorded check", async () => {
+    const saved = savedFixture();
+    setAccessToken("token");
+    setFetchHandler((method, pathname) => {
+      if (method === "GET" && pathname === "/api/auth/me") {
+        return { status: 200, body: meResponse({ role: "system_admin", must_change_password: false }) };
+      }
+      if (method === "GET" && pathname === "/api/admin/ldap-settings") {
+        return { status: 200, body: saved };
+      }
+      if (method === "POST" && pathname === "/api/admin/ldap-settings/test") {
+        return { status: 200, body: { success: false, detail: "Неверные учётные данные" } };
+      }
+      return null;
+    });
+
+    renderApp("/admin/ldap-settings");
+    await screen.findByLabelText("Адрес сервера");
+    const user = userEvent.setup();
+    await user.clear(screen.getByLabelText("Порт"));
+    await user.type(screen.getByLabelText("Порт"), "636");
+    await user.click(screen.getByRole("button", { name: "Тестовое подключение" }));
+
+    expect(await screen.findByText("Неверные учётные данные")).toBeInTheDocument();
+  });
+
+  it("testing draft parameters never triggers a save request (ui.md §3: the test button doesn't save)", async () => {
+    const saved = savedFixture();
+    // Флаг, а не "нет ветки для PUT": react-query гасит отказ мутации
+    // внутри себя (вызывается только `onError` обработчика), так что
+    // брошенная диспетчером мока ошибка на незаданном пути НЕ обрушивает
+    // тест сама по себе, если ничего в тесте её не ждёт, — отрицательный
+    // контроль обязан проверять факт вызова PUT явно, а не полагаться на
+    // побочный эффект отсутствующей ветки (проверено прогоном: с
+    // обработчиком `handleTest`, вызывающим и `saveMutation.mutate`,
+    // предыдущая версия этого теста — без флага — оставалась зелёной).
+    let putWasCalled = false;
+    setAccessToken("token");
+    setFetchHandler((method, pathname) => {
+      if (method === "GET" && pathname === "/api/auth/me") {
+        return { status: 200, body: meResponse({ role: "system_admin", must_change_password: false }) };
+      }
+      if (method === "GET" && pathname === "/api/admin/ldap-settings") {
+        return { status: 200, body: saved };
+      }
+      if (method === "POST" && pathname === "/api/admin/ldap-settings/test") {
+        return { status: 200, body: { success: true, detail: "Соединение установлено" } };
+      }
+      if (method === "PUT" && pathname === "/api/admin/ldap-settings") {
+        putWasCalled = true;
+        return { status: 200, body: saved };
+      }
+      return null;
+    });
+
+    renderApp("/admin/ldap-settings");
+    await screen.findByLabelText("Адрес сервера");
+    const user = userEvent.setup();
+    await user.clear(screen.getByLabelText("Порт"));
+    await user.type(screen.getByLabelText("Порт"), "636");
+    await user.click(screen.getByRole("button", { name: "Тестовое подключение" }));
+
+    expect(await screen.findByText("Соединение установлено")).toBeInTheDocument();
+    expect(putWasCalled).toBe(false);
+  });
+});

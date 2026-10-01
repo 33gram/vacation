@@ -9,10 +9,12 @@ import { EmptyState, ErrorLoadingState, LoadingState } from "../../app/states";
 import {
   defaultFormValues,
   formValuesFromSaved,
+  hasUnsavedChanges,
   lastTestStatusLabel,
   toLdapSettingsIn,
+  toLdapTestRequest,
 } from "../../entities/ldapSettings";
-import type { LdapFormValues, LdapSettingsOut } from "../../entities/ldapSettings";
+import type { LdapFormValues, LdapSettingsOut, LdapTestResponse } from "../../entities/ldapSettings";
 import { useLdapSettingsQuery } from "../../entities/useLdapSettingsQuery";
 
 /** Тело формы — поля в две колонки (`ui.md` §3, «Форма настроек»): слева
@@ -35,7 +37,21 @@ function LdapSettingsForm({
 }) {
   const queryClient = useQueryClient();
   const [form] = Form.useForm<LdapFormValues>();
-  const [saveError, setSaveError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [testResult, setTestResult] = useState<LdapTestResponse | null>(null);
+  // Снимок полей формы, реактивный к каждому изменению, а не прочитанный
+  // один раз: от него зависит и подпись под кнопкой «Тестовое
+  // подключение» (что именно она проверит ПРЯМО СЕЙЧАС), и тело запроса
+  // в её обработчике — оба обязаны согласованно реагировать на любой
+  // ввод, а не только на явную отправку формы (как `onFinish` у
+  // «Сохранить»).
+  const watchedValues = Form.useWatch([], form) as LdapFormValues | undefined;
+  const currentValues = watchedValues ?? initialValues;
+  // Решение (`T-M1-21`, принято и объяснено в докстринге экрана): кнопка
+  // проверяет ровно то, что админ видит перед собой — черновые поля,
+  // если они расходятся с сохранённой записью, иначе саму сохранённую
+  // запись.
+  const isDraftTest = hasUnsavedChanges(currentValues, saved);
   // Дата показывается только вместе с РЕАЛЬНО зафиксированным статусом —
   // без неё `saved && saved.last_test_status === null` (запись сохранена,
   // но ещё ни разу не проверена) выглядело бы как «— — Ещё не
@@ -55,7 +71,7 @@ function LdapSettingsForm({
       }
     },
     onSuccess: async () => {
-      setSaveError(null);
+      setActionError(null);
       // Поле пароля не обязано держать только что отправленное значение
       // дольше, чем нужно было для самой отправки (`NFR-SEC-001`) — после
       // успешного сохранения оно снова пусто, тем же смыслом «не менять»,
@@ -75,12 +91,51 @@ function LdapSettingsForm({
       ]);
     },
     onError: (error) => {
-      setSaveError(error instanceof Error ? error.message : "Не удалось сохранить параметры подключения.");
+      setActionError(error instanceof Error ? error.message : "Не удалось сохранить параметры подключения.");
     },
   });
 
   const handleSave = (values: LdapFormValues) => {
+    setTestResult(null);
     saveMutation.mutate(values);
+  };
+
+  const testMutation = useMutation({
+    mutationFn: async () => {
+      const { data, error } = await apiClient.POST("/api/admin/ldap-settings/test", {
+        body: toLdapTestRequest(currentValues, isDraftTest),
+      });
+      if (error) {
+        throw new Error(stringDetail(error.detail) ?? "Не удалось проверить подключение.");
+      }
+      return { data, wasDraft: isDraftTest };
+    },
+    onSuccess: async ({ data, wasDraft }) => {
+      setActionError(null);
+      setTestResult(data);
+      // Пустое тело проверяло СОХРАНЁННУЮ запись — сервер зафиксировал
+      // success/failure в `last_tested_at`/`last_test_status`
+      // (`_verify_saved_ldap_settings`) независимо от исхода, и оба могут
+      // сдвинуть `is_embedded_mode` в любую сторону (успех снимал режим
+      // внедрения, повторный провал после прежнего успеха вернул бы его
+      // — поэтому инвалидация не только на success). Черновая проверка
+      // (`wasDraft`) ничего не пишет на сервере — инвалидировать нечего.
+      if (!wasDraft) {
+        await Promise.all([
+          queryClient.invalidateQueries({ queryKey: ["ldap-settings"] }),
+          queryClient.invalidateQueries({ queryKey: ["me"] }),
+        ]);
+      }
+    },
+    onError: (error) => {
+      setTestResult(null);
+      setActionError(error instanceof Error ? error.message : "Не удалось проверить подключение.");
+    },
+  });
+
+  const handleTest = () => {
+    setActionError(null);
+    testMutation.mutate();
   };
 
   return (
@@ -134,15 +189,32 @@ function LdapSettingsForm({
           </Col>
         </Row>
 
-        {saveError && (
-          <Alert type="error" message={saveError} showIcon style={{ marginBottom: 16 }} />
+        {actionError && (
+          <Alert type="error" message={actionError} showIcon style={{ marginBottom: 16 }} />
         )}
 
         <Form.Item>
-          <Space>
-            <Button type="primary" htmlType="submit" loading={saveMutation.isPending}>
-              Сохранить
-            </Button>
+          <Space direction="vertical">
+            <Space>
+              <Button type="primary" htmlType="submit" loading={saveMutation.isPending}>
+                Сохранить
+              </Button>
+              <Button htmlType="button" onClick={handleTest} loading={testMutation.isPending}>
+                Тестовое подключение
+              </Button>
+            </Space>
+            <Typography.Text type="secondary">
+              {isDraftTest
+                ? "Будут проверены введённые, но ещё не сохранённые значения — само сохранение не выполняется."
+                : "Будет проверена сохранённая запись; результат зафиксируется на сервере."}
+            </Typography.Text>
+            {testResult && (
+              <Alert
+                type={testResult.success ? "success" : "error"}
+                message={testResult.detail}
+                showIcon
+              />
+            )}
           </Space>
         </Form.Item>
       </Form>
@@ -152,8 +224,7 @@ function LdapSettingsForm({
 
 /** Раздел «Администрирование → LDAP» (`T-M1-21`, `FR-ADMIN-005`,
  * `FR-AUTH-003`). Тип экрана — «Форма настроек» (`ui.md` §3): поля в две
- * колонки, пояснение под полем, действия внизу слева («Тестовое
- * подключение» появится в коммите 3 рядом с «Сохранить»). Доступ —
+ * колонки, пояснение под полем, действия внизу слева. Доступ —
  * `system_admin`: проверено, что это совпадает с правами всех трёх
  * серверных эндпоинтов (`require_roles("system_admin")`,
  * `ldap_settings_router.py`) и с `MENU_ITEMS`'s `admin-ldap` (`roles.ts`)
@@ -200,13 +271,42 @@ function LdapSettingsForm({
  * кэша запроса (`LdapSettingsForm`'s `saved`, не `initialValues`) — это
  * состояние СИСТЕМЫ (от него зависит режим внедрения, `is_embedded_mode`,
  * `backend/app/modules/auth/embedded_mode.py`), а не разовый результат
- * нажатия кнопки «Тестовое подключение» (её результат появится в
- * коммите 3 рядом с самой кнопкой — показывать его в этом же месте было
- * бы путать два разных факта: состояние системы и только что совершённое
- * действие). `last_tested_at` — единственное поле `datetime.datetime` (не
- * `date`) во всей схеме сегодня; `ui.md` §6 формата времени не определяет
- * — `formatDateTime` (`app/format.ts`) расширяет формат дат §6 временем,
- * не подменяет его. */
+ * нажатия кнопки «Тестовое подключение» (`testResult`, показан рядом с
+ * самой кнопкой, своим отдельным `Alert`) — путать их в одном месте
+ * нельзя: первое описывает состояние системы, второе — только что
+ * произведённое действие. `last_tested_at` — единственное поле
+ * `datetime.datetime` (не `date`) во всей схеме сегодня; `ui.md` §6
+ * формата времени не определяет — `formatDateTime` (`app/format.ts`)
+ * расширяет формат дат §6 временем, не подменяет его.
+ *
+ * «Тестовое подключение» (`T-M1-21`, решение принято здесь): у серверной
+ * проверки (`POST /ldap-settings/test`, `ldap_settings_service.
+ * test_ldap_connection`) два режима, различаемых по телу запроса — пустое
+ * проверяет СОХРАНЁННУЮ запись и фиксирует исход на сервере, непустое —
+ * ЧЕРНОВЫЕ поля и ничего не сохраняет. Одна кнопка выбирает между ними по
+ * состоянию формы (`hasUnsavedChanges`, `entities/ldapSettings.ts`): есть
+ * несохранённые изменения (включая непустое поле пароля — сохранённый
+ * пароль клиенту вообще не виден, так что заполненное поле не может
+ * значить ничего другого, кроме черновой правки) — проверяются именно
+ * они; форма совпадает с сохранённой записью — проверяется сама запись.
+ * В обоих случаях кнопка проверяет РОВНО то, что админ видит перед собой
+ * — пояснение под кнопкой (`ui.md` §3, «пояснение под полем», применённое
+ * здесь к действию) называет, какой из двух случаев сейчас активен, не
+ * оставляя угадывать.
+ *
+ * Проверка сохранённой записи инвалидирует оба кэша (`["ldap-settings"]`,
+ * `["me"]`) ПОСЛЕ ЛЮБОГО исхода, а не только после успеха: сервер
+ * обновляет `last_test_status` и при успехе, и при провале
+ * (`_verify_saved_ldap_settings` пишет `"success"`/`"failure"` в обоих
+ * случаях), и оба способны сдвинуть `is_embedded_mode` в любую сторону —
+ * повторный провал после прежнего успешного теста обязан вернуть баннер
+ * режима внедрения, а не оставить его погашенным по старым данным.
+ * Черновая проверка ничего не пишет на сервере — инвалидировать нечего,
+ * и кнопка в этом случае никогда не затрагивает сохранённое состояние.
+ * Проверка не сохраняет параметры ни при каких условиях (`ui.md` §3,
+ * «Кнопка проверки... не сохраняет») — `handleTest` не вызывает
+ * `saveMutation` ни прямо, ни косвенно; это же — обязательный
+ * отрицательный контроль теста (коммит 3). */
 export function LdapSettingsPage() {
   const query = useLdapSettingsQuery();
   const [started, setStarted] = useState(false);

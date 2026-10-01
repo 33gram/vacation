@@ -145,6 +145,21 @@ describe("LDAP settings, read only (T-M1-21, FR-ADMIN-005)", () => {
       // возможное состояние поля при любом сохранённом пароле.
       expect(screen.getByText(/Пустое поле — оставить прежний пароль/)).toBeInTheDocument();
     });
+
+    it("hints that a password is required to test, not that a previous one is kept, when settings were never saved (PR #159 review)", async () => {
+      mockBackend(null);
+
+      renderApp("/admin/ldap-settings");
+      const user = userEvent.setup();
+      await user.click(await screen.findByRole("button", { name: "Настроить подключение" }));
+
+      // При первичной настройке "прежнего" пароля нет — подсказка не
+      // обязана (и не должна) обещать его сохранение.
+      expect(screen.queryByText(/оставить прежний пароль/)).not.toBeInTheDocument();
+      expect(
+        await screen.findByText(/без пароля проверить подключение не получится/),
+      ).toBeInTheDocument();
+    });
   });
 });
 
@@ -327,6 +342,14 @@ describe("testing the connection without saving (T-M1-21, commit 3)", () => {
     const saved = savedFixture();
     type TestBody = Record<string, unknown>;
     let testBody: TestBody | undefined;
+    // Флаг, не отсутствующая ветка: как и в тесте ниже
+    // ("testing draft parameters never triggers a save request"),
+    // react-query гасит отказ мутации внутри себя (`onError`), так что
+    // ошибка диспетчера мока на незаданном пути НЕ обрушивает тест сама
+    // по себе, если ничего в тесте её не ждёт (`PR #159 review`:
+    // предыдущая версия этого теста полагалась именно на это и
+    // комментарий утверждал несуществующую защиту).
+    let putWasCalled = false;
     setAccessToken("token");
     setFetchHandler((method, pathname, init) => {
       if (method === "GET" && pathname === "/api/auth/me") {
@@ -339,9 +362,10 @@ describe("testing the connection without saving (T-M1-21, commit 3)", () => {
         testBody = JSON.parse(init.body as string) as TestBody;
         return { status: 200, body: { success: true, detail: "Соединение установлено" } };
       }
-      // Намеренно нет ветки для PUT: если бы проверка сохранённой записи
-      // случайно дёрнула сохранение, диспетчер мока бросил бы
-      // «Unhandled request», и тест упал бы именно на этом.
+      if (method === "PUT" && pathname === "/api/admin/ldap-settings") {
+        putWasCalled = true;
+        return { status: 200, body: saved };
+      }
       return null;
     });
 
@@ -353,6 +377,7 @@ describe("testing the connection without saving (T-M1-21, commit 3)", () => {
     await vi.waitFor(() => expect(testBody).toBeDefined());
     expect(testBody).toEqual({});
     expect(await screen.findByText("Соединение установлено")).toBeInTheDocument();
+    expect(putWasCalled).toBe(false);
   });
 
   it("sends the filled draft fields (not an empty body) when the form has unsaved changes", async () => {
@@ -456,5 +481,45 @@ describe("testing the connection without saving (T-M1-21, commit 3)", () => {
 
     expect(await screen.findByText("Соединение установлено")).toBeInTheDocument();
     expect(putWasCalled).toBe(false);
+  });
+
+  it("clears the one-off test result on any further field edit (PR #159 review)", async () => {
+    const saved = savedFixture();
+    setAccessToken("token");
+    setFetchHandler((method, pathname) => {
+      if (method === "GET" && pathname === "/api/auth/me") {
+        return { status: 200, body: meResponse({ role: "system_admin", must_change_password: false }) };
+      }
+      if (method === "GET" && pathname === "/api/admin/ldap-settings") {
+        return { status: 200, body: saved };
+      }
+      if (method === "POST" && pathname === "/api/admin/ldap-settings/test") {
+        return { status: 200, body: { success: true, detail: "Соединение установлено" } };
+      }
+      return null;
+    });
+
+    renderApp("/admin/ldap-settings");
+    await screen.findByLabelText("Адрес сервера");
+    const user = userEvent.setup();
+    // Черновая проверка (поле уже изменено) — результат появляется.
+    await user.clear(screen.getByLabelText("Порт"));
+    await user.type(screen.getByLabelText("Порт"), "636");
+    await user.click(screen.getByRole("button", { name: "Тестовое подключение" }));
+    expect(await screen.findByText("Соединение установлено")).toBeInTheDocument();
+
+    // Дальнейшая правка ЛЮБОГО поля — отметка больше не описывает то, что
+    // сейчас в форме, и обязана исчезнуть, хотя её никто не трогал
+    // напрямую (не сохранение, не новая проверка).
+    await user.clear(screen.getByLabelText("Base DN"));
+    await user.type(screen.getByLabelText("Base DN"), "dc=other,dc=local");
+
+    expect(screen.queryByText("Соединение установлено")).not.toBeInTheDocument();
+    // Зафиксированный результат последней проверки (состояние системы,
+    // не разовое действие) при этом остаётся как был — его эта правка не
+    // касается.
+    expect(
+      screen.getByText("Последняя зафиксированная проверка: 01.09.2026 10:00 — Успешно"),
+    ).toBeInTheDocument();
   });
 });

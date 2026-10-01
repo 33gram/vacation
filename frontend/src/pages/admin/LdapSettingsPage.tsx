@@ -1,12 +1,16 @@
-import { Col, Form, Input, InputNumber, Row, Switch, Typography } from "antd";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { Alert, Button, Col, Form, Input, InputNumber, Row, Space, Switch, Typography } from "antd";
 import { useState } from "react";
 
+import { apiClient } from "../../api/client";
+import { stringDetail } from "../../api/errors";
 import { formatDateTime } from "../../app/format";
 import { EmptyState, ErrorLoadingState, LoadingState } from "../../app/states";
 import {
   defaultFormValues,
   formValuesFromSaved,
   lastTestStatusLabel,
+  toLdapSettingsIn,
 } from "../../entities/ldapSettings";
 import type { LdapFormValues, LdapSettingsOut } from "../../entities/ldapSettings";
 import { useLdapSettingsQuery } from "../../entities/useLdapSettingsQuery";
@@ -29,7 +33,9 @@ function LdapSettingsForm({
   saved: LdapSettingsOut | null;
   initialValues: LdapFormValues;
 }) {
+  const queryClient = useQueryClient();
   const [form] = Form.useForm<LdapFormValues>();
+  const [saveError, setSaveError] = useState<string | null>(null);
   // Дата показывается только вместе с РЕАЛЬНО зафиксированным статусом —
   // без неё `saved && saved.last_test_status === null` (запись сохранена,
   // но ещё ни разу не проверена) выглядело бы как «— — Ещё не
@@ -39,11 +45,54 @@ function LdapSettingsForm({
       ? `Последняя зафиксированная проверка: ${formatDateTime(saved.last_tested_at)} — ${lastTestStatusLabel(saved.last_test_status)}`
       : `Последняя зафиксированная проверка: ${lastTestStatusLabel(null)}`;
 
+  const saveMutation = useMutation({
+    mutationFn: async (values: LdapFormValues) => {
+      const { error } = await apiClient.PUT("/api/admin/ldap-settings", {
+        body: toLdapSettingsIn(values),
+      });
+      if (error) {
+        throw new Error(stringDetail(error.detail) ?? "Не удалось сохранить параметры подключения.");
+      }
+    },
+    onSuccess: async () => {
+      setSaveError(null);
+      // Поле пароля не обязано держать только что отправленное значение
+      // дольше, чем нужно было для самой отправки (`NFR-SEC-001`) — после
+      // успешного сохранения оно снова пусто, тем же смыслом «не менять»,
+      // что и всегда.
+      form.setFieldValue("bind_password", "");
+      // `PUT` всегда обнуляет `last_tested_at`/`last_test_status`
+      // (`upsert_ldap_settings`) и может поменять `is_active` — оба
+      // способны сдвинуть `is_embedded_mode` (`backend/app/modules/auth/
+      // embedded_mode.py`), поэтому инвалидируются оба кэша: параметры
+      // (сам экран, зафиксированный результат проверки) и `["me"]`
+      // (баннер режима внедрения в оболочке, `T-M1-18`). Инвалидация, не
+      // правка кэша по ответу `PUT` вслепую (тот же принцип, что и в
+      // `T-M1-22`: подтверждённое состояние приходит отдельным `GET`).
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["ldap-settings"] }),
+        queryClient.invalidateQueries({ queryKey: ["me"] }),
+      ]);
+    },
+    onError: (error) => {
+      setSaveError(error instanceof Error ? error.message : "Не удалось сохранить параметры подключения.");
+    },
+  });
+
+  const handleSave = (values: LdapFormValues) => {
+    saveMutation.mutate(values);
+  };
+
   return (
     <div>
       <Typography.Paragraph type="secondary">{lastCheckLabel}</Typography.Paragraph>
 
-      <Form<LdapFormValues> form={form} layout="vertical" initialValues={initialValues}>
+      <Form<LdapFormValues>
+        form={form}
+        layout="vertical"
+        initialValues={initialValues}
+        onFinish={handleSave}
+      >
         <Row gutter={32}>
           <Col span={12} data-testid="ldap-settings-column-target">
             <Form.Item label="Адрес сервера" name="server_url" rules={[{ required: true }]}>
@@ -84,6 +133,18 @@ function LdapSettingsForm({
             </Form.Item>
           </Col>
         </Row>
+
+        {saveError && (
+          <Alert type="error" message={saveError} showIcon style={{ marginBottom: 16 }} />
+        )}
+
+        <Form.Item>
+          <Space>
+            <Button type="primary" htmlType="submit" loading={saveMutation.isPending}>
+              Сохранить
+            </Button>
+          </Space>
+        </Form.Item>
       </Form>
     </div>
   );
@@ -91,20 +152,40 @@ function LdapSettingsForm({
 
 /** Раздел «Администрирование → LDAP» (`T-M1-21`, `FR-ADMIN-005`,
  * `FR-AUTH-003`). Тип экрана — «Форма настроек» (`ui.md` §3): поля в две
- * колонки, пояснение под полем, действия внизу слева (действий в этом,
- * первом, коммите ещё нет — сохранение и проверка появятся следующими
- * коммитами; здесь только загрузка и отрисовка). Доступ — `system_admin`:
- * проверено, что это совпадает с правами всех трёх серверных эндпоинтов
- * (`require_roles("system_admin")`, `ldap_settings_router.py`) и с
- * `MENU_ITEMS`'s `admin-ldap` (`roles.ts`) — в отличие от производственного
- * календаря (`T-M1-22`), расхождения здесь нет и чинить нечего.
+ * колонки, пояснение под полем, действия внизу слева («Тестовое
+ * подключение» появится в коммите 3 рядом с «Сохранить»). Доступ —
+ * `system_admin`: проверено, что это совпадает с правами всех трёх
+ * серверных эндпоинтов (`require_roles("system_admin")`,
+ * `ldap_settings_router.py`) и с `MENU_ITEMS`'s `admin-ldap` (`roles.ts`)
+ * — в отличие от производственного календаря (`T-M1-22`), расхождения
+ * здесь нет и чинить нечего.
  *
  * `GET` отвечает `null`, если параметры ни разу не сохраняли — это не
  * ошибка и не пустая форма без объяснений, а состояние «Пусто» (`ui.md`
  * §4): иконка, заголовок, пояснение, кнопка основного действия
  * («Настроить подключение»), которая просто открывает форму с пустыми/
- * дефолтными значениями (`defaultFormValues`) — в этом коммите она ничего
- * не отправляет на сервер, это задел для коммита 2.
+ * дефолтными значениями (`defaultFormValues`).
+ *
+ * Сохранение (`PUT`) отправляет ПОЛНЫЙ состав формы — поле пароля
+ * обрабатывается отдельным правилом (`toLdapSettingsIn`, `entities/
+ * ldapSettings.ts`): ключ `bind_password` ОТСУТСТВУЕТ в теле, если поле
+ * пусто, а не равен `""` (опасность 2 — контракт схемы это
+ * `None`/отсутствует, а не пустая строка; сегодняшняя серверная проверка
+ * `if payload.bind_password:` просто снисходительнее к пустой строке,
+ * чем обещает контракт, и полагаться на эту снисходительность значило бы
+ * впустить в клиент поведение, которое ужесточение проверки превратило
+ * бы в тихое стирание пароля). После успеха поле пароля снова пустое
+ * (`NFR-SEC-001` — значение не должно жить в состоянии дольше, чем нужно
+ * было для самой отправки), а оба кэша — `["ldap-settings"]` и `["me"]`
+ * — инвалидируются, не правятся по ответу `PUT` вслепую: любое
+ * сохранение обнуляет `last_tested_at`/`last_test_status`
+ * (`upsert_ldap_settings`) и может поменять `is_active`, а оба способны
+ * сдвинуть `is_embedded_mode` (`backend/app/modules/auth/
+ * embedded_mode.py`) — без инвалидации `["me"]` баннер режима внедрения
+ * (`T-M1-18`) разошёлся бы с действительностью (опасность 3). Ошибка
+ * сервера показывается текстом сервера, как есть, над кнопками действия
+ * (`ui.md` §7, «Место ошибки» — то же правило, которое `PR #158 review`
+ * проверило на действующем экране производственного календаря).
  *
  * Пароль служебной записи (`NFR-SEC-001`, `ui.md` §7): сервер НИКОГДА не
  * присылает его в ответе (`LdapSettingsOut` — поля `bind_password` нет

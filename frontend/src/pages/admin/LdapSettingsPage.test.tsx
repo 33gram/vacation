@@ -1,6 +1,6 @@
 import { screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { setAccessToken } from "../../app/auth";
 import { setFetchHandler } from "../../test-utils/fetchMock";
@@ -145,5 +145,153 @@ describe("LDAP settings, read only (T-M1-21, FR-ADMIN-005)", () => {
       // возможное состояние поля при любом сохранённом пароле.
       expect(screen.getByText(/Пустое поле — оставить прежний пароль/)).toBeInTheDocument();
     });
+  });
+});
+
+describe("saving the connection parameters (T-M1-21, commit 2)", () => {
+  function savedFixture() {
+    return ldapSettingsResponse({
+      last_tested_at: "2026-09-01T10:00:00",
+      last_test_status: "success",
+    });
+  }
+
+  it("omits bind_password from the PUT body when the field is left empty (danger 2)", async () => {
+    const saved = savedFixture();
+    type PutBody = Record<string, unknown>;
+    let putBody: PutBody | null = null;
+    setAccessToken("token");
+    setFetchHandler((method, pathname, init) => {
+      if (method === "GET" && pathname === "/api/auth/me") {
+        return { status: 200, body: meResponse({ role: "system_admin", must_change_password: false }) };
+      }
+      if (method === "GET" && pathname === "/api/admin/ldap-settings") {
+        return { status: 200, body: saved };
+      }
+      if (method === "PUT" && pathname === "/api/admin/ldap-settings") {
+        putBody = JSON.parse(init.body as string) as PutBody;
+        return { status: 200, body: { ...saved, last_tested_at: null, last_test_status: null } };
+      }
+      return null;
+    });
+
+    renderApp("/admin/ldap-settings");
+    await screen.findByLabelText("Адрес сервера");
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: /Сохранить/ }));
+
+    await vi.waitFor(() => expect(putBody).not.toBeNull());
+    const sentBody = putBody!;
+    // Главный отрицательный контроль (проверено прогоном до реализации,
+    // см. тело коммита): ключ обязан ОТСУТСТВОВАТЬ, а не быть `""`.
+    expect("bind_password" in sentBody).toBe(false);
+  });
+
+  it("shows the server's own error text on a failed save, above the button", async () => {
+    const saved = savedFixture();
+    setAccessToken("token");
+    setFetchHandler((method, pathname) => {
+      if (method === "GET" && pathname === "/api/auth/me") {
+        return { status: 200, body: meResponse({ role: "system_admin", must_change_password: false }) };
+      }
+      if (method === "GET" && pathname === "/api/admin/ldap-settings") {
+        return { status: 200, body: saved };
+      }
+      if (method === "PUT" && pathname === "/api/admin/ldap-settings") {
+        // Реальный путь ошибки (`main.py`'s app-level IntegrityError
+        // safety net, не выдуманный текст): 409 с этим же текстом.
+        return { status: 409, body: { detail: "Конфликт с уже существующими данными. Попробуйте ещё раз." } };
+      }
+      return null;
+    });
+
+    renderApp("/admin/ldap-settings");
+    await screen.findByLabelText("Адрес сервера");
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: /Сохранить/ }));
+
+    const errorNode = await screen.findByText(
+      "Конфликт с уже существующими данными. Попробуйте ещё раз.",
+    );
+    // `ui.md` §7, «Место ошибки»: над кнопками действия — проверено через
+    // положение узлов (`compareDocumentPosition`), тот же способ, что
+    // `PR #158 review` закрепило для производственного календаря.
+    const saveButton = screen.getByRole("button", { name: /Сохранить/ });
+    expect(
+      errorNode.compareDocumentPosition(saveButton) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it("no longer shows a stale 'successfully tested' marker after saving (danger 3)", async () => {
+    const saved = savedFixture();
+    let getCount = 0;
+    setAccessToken("token");
+    setFetchHandler((method, pathname) => {
+      if (method === "GET" && pathname === "/api/auth/me") {
+        return { status: 200, body: meResponse({ role: "system_admin", must_change_password: false }) };
+      }
+      if (method === "GET" && pathname === "/api/admin/ldap-settings") {
+        getCount += 1;
+        if (getCount === 1) {
+          return { status: 200, body: saved };
+        }
+        // Сервер уже обнулил last_tested_at/last_test_status при PUT
+        // (upsert_ldap_settings) — второй GET это подтверждает.
+        return { status: 200, body: { ...saved, last_tested_at: null, last_test_status: null } };
+      }
+      if (method === "PUT" && pathname === "/api/admin/ldap-settings") {
+        // Ответ PUT намеренно совпадает со СТАРЫМ состоянием, а не с тем,
+        // что вернёт следующий GET — если бы экран доверял телу ответа
+        // мутации вместо инвалидации и повторного запроса, отметка
+        // "Успешно" осталась бы на экране.
+        return { status: 200, body: saved };
+      }
+      return null;
+    });
+
+    renderApp("/admin/ldap-settings");
+    await screen.findByText("Последняя зафиксированная проверка: 01.09.2026 10:00 — Успешно");
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: /Сохранить/ }));
+
+    await screen.findByText("Последняя зафиксированная проверка: Ещё не проверялось");
+    expect(screen.queryByText(/Успешно/)).not.toBeInTheDocument();
+  });
+
+  it("invalidates ['me'] too, so the embedded-mode banner stays in sync after saving (danger 3)", async () => {
+    const saved = savedFixture();
+    let meCallCount = 0;
+    setAccessToken("token");
+    setFetchHandler((method, pathname) => {
+      if (method === "GET" && pathname === "/api/auth/me") {
+        meCallCount += 1;
+        return {
+          status: 200,
+          body: meResponse({
+            role: "system_admin",
+            must_change_password: false,
+            embedded_mode: meCallCount === 1,
+          }),
+        };
+      }
+      if (method === "GET" && pathname === "/api/admin/ldap-settings") {
+        return { status: 200, body: saved };
+      }
+      if (method === "PUT" && pathname === "/api/admin/ldap-settings") {
+        return { status: 200, body: saved };
+      }
+      return null;
+    });
+
+    renderApp("/admin/ldap-settings");
+    await screen.findByText(/Режим внедрения без LDAP/);
+    await screen.findByLabelText("Адрес сервера");
+    const callsBeforeSave = meCallCount;
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: /Сохранить/ }));
+
+    await vi.waitFor(() => expect(meCallCount).toBeGreaterThan(callsBeforeSave));
+    expect(screen.queryByText(/Режим внедрения без LDAP/)).not.toBeInTheDocument();
   });
 });

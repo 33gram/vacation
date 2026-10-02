@@ -3,6 +3,7 @@ import type { components } from "../api/generated/schema";
 type MeResponse = components["schemas"]["MeResponse"];
 type EmployeeOut = components["schemas"]["EmployeeOut"];
 type DepartmentOut = components["schemas"]["DepartmentOut"];
+type LdapSettingsOut = components["schemas"]["LdapSettingsOut"];
 
 export function meResponse(overrides: Partial<MeResponse> = {}): MeResponse {
   return {
@@ -53,6 +54,21 @@ export function departmentResponse(overrides: Partial<DepartmentOut> = {}): Depa
     name: "Отдел разработки",
     parent_id: null,
     head_employee_id: null,
+    ...overrides,
+  };
+}
+
+export function ldapSettingsResponse(overrides: Partial<LdapSettingsOut> = {}): LdapSettingsOut {
+  return {
+    id: 1,
+    server_url: "ldap://dc.company.local",
+    port: 389,
+    base_dn: "dc=company,dc=local",
+    bind_dn: "cn=svc-vacation,dc=company,dc=local",
+    user_match_attribute: "mail",
+    is_active: true,
+    last_tested_at: null,
+    last_test_status: null,
     ...overrides,
   };
 }

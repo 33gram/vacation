@@ -215,6 +215,8 @@ async def test_create_employee_rejects_terminated_manager(db_session, api_client
 async def test_create_employee_with_local_auth_creates_account_atomically(
     db_session, api_client
 ) -> None:
+    """`FR-AUTH-002/2` (пароль хранится только как необратимый хэш;
+    обязательная смена первичного пароля при первом входе)."""
     department = await make_department(db_session)
     account = await _make_admin(db_session)
 
@@ -680,6 +682,7 @@ async def test_create_employee_does_not_log_personal_data(db_session, api_client
 
 
 async def test_put_employee_switch_to_ldap_clears_local_password(db_session, api_client) -> None:
+    """`FR-AUTH-002/12`."""
     department = await make_department(db_session)
     employee = await make_employee(db_session, email="switch-to-ldap@company.local")
     await make_account(

@@ -92,8 +92,6 @@ def _concatenated_test_sources() -> str:
 _KNOWN_GAPS: dict[str, str] = {
     f"FR-EMP-001/{n}": "T-M1-23: закрывается коммитом по FR-EMP-001" for n in range(1, 8)
 } | {
-    f"FR-AUTH-002/{n}": "T-M1-23: закрывается коммитом по FR-AUTH-002" for n in range(1, 13)
-} | {
     f"FR-EMP-002/{n}": "T-M1-23: закрывается коммитом по FR-EMP-002" for n in range(1, 3)
 } | {
     f"FR-EMP-003/{n}": "T-M1-23: закрывается коммитом по FR-EMP-003" for n in range(1, 3)

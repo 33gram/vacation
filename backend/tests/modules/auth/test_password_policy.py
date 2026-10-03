@@ -28,6 +28,7 @@ def test_strong_password_with_no_context_is_accepted() -> None:
 
 
 def test_password_below_minimum_length_is_rejected_with_only_that_violation() -> None:
+    """`FR-AUTH-002/2` (минимальная длина)."""
     # 6 символов, все четыре класса, не в списке — изолирует именно
     # правило длины от остальных.
     with pytest.raises(WeakPasswordError) as exc_info:
@@ -102,6 +103,7 @@ def test_password_policy_violation_rejects_unregistered_code() -> None:
 
 
 def test_password_exceeding_72_bytes_is_rejected_in_isolation() -> None:
+    """`FR-AUTH-002/4`."""
     # 76 ASCII-байт (= 76 символов), все четыре класса, не в списке —
     # изолирует именно правило верхней границы от остальных.
     password = "Aa1!" * 19
@@ -207,6 +209,7 @@ def test_hash_password_rejects_input_over_bcrypt_limit() -> None:
 
 
 def test_password_with_only_lowercase_letters_is_rejected() -> None:
+    """`FR-AUTH-002/6`."""
     with pytest.raises(WeakPasswordError) as exc_info:
         validate_password_strength("qwertyui")
 
@@ -223,7 +226,8 @@ def test_password_with_trailing_space_is_rejected_by_composition() -> None:
     настоящего спецсимвола. Теперь пробел не в счёт — остаются только
     строчные буквы и цифра, два класса, состав не пройден. Отдельно
     от этого пароль нарушает и новый критерий «без пробелов» —
-    показывать оба нарушения сразу и есть цель FR-AUTH-002 v1.8."""
+    показывать оба нарушения сразу и есть цель FR-AUTH-002 v1.8.
+    `FR-AUTH-002/7`."""
     with pytest.raises(WeakPasswordError) as exc_info:
         validate_password_strength("abcdefg1 ")
 
@@ -288,6 +292,7 @@ def test_password_with_zero_width_joiner_is_rejected() -> None:
 
 
 def test_password_with_bell_control_character_is_rejected() -> None:
+    """`FR-AUTH-002/7`."""
     # U+0007 (BEL), категория Cc (управляющий) — не пробельный по
     # `str.isspace()`, отдельная категория символов от уже закрытых
     # пробельных.
@@ -321,7 +326,7 @@ def test_combining_acute_accent_does_not_count_as_a_special_character() -> None:
     класса (строчные + цифра) и не проходит состав — с ним, если бы
     комбинирующий знак ошибочно засчитывался за спецсимвол, состав был
     бы пройден (три класса из четырёх); проверяем, что этого не
-    происходит."""
+    происходит. `FR-AUTH-002/6`."""
     password_without_mark = "password1"
     with pytest.raises(WeakPasswordError) as exc_info:
         validate_password_strength(password_without_mark)
@@ -365,6 +370,7 @@ def test_password_meeting_composition_can_still_be_a_common_password() -> None:
 
 
 def test_cyrillic_common_password_is_rejected() -> None:
+    """`FR-AUTH-002/9`."""
     with pytest.raises(WeakPasswordError) as exc_info:
         validate_password_strength("Пароль1")
 
@@ -382,6 +388,7 @@ def test_cyrillic_keyboard_layout_pattern_is_rejected() -> None:
 
 
 def test_password_containing_login_is_rejected() -> None:
+    """`FR-AUTH-002/8`."""
     with pytest.raises(WeakPasswordError) as exc_info:
         validate_password_strength("Vasiliev2026!", login="Vasiliev")
 
@@ -428,6 +435,7 @@ def test_short_name_token_is_not_rejected_in_the_middle_of_the_password() -> Non
 
 
 def test_long_name_token_is_rejected_anywhere_in_the_password() -> None:
+    """`FR-AUTH-002/8`."""
     # «Петрович» (8 символов, >= _LONG_NAME_TOKEN_LENGTH) — запрещён в
     # любом месте пароля, не только в начале, в отличие от «Ли» выше.
     with pytest.raises(WeakPasswordError) as exc_info:
@@ -480,7 +488,7 @@ def test_transliteration_is_required_to_catch_the_name(monkeypatch) -> None:
 
 
 def test_all_violations_are_reported_at_once() -> None:
-    """FR-AUTH-002 v1.8: «показывать все невыполненные требования
+    """`FR-AUTH-002/10`: «показывать все невыполненные требования
     сразу, а не первое из них». Пароль «иван» короче минимума, состоит
     из одного класса символов (строчные кириллические буквы) и
     совпадает с токеном ФИО — три разных нарушения одновременно, ни

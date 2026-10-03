@@ -12,6 +12,7 @@ PASSWORD = "CorrectHorseBatteryStaple"
 
 
 async def test_valid_credentials_via_employee_email_succeed(db_session) -> None:
+    """`FR-AUTH-002/1`."""
     employee = await make_employee(db_session, email="ivanov@company.local")
     await make_account(
         db_session,
@@ -29,6 +30,7 @@ async def test_valid_credentials_via_employee_email_succeed(db_session) -> None:
 
 
 async def test_valid_credentials_via_service_login_succeed(db_session) -> None:
+    """`FR-AUTH-002/1` (служебная/административная учётная запись)."""
     await make_account(
         db_session,
         login="admin",
@@ -77,6 +79,7 @@ async def test_whitespace_only_password_is_rejected(db_session) -> None:
 
 
 async def test_empty_password_is_rejected_even_for_unknown_login(db_session) -> None:
+    """`FR-AUTH-004/1`."""
     # Проверка порядка: пустой пароль отклоняется независимо от того,
     # существует ли логин (FR-AUTH-004) — не только когда пароль в БД есть
     # с чем сравнить.
@@ -118,6 +121,7 @@ async def test_oversized_password_is_rejected_before_verifying_the_hash(
 
 
 async def test_boundary_password_with_appended_tail_is_rejected(db_session) -> None:
+    """`FR-AUTH-002/5`."""
     # PR #140 review (второй круг), замечание 1, живая коллизия: пароль
     # РОВНО на 72-байтовой границе легален и должен пройти как есть. До
     # этой правки тот же пароль с ЛЮБЫМ хвостом после байта 72 тоже
@@ -169,6 +173,8 @@ async def test_ldap_only_account_cannot_authenticate_locally(db_session) -> None
 
 
 async def test_repeated_failures_lock_the_account(db_session) -> None:
+    """`FR-AUTH-002/2` (ограничение неуспешных попыток, временная
+    блокировка)."""
     employee = await make_employee(db_session, email="fedorova@company.local")
     account = await make_account(
         db_session,
@@ -211,6 +217,7 @@ async def test_successful_login_resets_failed_attempts(db_session) -> None:
 
 
 async def test_disabled_account_denies_access_after_correct_password(db_session) -> None:
+    """`FR-AUTH-004/2` (учётная запись отключена)."""
     employee = await make_employee(db_session, email="disabled@company.local")
     await make_account(
         db_session,
@@ -226,6 +233,8 @@ async def test_disabled_account_denies_access_after_correct_password(db_session)
 
 
 async def test_deactivated_employee_denies_access_after_correct_password(db_session) -> None:
+    """`FR-AUTH-004/2` (карточка сотрудника деактивирована) - негативный
+    сценарий, явно названный в задании `T-M1-23`."""
     employee = await make_employee(
         db_session, email="terminated@company.local", employment_status="terminated"
     )

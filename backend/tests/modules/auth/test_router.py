@@ -730,7 +730,10 @@ async def test_password_policy_is_available_before_first_password_change(
 
 async def test_password_reset_request_endpoint_does_not_exist(api_client) -> None:
     """T-M1-30: восстановление пароля по e-mail — отдельная задача, не эта
-    ветка. Эндпоинт не должен существовать ни в каком виде (не 501/200)."""
+    ветка. Эндпоинт не должен существовать ни в каком виде (не 501/200).
+    `FR-AUTH-002/11` сегодня не выполняется кодом вовсе - реализация
+    отложена до `T-M1-30` (`T-M1-23`, проверка покрытия EARS-критериев:
+    этот тест фиксирует отсутствие, а не закрывает критерий)."""
     response = await api_client.post(
         "/api/auth/password/reset-request", json={"login": "someone@company.local"}
     )

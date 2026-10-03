@@ -81,6 +81,7 @@ def _gated_endpoints() -> list[tuple[str, str]]:
 async def test_every_endpoint_outside_the_exemption_list_denies_pending_password_change(
     db_session: AsyncSession, api_client: AsyncClient
 ) -> None:
+    """`FR-AUTH-002/3`."""
     account = await make_account(
         db_session, login="gate-admin", role="system_admin", must_change_password=True
     )

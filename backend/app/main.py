@@ -3,6 +3,8 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import IntegrityError
@@ -112,6 +114,62 @@ async def _handle_import_file_error(_: Request, exc: ImportFileError) -> JSONRes
     # или запись поднимут `ImportFileError` из места, которое не
     # обернули локально (PR #139 review, коммит 1).
     return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+
+@app.exception_handler(RequestValidationError)
+async def _handle_request_validation_error(
+    _: Request, exc: RequestValidationError
+) -> JSONResponse:
+    """`T-M1-40`, `NFR-SEC-004` (и `NFR-SEC-001`/`NFR-SEC-002` для
+    персональных данных): собственный обработчик FastAPI для этого
+    исключения (`fastapi.exception_handlers.
+    request_validation_exception_handler`) возвращает
+    `jsonable_encoder(exc.errors())` как есть, а `exc.errors()` (pydantic
+    v2) кладёт ПРИСЛАННОЕ ЗНАЧЕНИЕ в `input` каждой ошибки, а для части
+    валидаторов — ещё и в `ctx`. Проверено прогоном на поднятом
+    инстансе, а не рассуждением о pydantic: пароль длиннее
+    `MAX_PASSWORD_LENGTH_CHARS` возвращается в `input` как есть; то же
+    самое — с нестроковым `bind_password` (пароль служебной записи LDAP,
+    `LdapSettingsIn`/`LdapTestRequest` — там `max_length` нет вовсе, утечка
+    не привязана именно к этому ограничению); неверный тип `full_name`/
+    `email` кладёт присланное значение в `input` точно так же
+    (персональные данные, не пароль — `NFR-SEC-001`/`NFR-SEC-002`).
+
+    Тело пересобирается БЕЛЫМ СПИСКОМ из трёх полей (`loc`/`msg`/`type`),
+    а не удалением `input`/`ctx` из исходного словаря: белый список
+    остаётся безопасным, даже если будущая версия pydantic/FastAPI
+    добавит ещё один ключ, в который попадёт присланное значение, — чёрный
+    список такой ключ пропустил бы молча. Это же совпадает с уже
+    опубликованным контрактом OpenAPI: схема `ValidationError` в
+    сгенерированной спецификации всегда объявляла только `loc`/`msg`/
+    `type` (встроенная в FastAPI модель документации `input`/`ctx` не
+    включает никогда) — то есть прежнее поведение уже расходилось со
+    схемой, и дело не только в утечке секретов, но и в недокументированных
+    полях сверх контракта.
+
+    `ctx` вычищается наравне с `input` — проверено прогоном на каждом виде
+    валидатора, который сегодня встречается в схемах (превышение длины,
+    неверный тип, неверный `Literal`, неверная дата): везде только
+    диагностические числа/строки — `{"max_length": 128, "actual_length":
+    210, "field_type": "Value"}` для слишком длинного пароля, `{"expected":
+    "'standard' or 'shift'"}` для неверного перечисления, `{"error":
+    "invalid character in year"}` для неверной даты, — присланного значения
+    в `ctx` не оказалось ни разу. Вычищается всё равно, тем же белым
+    списком, а не оставляется как «проверено безопасным»: валидатор поля,
+    которое прогон не затронул, может положить значение в `ctx` и в
+    будущем, и белый список защищает от этого без необходимости перепроверять.
+
+    Код ответа остаётся 422, форма — `{"detail": [...]}`: это ровно то, что
+    уже описывает `openapi-export`/сгенерированный клиент, а не новый
+    контракт.
+
+    Из присланного тела в этом обработчике ничего не логируется — утечка в
+    лог та же утечка (`NFR-SEC-004`)."""
+    sanitized_errors = [
+        {"loc": error.get("loc"), "msg": error.get("msg"), "type": error.get("type")}
+        for error in exc.errors()
+    ]
+    return JSONResponse(status_code=422, content={"detail": jsonable_encoder(sanitized_errors)})
 
 
 @app.exception_handler(IntegrityError)

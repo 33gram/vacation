@@ -49,6 +49,45 @@ describe("employee card (T-M1-19, FR-EMP-001)", () => {
     expect(screen.queryByText("1", { exact: true })).not.toBeInTheDocument();
   });
 
+  it("shows the shift-schedule flag in the card for a shift employee (FR-EMP-001/7)", async () => {
+    // Только "отображается в карточке" - часть критерия про отгулы
+    // (FR-DAYOFF-001) и общий календарь (FR-CAL-001) не проверяется
+    // здесь: ни один из этих разделов ещё не реализован (M3/M5), и
+    // учитывать сменный график им пока нечем.
+    const shiftEmployee = employeeResponse({
+      id: 3,
+      full_name: "Сидоров Сидор Сидорович",
+      department_id: 1,
+      manager_id: 1,
+      work_schedule_type: "shift",
+    });
+    setAccessToken("token");
+    setFetchHandler((method, pathname) => {
+      if (method === "GET" && pathname === "/api/auth/me") {
+        return { status: 200, body: meResponse({ role: "hr_admin", must_change_password: false }) };
+      }
+      if (method === "GET" && pathname === "/api/departments") {
+        return { status: 200, body: DEPARTMENTS };
+      }
+      if (method === "GET" && pathname === "/api/employees") {
+        return { status: 200, body: [MANAGER, shiftEmployee] };
+      }
+      if (method === "GET" && pathname === "/api/employees/3") {
+        return { status: 200, body: shiftEmployee };
+      }
+      return null;
+    });
+
+    renderApp("/employees/3");
+
+    await screen.findByRole("heading", { name: "Сидоров Сидор Сидорович" });
+    expect(screen.getByText("Сменный")).toBeInTheDocument();
+    // Отрицательный контроль на саму идею теста: стандартный график не
+    // показан рядом - подпись зависит от присланного значения, а не
+    // захардкожена.
+    expect(screen.queryByText("Стандартный")).not.toBeInTheDocument();
+  });
+
   it.each(["employee", "accountant"])("denies %s the card, showing 'Нет доступа к записи'", async (role) => {
     mockBackend(role);
 

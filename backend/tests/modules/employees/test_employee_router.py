@@ -101,6 +101,9 @@ async def test_create_employee_requires_role(db_session, api_client) -> None:
 
 
 async def test_create_employee_missing_fields_returns_full_list(db_session, api_client) -> None:
+    """`FR-EMP-001/1` (ровно этот список обязательных полей) и
+    `FR-EMP-001/6` (отказ блокирует сохранение и показывает список
+    отсутствующих полей целиком, не одно поле)."""
     account = await _make_admin(db_session)
 
     response = await api_client.post("/api/employees", json={}, headers=bearer_header(account))
@@ -119,6 +122,7 @@ async def test_create_employee_missing_fields_returns_full_list(db_session, api_
 
 
 async def test_create_employee_without_manager_succeeds(db_session, api_client) -> None:
+    """`FR-EMP-001/2` (вершина иерархии — руководитель не обязателен)."""
     # FR-EMP-001 в редакции v1.7: вершина иерархии — руководитель не
     # обязателен.
     department = await make_department(db_session)
@@ -132,6 +136,56 @@ async def test_create_employee_without_manager_succeeds(db_session, api_client) 
 
     assert response.status_code == 201
     assert response.json()["manager_id"] is None
+
+
+async def test_more_than_one_hierarchy_root_is_allowed_at_once(db_session, api_client) -> None:
+    """`FR-EMP-001/2`: «Системе допускается более одной вершины иерархии
+    одновременно... Система не требует единственного корня дерева».
+    `test_create_employee_without_manager_succeeds` выше показывает, что
+    ОДНА вершина без руководителя создаётся - этот тест отдельно
+    показывает, что их можно создать ДВЕ: ничто в `employee_service`
+    (`_require_active_manager_reference` и соседние проверки) не
+    сравнивает новую карточку с уже существующими вершинами, так что
+    вторая создаётся без конфликта с первой."""
+    department = await make_department(db_session)
+    account = await _make_admin(db_session)
+
+    first = await api_client.post(
+        "/api/employees",
+        json=_employee_payload(department_id=department.id),
+        headers=bearer_header(account),
+    )
+    second = await api_client.post(
+        "/api/employees",
+        json=_employee_payload(department_id=department.id),
+        headers=bearer_header(account),
+    )
+
+    assert first.status_code == 201
+    assert second.status_code == 201
+    assert first.json()["manager_id"] is None
+    assert second.json()["manager_id"] is None
+    assert first.json()["id"] != second.json()["id"]
+
+
+async def test_create_employee_without_leave_category_succeeds(db_session, api_client) -> None:
+    """`FR-EMP-001/3`: поле «категория для расчёта удлинённого/
+    дополнительного отпуска» необязательно на этапе MVP - `_employee_
+    payload()` не включает его вовсе, и каждый тест создания, который
+    его не передаёт, уже неявно это показывает; этот тест делает
+    проверку явной и отдельно подтверждает сохранённое значение `None`,
+    а не просто отсутствие ошибки."""
+    department = await make_department(db_session)
+    account = await _make_admin(db_session)
+
+    response = await api_client.post(
+        "/api/employees",
+        json=_employee_payload(department_id=department.id),
+        headers=bearer_header(account),
+    )
+
+    assert response.status_code == 201
+    assert response.json()["leave_category"] is None
 
 
 async def test_create_employee_rejects_nonexistent_department(db_session, api_client) -> None:
@@ -216,7 +270,11 @@ async def test_create_employee_with_local_auth_creates_account_atomically(
     db_session, api_client
 ) -> None:
     """`FR-AUTH-002/2` (пароль хранится только как необратимый хэш;
-    обязательная смена первичного пароля при первом входе)."""
+    обязательная смена первичного пароля при первом входе).
+    `FR-EMP-001/4` (выбор локального пароля при создании карточки,
+    первичный пароль с обязательной сменой). `FR-EMP-001/5` (связанная
+    учётная запись создаётся с ролью по умолчанию «Сотрудник» -
+    `new_account.role == "employee"` ниже)."""
     department = await make_department(db_session)
     account = await _make_admin(db_session)
 
@@ -320,6 +378,7 @@ async def test_create_employee_ldap_auth_rejects_password(db_session, api_client
 
 
 async def test_create_employee_defaults_to_ldap_auth(db_session, api_client) -> None:
+    """`FR-EMP-001/4` (способ входа по умолчанию - корпоративный каталог)."""
     department = await make_department(db_session)
     account = await _make_admin(db_session)
 

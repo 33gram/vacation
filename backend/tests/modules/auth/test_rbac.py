@@ -55,6 +55,7 @@ async def test_get_current_account_rejects_refresh_token(db_session) -> None:
 
 
 async def test_get_current_account_rejects_inactive_account(db_session) -> None:
+    """`FR-AUTH-004/2` (учётная запись отключена)."""
     # FR-AUTH-004: `enforce_access` заворачивает отключённую учётную
     # запись в `AccessDeniedError` (403 через обработчик в `main.py`), а
     # не в `HTTPException` — так и вход, и каждый следующий запрос
@@ -74,6 +75,7 @@ async def test_get_current_account_rejects_inactive_account(db_session) -> None:
 
 
 async def test_get_current_account_rejects_deactivated_employee_card(db_session) -> None:
+    """`FR-AUTH-004/2` (карточка сотрудника деактивирована)."""
     # FR-AUTH-004: токен остаётся валидным и `accounts.is_active` не
     # трогали — деактивация именно карточки сотрудника должна отказывать
     # на каждом запросе, а не только при следующем входе.
@@ -90,6 +92,8 @@ async def test_get_current_account_rejects_deactivated_employee_card(db_session)
 
 
 async def test_enforce_access_rejects_missing_employee_card(db_session) -> None:
+    """`FR-AUTH-004/2` (карточка сотрудника отсутствует вовсе) -
+    негативный сценарий, явно названный в задании `T-M1-23`."""
     # FR-AUTH-004: карточка сотрудника отсутствует (не то же самое, что
     # деактивирована) — доступ тоже должен отказать.
     # Через `get_current_account`/сохранённый `Account` эту ветку не
@@ -121,6 +125,11 @@ async def test_get_current_account_allows_bootstrap_admin_without_employee_card(
 
 
 async def test_require_roles_allows_matching_role(db_session) -> None:
+    """`FR-AUTH-004/3`: fixture uses `auth_type="ldap"`, but
+    `require_roles`/`_dependency` above reads only `account.role` - it
+    has no branch on `auth_type` at all, so this test (and the denial
+    test below) already demonstrate the same matrix check a local
+    account would get, not something specific to LDAP."""
     employee = await make_employee(db_session, email="fedorova@company.local")
     account = await make_account(
         db_session, employee_id=employee.id, auth_type="ldap", role="accountant"

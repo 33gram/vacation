@@ -244,7 +244,56 @@ async def test_login_uses_local_auth_in_embedded_mode(db_session, api_client) ->
     assert response.status_code == 200
 
 
-async def test_login_rejects_empty_password_before_ldap_bind(db_session, api_client) -> None:
+async def test_login_rejects_empty_password_in_embedded_mode(db_session, api_client) -> None:
+    """`FR-AUTH-004/1`, half of it: no LDAP settings exist here, so the
+    system is in embedded mode and `/api/auth/login` dispatches to
+    `authenticate_local`, not to `authenticate_via_ldap` - renamed from
+    `..._before_ldap_bind` (`T-M1-23` review of this branch's own
+    citation work): that name claimed to test the LDAP path
+    specifically, but with no active settings this request never
+    reaches it. See `test_login_rejects_empty_password_before_ldap_
+    bind_when_ldap_active` below for the actual LDAP-path case."""
+    response = await api_client.post(
+        "/api/auth/login", json={"login": "ivanov@company.local", "password": ""}
+    )
+
+    assert response.status_code == 401
+
+
+async def test_login_rejects_empty_password_before_ldap_bind_when_ldap_active(
+    db_session, api_client, monkeypatch
+) -> None:
+    """`FR-AUTH-004/1`, the other half: with LDAP actually active and
+    verified (so this request really is dispatched to
+    `authenticate_via_ldap`), an empty password is still rejected
+    BEFORE any bind is attempted (RFC 4513 unauthenticated bind) -
+    proven by patching the bind/search call to raise if it's ever
+    invoked, not just by asserting the response code, which an
+    embedded-mode short-circuit (as the renamed test above turned out
+    to be) would satisfy just as well without ever reaching LDAP."""
+
+    def _fail_if_called(*_args: object, **_kwargs: object) -> str:
+        raise AssertionError("ldap_bind_and_search must not run for an empty password")
+
+    monkeypatch.setattr(
+        "app.modules.auth.ldap_service.ldap_bind_and_search", _fail_if_called
+    )
+
+    settings_row = LdapSettings(
+        server_url=LDAP_TEST_HOST,
+        port=LDAP_TEST_PORT,
+        base_dn="dc=company,dc=local",
+        bind_dn="cn=admin,dc=company,dc=local",
+        bind_password_encrypted=encrypt(
+            "changeme", key=get_settings().ldap_password_encryption_key
+        ),
+        user_match_attribute="mail",
+        is_active=True,
+        last_test_status="success",
+    )
+    db_session.add(settings_row)
+    await db_session.flush()
+
     response = await api_client.post(
         "/api/auth/login", json={"login": "ivanov@company.local", "password": ""}
     )
@@ -601,6 +650,9 @@ async def test_me_requires_authentication(api_client) -> None:
 async def test_deactivated_employee_card_denies_every_request_not_only_login(
     db_session, api_client
 ) -> None:
+    """`FR-AUTH-004/2` (сообщение с указанием обратиться к
+    HR-администратору - проверено дословно через
+    `_assert_denied_with_hr_message`)."""
     # Токен валиден, `accounts.is_active` не трогали — только карточку
     # сотрудника переводим в неактивный статус *после* выдачи токена, как
     # при увольнении. И `GET /api/auth/me` (`get_current_account_allowing_

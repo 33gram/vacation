@@ -70,9 +70,23 @@ def _numbered_criteria() -> set[str]:
 
 
 def _concatenated_test_sources() -> str:
+    # Исключает САМ СЕБЯ: `_KNOWN_GAPS`'s ключи-одиночки (не сгенерированные
+    # циклом по `range`, как у `f"FR-AUTH-002/{n}"`) неизбежно содержат
+    # полный текст ID буквально (`"FR-AUTH-003/3"`) - без исключения
+    # собственного файла из скана каждый такой ключ немедленно считался бы
+    # "упомянутым" СОБСТВЕННЫМ присутствием в `_KNOWN_GAPS`, а не настоящим
+    # тестом, и проверка на устаревшую запись (`stale_entries`) ложно
+    # срабатывала бы на нём при каждом прогоне. Найдено прогоном, не
+    # рассуждением: добавление первой же одиночной записи (`FR-AUTH-003/3`)
+    # немедленно провалило чек со "запись устарела".
+    this_file = Path(__file__).resolve()
     backend_tests = _REPO_ROOT / "backend" / "tests"
     frontend_src = _REPO_ROOT / "frontend" / "src"
-    chunks = [path.read_text(encoding="utf-8") for path in backend_tests.rglob("*.py")]
+    chunks = [
+        path.read_text(encoding="utf-8")
+        for path in backend_tests.rglob("*.py")
+        if path.resolve() != this_file
+    ]
     chunks += [
         path.read_text(encoding="utf-8")
         for path in frontend_src.rglob("*")
@@ -109,8 +123,6 @@ _KNOWN_GAPS: dict[str, str] = {
         "аутентификации из режима внедрения на LDAP) в числе целей "
         "ретроактивного подключения middleware записи аудита"
     )
-} | {
-    f"FR-AUTH-004/{n}": "T-M1-23: закрывается коммитом по FR-AUTH-004" for n in range(1, 4)
 }
 
 

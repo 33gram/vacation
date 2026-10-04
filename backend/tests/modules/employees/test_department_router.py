@@ -240,6 +240,8 @@ async def test_put_departments_rejects_three_node_cycle(db_session, api_client) 
 async def test_put_departments_allows_arbitrary_nesting_without_cycle(
     db_session, api_client
 ) -> None:
+    """`FR-EMP-002/1` (дерево произвольной вложенности) - цепочка
+    A -> B -> C, не один уровень."""
     department_a = await make_department(db_session, name="A2")
     department_b = await make_department(db_session, name="B2", parent_id=department_a.id)
     department_c = await make_department(db_session, name="C2")

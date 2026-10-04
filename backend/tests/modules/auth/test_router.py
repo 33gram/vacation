@@ -225,6 +225,9 @@ async def test_login_local_rejects_cyrillic_password_over_the_byte_boundary(
 
 
 async def test_login_uses_local_auth_in_embedded_mode(db_session, api_client) -> None:
+    """`FR-AUTH-003/1` (вход всех пользователей локально, пока LDAP не
+    настроен) - предупреждение администратору про режим внедрения
+    проверяется отдельно, на фронтенде (`authShell.test.tsx`)."""
     employee = await make_employee(db_session, email="embedded@company.local")
     await make_account(
         db_session,
@@ -266,6 +269,8 @@ async def test_login_rejects_oversized_password_before_hashing(api_client) -> No
 
 @requires_ldap
 async def test_login_uses_ldap_when_active_settings_exist(db_session, api_client) -> None:
+    """`FR-AUTH-003/2` (сохранение и успешная проверка переключают способ
+    входа по умолчанию на каталог)."""
     settings_row = LdapSettings(
         server_url=LDAP_TEST_HOST,
         port=LDAP_TEST_PORT,
@@ -295,6 +300,14 @@ async def test_login_uses_ldap_when_active_settings_exist(db_session, api_client
 async def test_login_dispatches_to_local_for_local_auth_employee_even_with_ldap_active(
     db_session, api_client
 ) -> None:
+    """`FR-AUTH-003/2` (сохраняя при этом доступ учётных записей с явно
+    выбранным локальным паролем). Диспетчеризация (`local_service.
+    uses_local_auth`) смотрит только на `accounts.auth_type`, не на то,
+    привязана ли запись к карточке сотрудника, - тот же путь обслуживает
+    и служебные/административные учётные записи (`FR-AUTH-005`), для
+    них отдельного теста с активным LDAP не заведено: код один и тот же,
+    а фикстура сотрудника здесь ближе к реальному сценарию, который
+    ловит T-M1-32."""
     # T-M1-32/FR-AUTH-003: LDAP настроен и подтверждён (`last_test_status
     # = "success"`), но у этого сотрудника явно выбран локальный пароль
     # — основной `/api/auth/login` обязан обслужить его локально, а не

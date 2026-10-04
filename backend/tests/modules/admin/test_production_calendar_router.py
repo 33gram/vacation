@@ -42,6 +42,12 @@ async def test_get_empty_year_returns_empty_list(db_session, api_client) -> None
 
 
 async def test_put_loads_year_and_get_returns_it(db_session, api_client) -> None:
+    """`FR-ADMIN-003/1`, API half - uploading a year's calendar and
+    reading it back. The "интерфейс" (UI) half of this criterion is the
+    whole of frontend/src/pages/admin/ProductionCalendarPage.tsx and
+    its test file (T-M1-22) - a single screen is the entire
+    implementation of this one criterion, there's no narrower slice to
+    point at."""
     account = await _make_admin(db_session)
     payload = {
         "days": [

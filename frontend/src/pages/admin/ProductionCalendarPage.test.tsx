@@ -177,6 +177,11 @@ describe("production calendar is restricted to system_admin (T-M1-22 review)", (
 });
 
 describe("production calendar editing and saving (T-M1-22, FR-ADMIN-003)", () => {
+  // FR-ADMIN-003/1 (интерфейс редактирования производственного
+  // календаря) - this screen, end to end, is the whole implementation
+  // of that one criterion; this test is the clearest single
+  // demonstration of "edit", the loading/grid tests above cover
+  // "upload"/"view".
   it("editing one day sends the FULL year in the PUT body, not just the changed day", async () => {
     const year = CURRENT_YEAR;
     const fixture = fullYearFixture(year);

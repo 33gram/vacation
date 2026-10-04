@@ -60,6 +60,8 @@ async def test_import_rejects_unsupported_file_extension(db_session, api_client)
 
 
 async def test_import_creates_employees_and_returns_summary(db_session, api_client) -> None:
+    """`FR-EMP-003/2` (сводка: принято/отклонено/причины) - нулевой
+    случай без отклонений; смешанный случай - в тесте ниже."""
     await make_department(db_session, name="IT")
     admin = await _make_admin(db_session)
 
@@ -88,6 +90,10 @@ async def test_import_creates_employees_and_returns_summary(db_session, api_clie
 
 
 async def test_import_reports_row_errors_without_500(db_session, api_client) -> None:
+    """`FR-EMP-003/1` (построчный отчёт об ошибках без прерывания
+    загрузки корректных строк - строка 2 принята, строка 3 отклонена
+    по конкретному полю, запрос всё равно 200). `FR-EMP-003/2`
+    (ненулевой случай сводки: accepted_count/rejected_count вместе)."""
     await make_department(db_session, name="IT")
     admin = await _make_admin(db_session)
 

@@ -35,6 +35,17 @@ async def _make_admin(db_session, *, role: str = "hr_admin"):
 
 
 async def test_deactivate_employee_succeeds(db_session, api_client) -> None:
+    """`FR-EMP-004/1`, "блокировать подачу новых заявок" half only:
+    `account_row.is_active is False` below is what `enforce_access`
+    (T-M1-27) checks on every request, so a terminated employee is
+    refused everything, not specifically "a new leave request" (FR-REQ
+    doesn't exist yet to make a request with). The other half -
+    "зафиксировать итоговый остаток неиспользованного отпуска на дату
+    увольнения" - is NOT tested here or anywhere: it isn't implemented.
+    T-M1-12's own commit message (already done) names T-M1-37 as the
+    task that will add it, blocked on the leave_balances table
+    (T-M2-02/T-M2-05) not existing until M2 - not a gap this branch
+    found."""
     department = await make_department(db_session)
     employee = await make_employee(
         db_session, email="deact-target1@company.local", department_id=department.id

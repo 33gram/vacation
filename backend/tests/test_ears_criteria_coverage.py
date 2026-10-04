@@ -113,8 +113,6 @@ _KNOWN_GAPS: dict[str, str] = {
         "T-M3-16/T-M3-20 задачами, которые его реализуют"
     )
 } | {
-    f"FR-EMP-004/{n}": "T-M1-23: закрывается коммитом по FR-EMP-004" for n in range(1, 3)
-} | {
     f"FR-ADMIN-003/{n}": "T-M1-23: закрывается коммитом по FR-ADMIN-003" for n in range(1, 2)
 } | {
     f"FR-ADMIN-005/{n}": "T-M1-23: закрывается коммитом по FR-ADMIN-005" for n in range(1, 3)

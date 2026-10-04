@@ -568,6 +568,14 @@ async def test_get_employees_hides_terminated_by_default(db_session, api_client)
 
 
 async def test_get_employees_includes_terminated_when_requested(db_session, api_client) -> None:
+    """`FR-EMP-004/2`: сотрудник уволен (`employment_status =
+    "terminated"`, мягкое удаление, `NFR-DATA-001`), но карточка
+    остаётся доступной для отчётности, не удалена физически. Полная
+    история ОТСУТСТВИЙ (больничные/заявки/отгулы) и настраиваемый срок
+    хранения сюда не входят - ни одного вида отсутствия ещё не
+    реализовано (M2+), а срок хранения как бизнес-параметр - отдельная
+    задача `T-M7-05` (`NFR-DATA-001`), уже названная в `plan.md`/
+    `tasks.md`, не обнаруженная здесь впервые."""
     terminated_employee = await make_employee(
         db_session, email="gone2@company.local", employment_status="terminated"
     )

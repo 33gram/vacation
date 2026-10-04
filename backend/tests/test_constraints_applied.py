@@ -59,28 +59,56 @@ project's own `WORKDIR`, and not a real-world install target for
 anything else in these files) without hardcoding `/app` specifically -
 a reviewer measured, real, local-directory install is exactly the
 pattern this check exists to catch, by construction, not by a named
-path. A negative lookbehind keeps this generalization from treating
-`-c`'s OWN argument as an install target (`-c ../constraints.txt` reads
-as "constrained, with the wrong file" via `_HAS_CONSTRAINTS_FLAG`
-failing to match - not as "installing from `../`").
+path. Matching works token by token (each command split on whitespace),
+not via a single regex with a lookbehind over raw text: `-c`/
+`--constraint`'s OWN argument is simply the next token and is consumed
+as such, never re-examined as an install target - so `-c
+../constraints.txt` and `--constraint ./constraints.txt` both read as
+"constrained, with some path" (right or wrong), never as "installing
+from `../`" or "installing from `./`". `-c` and `--constraint` are the
+same flag to pip; both spellings are accepted, as is an optional `./`
+prefix on the path (`-c ./constraints.txt` is the same file as `-c
+constraints.txt`) - round 2 treated either of these as an unflagged
+violation, verified by running before the fix:
+    pip install -e . --constraint constraints.txt  -> flagged (wrong)
+    pip install -e . -c ./constraints.txt           -> flagged (wrong)
+`-c ../constraints.txt` (a different directory) stays a real violation -
+the acceptance is for an equivalent spelling of the SAME file, not for
+"any path ending in constraints.txt".
 
 Honest boundary (rule 8, CLAUDE.md): this is not a shell parser and does
-not try to be one. Two known, ACCEPTED false positives (verified by
-running, not merely asserted here):
+not try to be one. Because the install target is recognized by the SHAPE
+of a path, not by parsing shell syntax, there is a whole FAMILY of loud
+false positives: anything that looks like a local-path argument to `pip
+install` gets read as "installing the backend project", even when it is
+something else entirely. Examples actually run, not an exhaustive list:
   - A line-continuation split across two physical lines (`pip install
     -e ".[dev]"` ending the line with a backslash, with `-c
     constraints.txt` on the NEXT line) is flagged, because this module
     checks one physical line/command at a time and never joins
-    continuations. A real install written this way would need an
-    `_ALLOWED_WITHOUT_CONSTRAINTS` entry.
-  - A commented-out line (`# pip install -e .`) is flagged, because
-    `#` is not special to this module - it is text, not a shell.
-Both are loud failures on something harmless, not silent misses on
-something real - the deliberate direction to err in, given the choice.
-`-c` pointed at a DIFFERENT path (`-c ../constraints.txt`) is flagged as
-a violation on purpose, not a bug: `_HAS_CONSTRAINTS_FLAG` only accepts
-the literal `constraints.txt` in the project's own directory, verified
-by running.
+    continuations.
+  - A commented-out line (`# pip install -e .`) is flagged, because `#`
+    is not special to this module - it is text, not a shell.
+  - `pip install -r ./requirements.txt` is flagged, even though `-r`
+    installs from a requirements FILE, not the project.
+  - `pip install ./dist/pkg-1.0-py3-none-any.whl` is flagged, even
+    though it installs a built wheel, not this project's source.
+All four are loud failures on something harmless, not silent misses on
+something real - the deliberate direction to err in, given the choice. A
+real install written any of these ways would need an
+`_ALLOWED_WITHOUT_CONSTRAINTS` entry; none of these forms appears
+anywhere in this repository today.
+
+One known, ACCEPTED false NEGATIVE, left open on purpose: `-c
+constraints.txt-backup` reads as constrained, because
+`constraints.txt-backup` starts with the literal text `constraints.txt`
+and pip itself has no notion of a word boundary there - the regex used
+to recognize the flag's value stops at the same place a human skimming
+the line would. Narrowing the match to exclude a trailing suffix after
+`.txt` would need either a stricter grammar for the whole value token or
+an explicit list of what counts as "not really constraints.txt", and
+nothing in this repository has ever been named `constraints.txt-backup`
+- not worth the complexity for a file name nobody uses.
 """
 
 from __future__ import annotations
@@ -113,21 +141,23 @@ _skip_without_full_checkout = pytest.mark.skipif(
 
 _COMMAND_SEPARATOR = re.compile(r"&&|\|\||;")
 
-_PROJECT_INSTALL_TARGET = re.compile(
+# pip treats these as the exact same flag.
+_CONSTRAINTS_FLAGS = ("-c", "--constraint")
+
+_PROJECT_PATH_TOKEN = re.compile(
     r"""
-    (?:^|\s)                        # начало строки/команды или пробел перед токеном
-    (?:-e\s+)?                      # необязательный editable-флаг
-    (?<!-c\ )                       # не аргумент ПОСЛЕ -c (путь к constraints-файлу)
-    (?:
+    ^(?:
         '(?:\.{1,2}|~|/)[^'\s]*'    # путь в одинарных кавычках: '.', '/app', '.[dev]', ...
       | "(?:\.{1,2}|~|/)[^"\s]*"    # путь в двойных кавычках
-      | (?:\.{1,2}|~|/)[^\s;&|]*    # путь без кавычек: ., /app, ./sub[extra], ...
-    )
-    (?=\s|;|&|\||$)
+      | (?:\.{1,2}|~|/)\S*          # путь без кавычек: ., /app, ./sub[extra], ...
+    )$
     """,
     re.VERBOSE,
 )
-_HAS_CONSTRAINTS_FLAG = re.compile(r"-c\s+constraints\.txt\b")
+# Необязательный префикс "./" - "-c ./constraints.txt" и "-c constraints.txt"
+# называют один и тот же файл. "-c ../constraints.txt" (другой каталог)
+# сюда не попадает намеренно - это не то же самое исключение.
+_CONSTRAINTS_VALUE = re.compile(r"^(?:\./)?constraints\.txt\b")
 
 _ALLOWED_WITHOUT_CONSTRAINTS: dict[str, str] = {}
 
@@ -136,6 +166,34 @@ def _split_shell_commands(line: str) -> list[str]:
     # Не разбор shell: `&&`/`;`/`||` внутри кавычек не учитываются. Ни в
     # одном реальном `pip install` в этом репозитории такого нет.
     return [part for part in _COMMAND_SEPARATOR.split(line) if part.strip()]
+
+
+def _command_targets_backend_project(tokens: list[str]) -> bool:
+    # Токенизация по пробелам, не разбор shell: `-c`/`--constraint`
+    # потребляют СЛЕДУЮЩИЙ токен как значение флага и никогда не
+    # рассматриваются как цель установки сами по себе - без этого
+    # `--constraint ./constraints.txt` читался бы как "установка из ./".
+    skip_next = False
+    for token in tokens:
+        if skip_next:
+            skip_next = False
+            continue
+        if token in _CONSTRAINTS_FLAGS:
+            skip_next = True
+            continue
+        if token == "-e":
+            continue
+        if _PROJECT_PATH_TOKEN.match(token):
+            return True
+    return False
+
+
+def _command_has_constraints_flag(tokens: list[str]) -> bool:
+    for index, token in enumerate(tokens):
+        if token in _CONSTRAINTS_FLAGS and index + 1 < len(tokens):
+            if _CONSTRAINTS_VALUE.match(tokens[index + 1]):
+                return True
+    return False
 
 
 def find_unconstrained_project_installs(files: dict[str, str]) -> list[str]:
@@ -148,12 +206,13 @@ def find_unconstrained_project_installs(files: dict[str, str]) -> list[str]:
             for command in _split_shell_commands(line):
                 if "pip install" not in command:
                     continue
-                if not _PROJECT_INSTALL_TARGET.search(command):
+                tokens = command.split()
+                if not _command_targets_backend_project(tokens):
                     continue
                 stripped = command.strip()
                 if stripped in _ALLOWED_WITHOUT_CONSTRAINTS:
                     continue
-                if _HAS_CONSTRAINTS_FLAG.search(command):
+                if _command_has_constraints_flag(tokens):
                     continue
                 violations.append(f"{label}: {stripped}")
     return violations
@@ -271,6 +330,71 @@ def test_constraints_flag_pointing_elsewhere_is_still_a_violation() -> None:
     )
 
     assert len(violations) == 1
+
+
+def test_double_dash_constraint_spelling_is_accepted() -> None:
+    # PR #162 review, раунд 3: `-c` и `--constraint` - один и тот же флаг
+    # pip. До правки: ['Dockerfile: RUN pip install -e . --constraint
+    # constraints.txt'] - проверено прогоном, здесь должно быть [].
+    violations = find_unconstrained_project_installs(
+        {"Dockerfile": "RUN pip install -e . --constraint constraints.txt\n"}
+    )
+
+    assert violations == []
+
+
+def test_dot_slash_prefixed_constraints_path_is_accepted() -> None:
+    # PR #162 review, раунд 3: `./constraints.txt` - тот же файл, что
+    # `constraints.txt`. До правки: ['Dockerfile: RUN pip install -e . -c
+    # ./constraints.txt'] - проверено прогоном, здесь должно быть [].
+    violations = find_unconstrained_project_installs(
+        {"Dockerfile": "RUN pip install -e . -c ./constraints.txt\n"}
+    )
+
+    assert violations == []
+
+
+def test_double_dash_constraint_with_dot_slash_path_is_accepted_and_not_a_target() -> None:
+    # Обе принятые формы сразу, и то, ради чего токенизация, а не regex с
+    # lookbehind: `--constraint ./constraints.txt`'s `./constraints.txt`
+    # - аргумент флага, а не цель установки "из ./".
+    violations = find_unconstrained_project_installs(
+        {"Dockerfile": "RUN pip install -e . --constraint ./constraints.txt\n"}
+    )
+
+    assert violations == []
+
+
+def test_requirements_file_install_is_a_known_accepted_false_positive() -> None:
+    # Пример СЕМЕЙСТВА ложных срабатываний (докстринг модуля), не
+    # отдельный случай: `-r` ставит из файла требований, не из проекта,
+    # но цель распознаётся по форме пути, а не по флагу перед ней.
+    violations = find_unconstrained_project_installs(
+        {"Dockerfile": "RUN pip install -r ./requirements.txt\n"}
+    )
+
+    assert len(violations) == 1
+
+
+def test_wheel_file_install_is_a_known_accepted_false_positive() -> None:
+    # Тот же случай: путь к собранному колесу выглядит как путь к
+    # каталогу проекта для этого модуля.
+    violations = find_unconstrained_project_installs(
+        {"Dockerfile": "RUN pip install ./dist/pkg-1.0-py3-none-any.whl\n"}
+    )
+
+    assert len(violations) == 1
+
+
+def test_constraints_txt_backup_is_a_known_accepted_false_negative() -> None:
+    # Решено не закрывать (докстринг модуля): граница слова после `.txt`
+    # совпадает перед дефисом, `constraints.txt-backup` читается как
+    # закрепление. Ничего в репозитории так не называется.
+    violations = find_unconstrained_project_installs(
+        {"Dockerfile": "RUN pip install -e . -c constraints.txt-backup\n"}
+    )
+
+    assert violations == []
 
 
 def test_line_continuation_is_a_known_accepted_false_positive() -> None:

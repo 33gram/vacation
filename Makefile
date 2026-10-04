@@ -1,6 +1,11 @@
 COMPOSE = docker compose --env-file .env -f infra/docker-compose.yml
 
-.PHONY: up down logs test-backend test-frontend lint-backend lint-frontend openapi-export openapi-client check-conflict-markers check-task-checkbox
+# T-M1-43: версия pip-tools закреплена здесь же — иначе обновление
+# pip-compile само по себе могло бы поменять формат/порядок вывода и дать
+# диф, не связанный ни с одной реальной зависимостью.
+PIP_TOOLS_VERSION = 7.4.1
+
+.PHONY: up down logs test-backend test-frontend lint-backend lint-frontend openapi-export openapi-client check-conflict-markers check-task-checkbox lock-backend
 
 up:
 	@test -f .env || { echo "Нет .env — выполните: cp .env.example .env"; exit 1; }
@@ -54,3 +59,20 @@ check-conflict-markers:
 # события; см. docstring scripts/check_task_checkbox.py).
 check-task-checkbox:
 	python3 scripts/check_task_checkbox.py
+
+# T-M1-43: одноразовый контейнер `--platform linux/amd64`, НЕ обычный
+# `backend`-сервис `$(COMPOSE)` — у части пакетов состав зависимостей
+# платформенно-условный, а раннер CI и прод linux/amd64, тогда как
+# `backend`-сервис на arm64-хосте (например, macOS) сам тоже aarch64.
+# Результат не должен зависеть от архитектуры машины, которая выполняет
+# эту команду — см. заголовок backend/constraints.txt.
+lock-backend:
+	docker run --rm --platform linux/amd64 \
+		-v "$(CURDIR)/backend:/workspace" -w /workspace \
+		python:3.12-slim bash -c " \
+			pip install --no-cache-dir --quiet pip-tools==$(PIP_TOOLS_VERSION) && \
+			pip-compile --extra dev --strip-extras --no-header --quiet \
+				--output-file=/tmp/constraints.body.txt pyproject.toml && \
+			cat constraints.header.txt /tmp/constraints.body.txt > constraints.txt \
+		"
+	@echo "Перегенерировано: backend/constraints.txt. Обновление версий — отдельным коммитом (см. заголовок файла)."

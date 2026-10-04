@@ -6,6 +6,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 COPY pyproject.toml ./
+COPY constraints.txt ./
 COPY app ./app
 COPY alembic ./alembic
 COPY alembic.ini ./
@@ -13,9 +14,9 @@ COPY scripts ./scripts
 
 ARG INSTALL_DEV=false
 RUN if [ "$INSTALL_DEV" = "true" ]; then \
-      pip install --no-cache-dir -e ".[dev]"; \
+      pip install --no-cache-dir -e ".[dev]" -c constraints.txt; \
     else \
-      pip install --no-cache-dir -e .; \
+      pip install --no-cache-dir -e . -c constraints.txt; \
     fi
 
 EXPOSE 8000

@@ -110,6 +110,13 @@ async def test_get_ldap_settings_returns_null_when_none_configured(db_session, a
 
 
 async def test_put_ldap_settings_creates_and_never_leaks_password(db_session, api_client) -> None:
+    """`FR-ADMIN-005/1` (интерфейс настройки всех перечисленных
+    параметров: адрес/порт, base DN, служебная учётная запись, атрибут
+    сопоставления). `FR-ADMIN-005/2`, половина "явно сохранены с
+    предупреждением": сохранение происходит СРАЗУ, без проверки
+    соединения (`upsert_ldap_settings` - решение `T-M1-16`, предупреждение
+    - это непогашенный статус проверки, см. фронтенд-тест "shows 'ещё не
+    проверялось'...")."""
     account = await _make_admin(db_session)
 
     response = await api_client.put(
@@ -201,6 +208,9 @@ async def test_test_ldap_settings_succeeds_and_does_not_persist(db_session, api_
 async def test_test_ldap_settings_reports_failure_without_persisting(
     db_session, api_client
 ) -> None:
+    """`FR-ADMIN-005/1` (проверка соединения без сохранения
+    некорректных параметров - запрос с неверным паролем ничего не
+    сохраняет, `LdapSettings` в БД по-прежнему нет)."""
     account = await _make_admin(db_session)
 
     response = await api_client.post(

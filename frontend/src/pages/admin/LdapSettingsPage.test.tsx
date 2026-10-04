@@ -119,6 +119,10 @@ describe("LDAP settings, read only (T-M1-21, FR-ADMIN-005)", () => {
     expect(within(credentialsColumn).getByLabelText("Пароль служебной записи")).toBeInTheDocument();
   });
 
+  // FR-ADMIN-005/2, the other half ("явно сохранены с предупреждением"):
+  // this is the warning shown while a saved config hasn't been
+  // confirmed - the backend saves unconditionally (T-M1-16), the UI's
+  // own job is to make that state visible rather than look verified.
   it("shows 'ещё не проверялось' when the saved record has never been tested", async () => {
     mockBackend(ldapSettingsResponse({ last_tested_at: null, last_test_status: null }));
 

@@ -115,8 +115,6 @@ _KNOWN_GAPS: dict[str, str] = {
 } | {
     f"FR-ADMIN-003/{n}": "T-M1-23: закрывается коммитом по FR-ADMIN-003" for n in range(1, 2)
 } | {
-    f"FR-ADMIN-005/{n}": "T-M1-23: закрывается коммитом по FR-ADMIN-005" for n in range(1, 3)
-} | {
     "FR-AUTH-003/3": (
         "не выполняется кодом вовсе - журнал аудита (FR-AUDIT-001) не "
         "реализован нигде в приложении (grep по audit_log/AuditLog пуст); "

@@ -5,6 +5,17 @@ COMPOSE = docker compose --env-file .env -f infra/docker-compose.yml
 # диф, не связанный ни с одной реальной зависимостью.
 PIP_TOOLS_VERSION = 7.4.1
 
+# PR #162 review: закреплено по digest, не по тегу `python:3.12-slim` —
+# тот же довод, что у `bitnamilegacy/openldap` в `infra/docker-compose.yml`:
+# тег может быть молча перезаписан другим содержимым, и тогда перегенерация
+# `constraints.txt` через месяц дала бы другое разрешение зависимостей по
+# причине, не связанной ни с одной из них самих, подрывая именно то
+# свойство (воспроизводимость), ради которого заведён этот файл.
+# Обновляется явно и отдельно от версий зависимостей: `docker pull
+# --platform linux/amd64 python:3.12-slim`, затем `docker image inspect
+# --platform linux/amd64 python:3.12-slim --format '{{index .RepoDigests 0}}'`.
+LOCK_BASE_IMAGE = python@sha256:02108f5d322dd89f1c9e552442c25acb0543dfdbc455693a5599624f20d9155d
+
 .PHONY: up down logs test-backend test-frontend lint-backend lint-frontend openapi-export openapi-client check-conflict-markers check-task-checkbox lock-backend
 
 up:
@@ -69,7 +80,7 @@ check-task-checkbox:
 lock-backend:
 	docker run --rm --platform linux/amd64 \
 		-v "$(CURDIR)/backend:/workspace" -w /workspace \
-		python:3.12-slim bash -c " \
+		$(LOCK_BASE_IMAGE) bash -c " \
 			pip install --no-cache-dir --quiet pip-tools==$(PIP_TOOLS_VERSION) && \
 			pip-compile --extra dev --strip-extras --no-header --quiet \
 				--output-file=/tmp/constraints.body.txt pyproject.toml && \

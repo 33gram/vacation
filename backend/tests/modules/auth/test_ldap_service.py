@@ -58,6 +58,12 @@ async def _make_active_ldap_settings(session) -> LdapSettings:
 
 
 async def test_successful_ldap_login_issues_tokens(db_session) -> None:
+    """`FR-AUTH-001/1` (логин и пароль проверяются в настоящем
+    корпоративном каталоге - тестовый OpenLDAP). `FR-AUTH-001/2`
+    (сопоставление по e-mail - `make_employee(email=...)`/логин
+    совпадают; сама роль в открытой сессии проверена отдельно, глубже,
+    в `test_rbac.py`, FR-AUTH-004/3 - здесь только факт, что сессия
+    вообще открывается после успешного сопоставления)."""
     await _make_active_ldap_settings(db_session)
     employee = await make_employee(db_session, email="ivanov@company.local")
     await make_account(db_session, employee_id=employee.id, auth_type="ldap", role="employee")

@@ -23,7 +23,7 @@ import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 
-from app.core.security import BCRYPT_MAX_INPUT_BYTES, exceeds_bcrypt_input_limit
+from app.core.security import BCRYPT_MAX_INPUT_BYTES, exceeds_bcrypt_input_limit, normalize_password
 
 # Переносятся в business_rules_config при реализации T-M2-09.
 DEFAULT_MIN_PASSWORD_LENGTH = 8
@@ -319,7 +319,17 @@ def validate_password_strength(
     вызывающий код, у которого контекста НЕТ (например, служебная
     учётная запись без карточки сотрудника — см. `bootstrap.py`),
     передаёт `None` явно, а не полагается на то, что правило "как-то
-    само" не сработает."""
+    само" не сработает.
+
+    `FR-AUTH-002/13` (T-M1-42): пароль приводится к NFC здесь же, ПЕРВОЙ
+    строкой — длина (`min_length`, байтовая граница), состав символов,
+    запрет логина/ФИО и список распространённых паролей все вычисляются
+    по НОРМАЛИЗОВАННОЙ форме, иначе один и тот же пароль, набранный в
+    NFC и в NFD, получал бы разные решения политики. Это ВТОРАЯ (не
+    единственная) точка приведения в приложении — см. докстринг
+    `normalize_password` (`core/security.py`) про остальные три и про
+    проверку, что все четыре точки на месте."""
+    password = normalize_password(password)
     violations: list[PasswordPolicyViolation] = []
     password_lower = password.lower()
     # T-M1-45: те же формулировки, что отдаёт `GET /api/auth/password-

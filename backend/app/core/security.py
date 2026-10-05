@@ -4,6 +4,7 @@ JWT-сессий (PyJWT, FR-AUTH-001/002)."""
 from __future__ import annotations
 
 import datetime
+import unicodedata
 from typing import Any
 
 import bcrypt
@@ -24,11 +25,38 @@ from app.core.time_utils import utcnow
 BCRYPT_MAX_INPUT_BYTES = 72
 
 
+def normalize_password(password: str) -> str:
+    """`FR-AUTH-002/13` (T-M1-42): единая точка приведения пароля к форме
+    Unicode NFC. «é» в форме NFC (один символ, U+00E9) и в форме NFD
+    («e» + комбинирующий акут U+0301) — разные байтовые строки разной
+    длины; без нормализации пароль, заданный на одной раскладке/ОС, мог
+    не подойти на другой, а проверки политики давали разные ответы на
+    один и тот же пароль в зависимости от формы ввода.
+
+    Не единственный вызов во всей кодовой базе (см. также
+    `validate_password_strength`, `modules/auth/password_policy.py`) —
+    это каждая из НИЗКОУРОВНЕВЫХ функций, через которые обязан пройти
+    любой путь, трогающий байты пароля (`exceeds_bcrypt_input_limit`,
+    `hash_password`, `verify_password` здесь и `validate_password_
+    strength` там); ни `local_service.authenticate_local`, ни
+    `bootstrap.ensure_bootstrap_admin`, ни `router.change_password` не
+    трогают пароль напрямую — они вызывают эти четыре функции, то есть
+    покрыты транзитивно, без собственного вызова. Проверка, что все
+    четыре функции действительно вызывают `normalize_password`, —
+    `backend/tests/test_password_normalization_coverage.py` (по
+    аналогии с `test_endpoint_auth_coverage.py`/`test_constraints_
+    applied.py` — перечисление по сигнатуре функции, не договорённость).
+    """
+    return unicodedata.normalize("NFC", password)
+
+
 def exceeds_bcrypt_input_limit(password: str) -> bool:
+    password = normalize_password(password)
     return len(password.encode("utf-8")) > BCRYPT_MAX_INPUT_BYTES
 
 
 def hash_password(password: str) -> str:
+    password = normalize_password(password)
     if exceeds_bcrypt_input_limit(password):
         # Сетка НЕ вместо дружелюбных проверок выше по стеку (парольная
         # политика, вход, bootstrap) — они остаются и дают понятное
@@ -44,6 +72,7 @@ def hash_password(password: str) -> str:
 
 
 def verify_password(password: str, password_hash: str) -> bool:
+    password = normalize_password(password)
     try:
         return bcrypt.checkpw(password.encode("utf-8"), password_hash.encode("utf-8"))
     except ValueError:

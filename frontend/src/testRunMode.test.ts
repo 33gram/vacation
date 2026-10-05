@@ -24,21 +24,47 @@ import viteConfigText from "../vite.config.ts?raw";
 import setupTestsText from "./setupTests.ts?raw";
 
 /**
- * Found by running, not by inspection: `vite.config.ts`'s own comment
- * explaining this tripwire quotes `` `fileParallelism: false` `` by name
- * (to say what it is), which is a literal, unbroken match for
- * `/fileParallelism:\s*false\b/` all by itself - deleting the real
- * config line left this check green, because the explanation of the
- * setting satisfied the regex meant to verify the setting. Stripping
- * comment-only lines before matching closes that; it only needs to
- * handle lines that are ENTIRELY a comment, since neither file in this
- * repository puts a trailing `// comment` after a real config value on
- * the same line.
+ * Found by running, not by inspection, twice over:
+ *
+ * (1) `vite.config.ts`'s own comment explaining this tripwire quotes
+ * `` `fileParallelism: false` `` by name (to say what it is), which is a
+ * literal, unbroken match for `/fileParallelism:\s*false\b/` all by
+ * itself - deleting the real config line left this check green, because
+ * the explanation of the setting satisfied the regex meant to verify
+ * the setting. First fix: strip whole-line comments before matching.
+ *
+ * (2) That first fix only dropped lines that were a comment IN FULL, so
+ * the same class of regression survived in tail form - confirmed by
+ * running this exact line through the pre-fix version of this function:
+ * `"testTimeout: 15000, // было testTimeout: 5000 по T-M1-54"` came back
+ * unchanged, because the line itself isn't a comment, only everything
+ * after its `//` is. The test matching for `testTimeout: 5000` then
+ * passed against a file where the real value had been raised to 15000 -
+ * exactly the shape PR #153's two rounds actually took (raise the
+ * window, leave a comment naming the old value). Second fix, this
+ * round: strip from the first `//` to the end of EVERY line, not just
+ * lines that are nothing but a comment.
+ *
+ * This drops `/// <reference types="vitest/config" />` from
+ * `vite.config.ts`'s first line too (everything from its first `//`
+ * onward, which here is the whole line) - harmless, since no check in
+ * this file searches for that directive; noted here so the next reader
+ * does not mistake its disappearance from the compared text for a bug.
+ *
+ * New boundary this introduces, verified rather than assumed: stripping
+ * from the first `//` breaks if either file ever puts `//` inside a
+ * string literal before the config value on that line (a URL in a
+ * config value, for instance) - the "comment" would start too early and
+ * eat real content. Checked today, not merely assumed: grepping both
+ * files for a pair of slashes inside a quoted string returns nothing.
  */
 function withoutCommentLines(text: string): string {
   return text
     .split("\n")
-    .filter((line) => !line.trim().startsWith("//"))
+    .map((line) => {
+      const commentStart = line.indexOf("//");
+      return commentStart === -1 ? line : line.slice(0, commentStart);
+    })
     .join("\n");
 }
 
@@ -58,6 +84,20 @@ function measuredExplanation(settingDescription: string): string {
     "not as a side effect of making a build pass."
   );
 }
+
+describe("withoutCommentLines strips a trailing comment, not just whole-line ones", () => {
+  it("drops a trailing comment citing the old value, so a raised real value is caught", () => {
+    // PR #163 review, round 2: this is exactly the regression the
+    // tripwire exists to catch - the real value raised back up, with
+    // the old (correct) value quoted in a trailing comment on the same
+    // line. A whole-line-only comment stripper leaves this line intact,
+    // and the old value's text in the trailing comment then satisfies
+    // the test-matching regex even though the real value is wrong.
+    const line = "testTimeout: 15000, // было testTimeout: 5000 по T-M1-54";
+
+    expect(withoutCommentLines(line)).not.toMatch(/testTimeout:\s*5000\b/);
+  });
+});
 
 describe("T-M1-54 deterministic test-run mode stays fixed unless re-measured", () => {
   it("vite.config.ts keeps testTimeout at the measured value (5000)", () => {

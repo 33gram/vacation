@@ -32,7 +32,25 @@ export default defineConfig({
     // to paper over it. ~61-64s per full local run on 2 measured cores,
     // not meaningfully slower than the parallel run it replaces (~60-
     // 62s) on the same hardware - the parallelism wasn't buying
-    // wall-clock time on a 2-core runner to begin with.
+    // wall-clock time on a 2-core runner to begin with. On an 8-core
+    // machine it is a real cost: ~42s sequential vs. ~15-20s parallel
+    // here (see commit body) - a deliberate, accepted trade for a single
+    // run mode.
+    //
+    // Отклонённая альтернатива: `fileParallelism: false` только в CI
+    // (через переменную окружения/CLI-флаг), параллельно локально -
+    // отклонена, потому что именно это расхождение между локальным
+    // прогоном и CI и было ценой двух кругов правок (PR #153): флак,
+    // видимый только на раннере и не воспроизводимый у разработчика.
+    // Единый режим для обоих стоит дороже по времени на многоядерной
+    // машине разработчика, но именно он делает воспроизводимость
+    // возможной без догадок о чужом железе - по аналогии с отклонённой
+    // альтернативой в тексте `T-M1-44`.
+    //
+    // Измерение привязано к мажору Node 22 (`.nvmrc`); точный patch-релиз
+    // образа `node:22` не зафиксирован (в отличие от digest-закрепления
+    // `T-M1-43`'s `constraints.txt`-генератора) - при смене мажора Node
+    // измерение придётся повторить.
     fileParallelism: false,
   },
 })

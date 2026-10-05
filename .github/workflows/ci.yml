@@ -111,6 +111,16 @@ jobs:
           cache: "npm"
           cache-dependency-path: frontend/package-lock.json
 
+      # T-M1-54: число ядер раннера ubuntu-latest зависит от типа
+      # репозитория и менялось со временем GitHub-ом без объявления -
+      # измерение режима прогона на неверном классе железа обесценивает
+      # его целиком. Шаг постоянный и дешёвый: делает возможным будущий
+      # разбор флака без догадок о том, на каком железе он случился.
+      - name: Report runner CPU count
+        run: |
+          echo "nproc: $(nproc)"
+          echo "node os.availableParallelism(): $(node -p 'os.availableParallelism?.() ?? os.cpus().length')"
+
       - name: Install dependencies
         run: npm ci
 

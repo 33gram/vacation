@@ -20,7 +20,7 @@ from __future__ import annotations
 import pytest
 
 from app.core import security
-from app.core.security import hash_password
+from app.core.security import hash_password, warm_dummy_password_hash_cache
 from app.modules.auth import local_service
 from app.modules.auth.exceptions import AuthenticationError
 from app.modules.auth.local_service import authenticate_local
@@ -44,6 +44,23 @@ def test_dummy_hash_shares_the_real_cost_factor() -> None:
     dummy_hash = security._dummy_password_hash()
 
     assert _bcrypt_cost_prefix(dummy_hash) == _bcrypt_cost_prefix(hash_password("irrelevant"))
+
+
+def test_warming_the_cache_populates_it_before_any_request() -> None:
+    """PR #165 review: без прогрева первый вызов `verify_against_dummy_
+    hash` за процесс строит фиктивный хэш ВНУТРИ себя (второй bcrypt,
+    464.9 мс вместо 232-234 - см. докстринг `_dummy_password_hash`) -
+    отличим от обычного «неверный пароль», который хэш никогда не
+    строит, почти вдвое. `warm_dummy_password_hash_cache` обязана
+    заполнить кэш ДО того, как что-либо обратится к `verify_against_
+    dummy_hash` - проверяется напрямую, по состоянию кэша, а не по
+    времени (T-M1-54: секундомер в тестах не возвращаем)."""
+    security._dummy_password_hash.cache_clear()
+    assert security._dummy_password_hash.cache_info().currsize == 0
+
+    warm_dummy_password_hash_cache()
+
+    assert security._dummy_password_hash.cache_info().currsize == 1
 
 
 def _spy_on_dummy_hash_comparison(monkeypatch: pytest.MonkeyPatch) -> dict[str, int]:

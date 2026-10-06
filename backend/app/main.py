@@ -12,6 +12,7 @@ from sqlalchemy.exc import IntegrityError
 from app.core.config import get_settings
 from app.core.health import router as health_router
 from app.core.logging import configure_logging
+from app.core.security import warm_dummy_password_hash_cache
 from app.db.session import get_session_factory
 from app.modules.admin.ldap_settings_router import router as ldap_settings_router
 from app.modules.admin.production_calendar_router import router as production_calendar_router
@@ -38,6 +39,12 @@ settings = get_settings()
 
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+    # FR-AUTH-002/14 (T-M1-41, PR #165 review): прогреть кэш фиктивного
+    # хэша ДО обслуживания первого запроса — иначе первый вызов
+    # verify_against_dummy_hash в процессе платит дважды (строит хэш и
+    # тут же сверяет с ним) и отличим от обычного «неверный пароль» по
+    # времени ответа почти вдвое, см. core/security.py.
+    warm_dummy_password_hash_cache()
     async with get_session_factory()() as session:
         await ensure_bootstrap_admin(session)
     yield

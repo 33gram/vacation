@@ -44,6 +44,7 @@ import ast
 import inspect
 import textwrap
 
+from app.main import lifespan
 from app.modules.auth.local_service import authenticate_local
 
 _FIXED_COST_CALL_NAMES = frozenset({"verify_against_dummy_hash", "verify_password"})
@@ -122,4 +123,33 @@ def test_every_account_dependent_exit_pays_the_fixed_cost_comparison() -> None:
         "эти ветки authenticate_local раскрывают факт существования "
         "учётной записи по времени ответа, не вызывая verify_against_"
         f"dummy_hash/verify_password: {missing}"
+    )
+
+
+def test_startup_warms_the_dummy_hash_cache() -> None:
+    """PR #165 review: без прогрева при старте первый вызов `verify_
+    against_dummy_hash` за процесс платит дважды (строит фиктивный хэш
+    И тут же сверяется с ним) - отличим от обычного «неверный пароль»
+    почти вдвое, см. докстринг `core.security._dummy_password_hash`. Не
+    вызывает `lifespan` целиком (это задело бы реальную БД через `ensure_
+    bootstrap_admin` в обход изоляции фикстур тестов, по тому же
+    принципу, по которому `test_deploy_from_scratch.py` вызывает `ensure_
+    bootstrap_admin` напрямую, а не через `lifespan`) - проверяет по AST,
+    что сам код `lifespan` зовёт прогрев, без побочных эффектов на БД."""
+    source = textwrap.dedent(inspect.getsource(lifespan))
+    function_def = ast.parse(source).body[0]
+
+    calls_warm_up = any(
+        (isinstance(node.func, ast.Name) and node.func.id == "warm_dummy_password_hash_cache")
+        or (
+            isinstance(node.func, ast.Attribute)
+            and node.func.attr == "warm_dummy_password_hash_cache"
+        )
+        for node in ast.walk(function_def)
+        if isinstance(node, ast.Call)
+    )
+
+    assert calls_warm_up, (
+        "lifespan() больше не вызывает warm_dummy_password_hash_cache() - "
+        "кэш фиктивного хэша не прогревается до первого запроса"
     )

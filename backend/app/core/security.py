@@ -173,18 +173,6 @@ def create_access_token(*, account_id: int, role: str) -> str:
     return jwt.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
 
 
-def create_refresh_token(*, account_id: int) -> str:
-    settings = get_settings()
-    now = utcnow()
-    payload = {
-        "sub": str(account_id),
-        "type": "refresh",
-        "iat": now,
-        "exp": now + datetime.timedelta(days=settings.jwt_refresh_token_ttl_days),
-    }
-    return jwt.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
-
-
 def decode_token(token: str) -> dict[str, Any]:
     settings = get_settings()
     try:

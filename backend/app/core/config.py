@@ -28,7 +28,6 @@ class Settings(BaseSettings):
     jwt_secret_key: str = "changeme-generate-a-random-secret"
     jwt_algorithm: str = "HS256"
     jwt_access_token_ttl_minutes: int = 60
-    jwt_refresh_token_ttl_days: int = 14
 
     ldap_password_encryption_key: str = "changeme-32-byte-encryption-key"
 

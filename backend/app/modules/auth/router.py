@@ -29,7 +29,6 @@ router = APIRouter(prefix="/api/auth", tags=["auth"])
 def _to_token_response(result: AuthResult) -> TokenResponse:
     return TokenResponse(
         access_token=result.access_token,
-        refresh_token=result.refresh_token,
         role=result.role,
         must_change_password=result.must_change_password,
     )

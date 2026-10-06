@@ -25,7 +25,6 @@ async def test_valid_credentials_via_employee_email_succeed(db_session) -> None:
     result = await authenticate_local(db_session, "ivanov@company.local", PASSWORD)
 
     assert result.access_token
-    assert result.refresh_token
     assert result.role == "employee"
 
 

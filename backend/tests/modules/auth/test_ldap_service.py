@@ -73,7 +73,6 @@ async def test_successful_ldap_login_issues_tokens(db_session) -> None:
     )
 
     assert result.access_token
-    assert result.refresh_token
 
 
 async def test_wrong_password_raises_authentication_error(db_session) -> None:

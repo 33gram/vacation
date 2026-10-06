@@ -44,6 +44,21 @@ def test_login_password_field_is_marked_write_only() -> None:
     assert schema["password"].get("writeOnly") is True
 
 
+def test_token_response_contract_has_no_refresh_token() -> None:
+    """`FR-AUTH-001/3` (T-M1-35): успешный вход выдаёт только `access`-
+    токен. Проверяется КОНТРАКТ — схема `TokenResponse` в OpenAPI, а не
+    только тело одного ответа: тело одного запроса могло бы случайно не
+    содержать поле по не связанной с контрактом причине (например,
+    сериализатор пропускает `None`), и наоборот, поле могло бы
+    присутствовать в схеме, но не попасть в конкретный собранный
+    пример ответа. Схема — то, от чего зависит сгенерированный
+    TS-клиент фронтенда, поэтому расхождение с ней и есть предмет
+    критерия."""
+    schema = app.openapi()["components"]["schemas"]["TokenResponse"]["properties"]
+    assert "refresh_token" not in schema
+    assert "access_token" in schema
+
+
 async def _get_me_and_admin_ldap_settings(api_client, headers):
     me_response = await api_client.get("/api/auth/me", headers=headers)
     admin_response = await api_client.get("/api/admin/ldap-settings", headers=headers)
@@ -70,7 +85,6 @@ async def test_login_local_succeeds(db_session, api_client) -> None:
     assert response.status_code == 200
     body = response.json()
     assert body["access_token"]
-    assert body["refresh_token"]
     assert body["role"] == "employee"
     assert body["must_change_password"] is False
 

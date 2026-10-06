@@ -715,8 +715,6 @@ export interface components {
         TokenResponse: {
             /** Access Token */
             access_token: string;
-            /** Refresh Token */
-            refresh_token: string;
             /**
              * Token Type
              * @default bearer

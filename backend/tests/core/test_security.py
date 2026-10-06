@@ -7,7 +7,6 @@ from app.core.config import get_settings
 from app.core.security import (
     TokenError,
     create_access_token,
-    create_refresh_token,
     decode_token,
     hash_password,
     verify_password,
@@ -35,15 +34,6 @@ def test_access_token_roundtrip() -> None:
     assert payload["sub"] == "42"
     assert payload["role"] == "hr_admin"
     assert payload["type"] == "access"
-
-
-def test_refresh_token_roundtrip() -> None:
-    token = create_refresh_token(account_id=42)
-
-    payload = decode_token(token)
-
-    assert payload["sub"] == "42"
-    assert payload["type"] == "refresh"
 
 
 def test_decode_token_rejects_tampered_signature() -> None:

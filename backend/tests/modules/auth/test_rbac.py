@@ -1,10 +1,14 @@
 import asyncio
+import datetime
 
+import jwt
 import pytest
 from fastapi import HTTPException
 from fastapi.security import HTTPAuthorizationCredentials
 
-from app.core.security import create_access_token, create_refresh_token
+from app.core.config import get_settings
+from app.core.security import create_access_token
+from app.core.time_utils import utcnow
 from app.models.account import Account
 from app.modules.auth.access_control import enforce_access
 from app.modules.auth.exceptions import AccessDeniedError
@@ -41,12 +45,29 @@ async def test_get_current_account_without_credentials_raises_401() -> None:
     assert exc_info.value.status_code == 401
 
 
-async def test_get_current_account_rejects_refresh_token(db_session) -> None:
+async def test_get_current_account_rejects_wrong_token_type(db_session) -> None:
+    """T-M1-35: `get_current_account` требует `type == "access"` в
+    полезной нагрузке JWT — свойство само по себе, не привязанное к тому,
+    существует ли в приложении функция, выпускающая `refresh`-токены
+    (T-M1-35 её удалила). Токен подделывается тут же тем же секретом и
+    алгоритмом, что использует приложение (`settings.jwt_secret_key`/
+    `jwt_algorithm`), с произвольным `type`, отличным от `access` — так
+    тест переживёт удаление любой конкретной функции-эмитента и проверяет
+    именно проверку типа в `rbac._load_current_account`, а не её бывший
+    источник."""
     employee = await make_employee(db_session, email="petrov@company.local")
     account = await make_account(
         db_session, employee_id=employee.id, auth_type="ldap", role="employee"
     )
-    token = create_refresh_token(account_id=account.id)
+    settings = get_settings()
+    now = utcnow()
+    payload = {
+        "sub": str(account.id),
+        "type": "not-access",
+        "iat": now,
+        "exp": now + datetime.timedelta(minutes=5),
+    }
+    token = jwt.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
 
     with pytest.raises(HTTPException) as exc_info:
         await get_current_account(credentials=_bearer(token), session=db_session)

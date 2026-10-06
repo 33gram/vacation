@@ -33,6 +33,12 @@ silent carve-out in the matching logic. Two reasons appear today:
 reason as before: it has a `password` parameter because it IS the
 normalizer, and its own body calls `unicodedata.normalize`, not itself.
 
+T-M1-41 (`FR-AUTH-002/14`) added a fifth: `app.core.security.verify_
+against_dummy_hash`, the fixed-cost comparison login uses on account-
+dependent short-circuit paths - same transitive-coverage reason as
+`authenticate_local`: it calls `verify_password` on the caller's input,
+which already normalizes, so it does not need its own call.
+
 Real-call detection is by `ast.Call`, not substring, since PR #164
 review: a function's source text includes its docstring, and a
 docstring that happens to quote `normalize_password(...)` (to explain
@@ -92,6 +98,13 @@ _ALLOWED_WITHOUT_OWN_CALL: dict[str, str] = {
     "app.modules.auth.bootstrap._reject_oversized_bootstrap_password": (
         "не трогает байты пароля сама - вызывает exceeds_bcrypt_input_limit, "
         "которая нормализует внутри себя; покрыта транзитивно"
+    ),
+    "app.core.security.verify_against_dummy_hash": (
+        "T-M1-41, FR-AUTH-002/14: не трогает байты ВХОДНОГО пароля сама - "
+        "вызывает verify_password, которая нормализует внутри себя; покрыта "
+        "транзитивно. (Фиктивный хэш, с которым идёт сравнение, строится "
+        "hash_password из фиксированной строки - тоже нормализуется, но это "
+        "не аргумент password этой функции.)"
     ),
 }
 

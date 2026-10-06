@@ -9,7 +9,11 @@ from __future__ import annotations
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.security import exceeds_bcrypt_input_limit, verify_password
+from app.core.security import (
+    exceeds_bcrypt_input_limit,
+    verify_against_dummy_hash,
+    verify_password,
+)
 from app.core.time_utils import utcnow
 from app.models.account import Account
 from app.models.employee import Employee
@@ -61,6 +65,9 @@ async def authenticate_local(session: AsyncSession, login: str, password: str) -
     if not password or not password.strip():
         # Пустой/пробельный пароль отклоняется до любого обращения к БД или
         # каталогу (FR-AUTH-004) — см. ldap_service.authenticate_via_ldap.
+        # FR-AUTH-002/14 это НЕ закрывает и не должен: разница по времени
+        # здесь зависит от присланного пароля, а не от учётной записи, и
+        # не сообщает наблюдателю ничего о системе — вне объёма критерия.
         raise AuthenticationError("Invalid login or password")
 
     if exceeds_bcrypt_input_limit(password):
@@ -73,10 +80,11 @@ async def authenticate_local(session: AsyncSession, login: str, password: str) -
         # хвост после неё аутентифицировал бы ту же учётную запись.
         # PR #140 review (третий круг, замечание 2б): отказ здесь — то же
         # СООБЩЕНИЕ и тот же СТАТУС (401), что и у обычного неверного
-        # пароля, не более того. Ответ ЦЕЛИКОМ не неразличим: эта ветка
-        # возвращается раньше обращения к БД и bcrypt, то есть быстрее
-        # ветки «неверный пароль» ниже — по времени ответа отличима, см.
-        # T-M1-41.
+        # пароля. Разница по времени ответа здесь ЕСТЬ и сознательно не
+        # выравнивается (FR-AUTH-002/14, раздел 13, п. 26) — она зависит
+        # от присланного ПАРОЛЯ (его длины), а не от учётной записи, и
+        # ничего не раскрывает о системе наблюдателю, который сам же эту
+        # длину и прислал.
         raise AuthenticationError("Invalid login or password")
 
     account, employee = await _resolve_local_account(session, login)
@@ -84,21 +92,36 @@ async def authenticate_local(session: AsyncSession, login: str, password: str) -
     if account is None or account.auth_type != "local":
         # PR #140 review (третий круг, замечание 2а): то же СООБЩЕНИЕ и
         # тот же СТАТУС (401), что и у существующего логина с неверным
-        # паролем, — но не то же самое по ВРЕМЕНИ ответа. Здесь bcrypt
-        # не вызывается вовсе; в ветке `verify_password` ниже вызывается
-        # всегда — разница порядка ~100 мс (стоимость bcrypt) против
-        # микросекунд, которой достаточно, чтобы по времени ответа
-        # отличить существующий логин от несуществующего. Закрывается
-        # отдельно — T-M1-41 (сравнение с фиктивным хэшем фиксированной
-        # стоимости), не этим отказом.
+        # паролем. Разница по времени здесь ЗАВИСИТ ОТ УЧЁТНОЙ ЗАПИСИ
+        # (нет записи либо способ входа не локальный) — ровно то, что
+        # выравнивает FR-AUTH-002/14 (T-M1-41): без сверки с фиктивным
+        # хэшем фиксированной стоимости здесь, bcrypt не вызывался бы
+        # вовсе, а в ветке `verify_password` ниже вызывается всегда —
+        # разница порядка ~100 мс (стоимость bcrypt) против микросекунд
+        # отличила бы существующий логин от несуществующего по времени
+        # ответа так же явно, как если бы отличалось само сообщение.
+        verify_against_dummy_hash(password)
         raise AuthenticationError("Invalid login or password")
 
     if account.locked_until is not None and account.locked_until > utcnow():
+        # FR-AUTH-002/14 (раздел 13, п. 26) сознательно НЕ выравнивает эту
+        # ветку: сообщение ниже само по себе, без всякого времени ответа,
+        # уже раскрывает факт блокировки — решение в пользу легального
+        # пользователя, которому иначе пришлось бы гадать, почему верный
+        # пароль не принимается. Выравнивание времени при уже раскрытом
+        # текстом факте было бы декоративным, не защитой.
         raise AuthenticationError("Account temporarily locked, try again later")
 
-    if account.local_password_hash is None or not verify_password(
-        password, account.local_password_hash
-    ):
+    if account.local_password_hash is None:
+        # Зависит от учётной записи (локальный хэш не задан) — тот же
+        # случай FR-AUTH-002/14, что и «нет записи» выше, отдельная ветка
+        # именно потому, что иначе `or` короткого замыкания в условии не
+        # дал бы `verify_password` ни разу выполниться для этого пути.
+        verify_against_dummy_hash(password)
+        await _register_failed_attempt(session, account)
+        raise AuthenticationError("Invalid login or password")
+
+    if not verify_password(password, account.local_password_hash):
         await _register_failed_attempt(session, account)
         raise AuthenticationError("Invalid login or password")
 

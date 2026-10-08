@@ -54,10 +54,19 @@ async def upsert_ldap_settings(session: AsyncSession, payload: LdapSettingsIn) -
     settings_row.last_tested_at = None
     settings_row.last_test_status = None
 
-    if payload.bind_password:
-        settings_row.bind_password_encrypted = encrypt(
-            payload.bind_password, key=get_settings().ldap_password_encryption_key
-        )
+    # Явная проверка (T-M1-33), не истинность обёртки: None/отсутствует и
+    # пустая строка одинаково значат "не трогать сохранённый пароль" -
+    # это свойство контракта (test_put_ldap_settings_with_empty_password_
+    # keeps_existing_one), а не то, как SecretStr("") ведёт себя в if
+    # (прогоном установлено, что в закреплённой версии pydantic она
+    # ложна так же, как "" - см. тело коммита - но условие не должно
+    # зависеть от этого факта).
+    if payload.bind_password is not None:
+        revealed_password = payload.bind_password.get_secret_value()
+        if revealed_password:
+            settings_row.bind_password_encrypted = encrypt(
+                revealed_password, key=get_settings().ldap_password_encryption_key
+            )
 
     await session.commit()
     await session.refresh(settings_row)

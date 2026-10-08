@@ -4,21 +4,52 @@ from __future__ import annotations
 
 from sqlalchemy import select
 
+from app.core.config import get_settings
+from app.core.crypto import decrypt
 from app.main import app
 from app.models.ldap_settings import LdapSettings
 from app.modules.admin import ldap_settings_service
 from app.modules.auth.embedded_mode import is_embedded_mode
+from app.schemas.ldap_settings import LdapSettingsIn
 from tests.ldap_guard import LDAP_TEST_HOST, LDAP_TEST_PORT, requires_ldap
 from tests.modules.auth.factories import bearer_header, make_account, make_employee
+
+
+def _assert_write_only(schema_name: str) -> None:
+    schema = app.openapi()["components"]["schemas"][schema_name]
+    bind_password_schema = schema["properties"]["bind_password"]
+    variants = bind_password_schema.get("anyOf", [bind_password_schema])
+    assert any(variant.get("writeOnly") is True for variant in variants)
 
 
 def test_ldap_test_request_marks_bind_password_write_only() -> None:
     # NFR-SEC-001: bind_password не должен уходить в OpenAPI-схему (и
     # сгенерированный TS-клиент) как обычная строка.
-    schema = app.openapi()["components"]["schemas"]["LdapTestRequest"]
-    bind_password_schema = schema["properties"]["bind_password"]
-    variants = bind_password_schema.get("anyOf", [bind_password_schema])
-    assert any(variant.get("writeOnly") is True for variant in variants)
+    _assert_write_only("LdapTestRequest")
+
+
+def test_ldap_settings_in_marks_bind_password_write_only() -> None:
+    # T-M1-33, NFR-SEC-001/FR-ADMIN-005: симметрично LdapTestRequest -
+    # LdapSettingsIn.bind_password - это тело, где пароль служебной
+    # записи РЕАЛЬНО сохраняется (upsert_ldap_settings), а не тело
+    # черновой проверки, которое никуда не пишет - до этой задачи было
+    # защищено ровно наоборот.
+    _assert_write_only("LdapSettingsIn")
+
+
+def test_ldap_settings_in_does_not_leak_password_via_repr() -> None:
+    # T-M1-33: то единственное, что сам SecretStr добавляет сверх
+    # writeOnly-пометки схемы - маскировка repr()/str() разобранной
+    # модели, если она когда-нибудь случайно попадёт в лог/трассировку.
+    model = LdapSettingsIn(
+        server_url="ldap.company.local",
+        base_dn="dc=company,dc=local",
+        bind_dn="cn=svc,dc=company,dc=local",
+        bind_password="S3cr3tServiceAccountPassword",
+    )
+
+    assert "S3cr3tServiceAccountPassword" not in repr(model)
+    assert "S3cr3tServiceAccountPassword" not in str(model)
 
 
 async def _make_admin(db_session, *, must_change_password: bool = False):
@@ -178,6 +209,91 @@ async def test_put_ldap_settings_without_password_keeps_existing_one(
     assert response.json()["server_url"] == "ldap2.company.local"
     updated_row = (await db_session.execute(select(LdapSettings))).scalars().one()
     assert updated_row.bind_password_encrypted == original_encrypted
+
+
+async def test_put_ldap_settings_with_empty_password_keeps_existing_one(
+    db_session, api_client
+) -> None:
+    # T-M1-33, пункт 1: сегодняшнее поведение, которое замена типа на
+    # SecretStr обязана удержать - пустая строка (а не только
+    # отсутствующее поле) тоже означает "сохранённый пароль не трогать".
+    # Установлено прогоном (не рассуждением, см. тело коммита), что
+    # bool(SecretStr("")) ложен в закреплённой версии pydantic, поэтому
+    # риска молчаливой перезаписи паролем "" в этой версии нет - но
+    # условие в upsert_ldap_settings переписано на явное (is not None +
+    # пустота РАСКРЫТОГО значения) независимо от этого результата, и
+    # этот тест защищает именно контракт, а не конкретную реализацию.
+    account = await _make_admin(db_session)
+    await api_client.put(
+        "/api/admin/ldap-settings",
+        json={
+            "server_url": "ldap.company.local",
+            "port": 389,
+            "base_dn": "dc=company,dc=local",
+            "bind_dn": "cn=svc,dc=company,dc=local",
+            "bind_password": "OriginalPassword123",
+        },
+        headers=bearer_header(account),
+    )
+    original_row = (await db_session.execute(select(LdapSettings))).scalars().one()
+    original_encrypted = original_row.bind_password_encrypted
+
+    response = await api_client.put(
+        "/api/admin/ldap-settings",
+        json={
+            "server_url": "ldap2.company.local",
+            "port": 636,
+            "base_dn": "dc=company,dc=local",
+            "bind_dn": "cn=svc,dc=company,dc=local",
+            "bind_password": "",
+        },
+        headers=bearer_header(account),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["server_url"] == "ldap2.company.local"
+    updated_row = (await db_session.execute(select(LdapSettings))).scalars().one()
+    assert updated_row.bind_password_encrypted == original_encrypted
+
+
+async def test_put_ldap_settings_with_new_password_replaces_existing_one(
+    db_session, api_client
+) -> None:
+    # T-M1-33, пункт 3: непустой пароль заменяет сохранённый - проверено
+    # РАСШИФРОВКОЙ итогового значения, а не только тем, что оно
+    # отличается от старого шифротекста (это проверяла бы и порча данных
+    # той же степенью уверенности).
+    account = await _make_admin(db_session)
+    await api_client.put(
+        "/api/admin/ldap-settings",
+        json={
+            "server_url": "ldap.company.local",
+            "port": 389,
+            "base_dn": "dc=company,dc=local",
+            "bind_dn": "cn=svc,dc=company,dc=local",
+            "bind_password": "OriginalPassword123",
+        },
+        headers=bearer_header(account),
+    )
+
+    response = await api_client.put(
+        "/api/admin/ldap-settings",
+        json={
+            "server_url": "ldap.company.local",
+            "port": 389,
+            "base_dn": "dc=company,dc=local",
+            "bind_dn": "cn=svc,dc=company,dc=local",
+            "bind_password": "ReplacementPassword456",
+        },
+        headers=bearer_header(account),
+    )
+
+    assert response.status_code == 200
+    updated_row = (await db_session.execute(select(LdapSettings))).scalars().one()
+    decrypted = decrypt(
+        updated_row.bind_password_encrypted, get_settings().ldap_password_encryption_key
+    )
+    assert decrypted == "ReplacementPassword456"
 
 
 # --- POST /test -------------------------------------------------------------

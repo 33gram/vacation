@@ -28,8 +28,21 @@ class LdapSettingsIn(BaseModel):
     port: int = DEFAULT_LDAP_PORT
     base_dn: str
     bind_dn: str
-    # None/отсутствует — сохранённый пароль не трогаем (T-M1-16).
-    bind_password: str | None = None
+    # None/отсутствует/пустая строка — сохранённый пароль не трогаем
+    # (T-M1-16; пустая строка — явно, в upsert_ldap_settings, см. там).
+    # SecretStr (T-M1-33) — это тело, где пароль служебной записи
+    # РЕАЛЬНО сохраняется (в отличие от LdapTestRequest, который никуда
+    # не пишет), а защищён был ровно наоборот. Даёт: маскировку
+    # repr()/str(), если модель когда-нибудь попадёт в лог/трассировку;
+    # пометку writeOnly в схеме OpenAPI (см. LdapTestRequest выше про
+    # сгенерированный TS-клиент — то же самое применимо и здесь). НЕ
+    # даёт: защиты тела ответа 422 от утечки присланного значения — это
+    # закрывает обработчик `RequestValidationError` (`app/main.py`,
+    # T-M1-40) белым списком полей, а не тип этой схемы, т.к. pydantic
+    # кладёт в `input` ошибки ИСХОДНУЮ строку до обёртки; и не меняет
+    # того, что пароля нет в LdapSettingsOut вовсе (то единственное, что
+    # реально не даёт ему попасть в ответ PUT/GET).
+    bind_password: SecretStr | None = None
     user_match_attribute: str = DEFAULT_USER_MATCH_ATTRIBUTE
     is_active: bool = False
 

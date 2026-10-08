@@ -196,6 +196,33 @@ jobs:
           PR_BODY: ${{ github.event.pull_request.body }}
         run: python3 scripts/check_task_checkbox.py
 
+  basis-version-check:
+    # T-M1-44: строка «Основание» в plan.md/tasks.md/ui.md — заявление о
+    # прослеживаемости, а не оформление; устаревший номер делает
+    # невозможным понять, учтён ли в артефакте последний пересмотр
+    # документа, на который он опирается. Только на pull_request (не
+    # push) — по той же причине, что у task-checkbox-check: у push нет
+    # номера PR, и угадывать его было бы ровно тем риском ложного
+    # срабатывания, которого эта проверка должна избегать.
+    name: Основание cites the actual upstream version
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    # См. комментарий у task-checkbox-check выше: без этого блока
+    # `gh pr diff` отвечает 403 (тот же прогон, PR #156, применим и
+    # здесь — оба скрипта читают список файлов/коммитов PR тем же
+    # токеном с тем же набором прав).
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Check Основание versions
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: python3 scripts/check_basis_version.py
+
   openapi-client-check:
     # T-M1-28: этот шаг проверяет расхождение между схемой backend и
     # сгенерированным TS-клиентом. Добавлен в первой ветке, где вообще

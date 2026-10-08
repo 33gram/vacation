@@ -16,7 +16,7 @@ PIP_TOOLS_VERSION = 7.4.1
 # --platform linux/amd64 python:3.12-slim --format '{{index .RepoDigests 0}}'`.
 LOCK_BASE_IMAGE = python@sha256:02108f5d322dd89f1c9e552442c25acb0543dfdbc455693a5599624f20d9155d
 
-.PHONY: up down logs test-backend test-frontend lint-backend lint-frontend openapi-export openapi-client check-conflict-markers check-task-checkbox lock-backend
+.PHONY: up down logs test-backend test-frontend lint-backend lint-frontend openapi-export openapi-client check-conflict-markers check-task-checkbox check-basis-version lock-backend
 
 up:
 	@test -f .env || { echo "Нет .env — выполните: cp .env.example .env"; exit 1; }
@@ -70,6 +70,12 @@ check-conflict-markers:
 # события; см. docstring scripts/check_task_checkbox.py).
 check-task-checkbox:
 	python3 scripts/check_task_checkbox.py
+
+# T-M1-44: без аргументов — на ветке с открытым PR `gh pr diff --name-only`
+# сам определяет текущую ветку (см. docstring scripts/check_basis_version.py);
+# в CI вместо этого передаётся явный PR_NUMBER из контекста события.
+check-basis-version:
+	python3 scripts/check_basis_version.py
 
 # T-M1-43: одноразовый контейнер `--platform linux/amd64`, НЕ обычный
 # `backend`-сервис `$(COMPOSE)` — у части пакетов состав зависимостей

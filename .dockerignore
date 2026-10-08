@@ -1,0 +1,19 @@
+# T-M1-24: frontend's Docker build context became the repo root (see
+# infra/docker-compose.yml, frontend service) — frontend/scripts/
+# check-node-version.mjs reads `.nvmrc` two directories up from itself
+# by design (consistent with backend/tests' "two parents up" pattern
+# for full-checkout-dependent checks), which only resolves correctly
+# when the build context preserves the real repo's directory depth.
+# This keeps that context from also dragging in everything else at the
+# root.
+.git/
+**/node_modules/
+**/__pycache__/
+**/.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/
+backend/.venv/
+backend/venv/
+frontend/dist/
+frontend/coverage/
+*.tsbuildinfo

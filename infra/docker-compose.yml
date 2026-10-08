@@ -104,14 +104,19 @@ services:
 
   frontend:
     build:
-      context: ../frontend
-      dockerfile: Dockerfile
+      # T-M1-24: контекст — корень репозитория, не frontend/ саму по себе
+      # (как у backend ниже) — `frontend/scripts/check-node-version.mjs`
+      # читает `.nvmrc` двумя каталогами выше себя, и это разрешается
+      # только если образ сохраняет ту же глубину вложенности, что и
+      # реальный чекаут (см. комментарий в `frontend/Dockerfile`).
+      context: ..
+      dockerfile: frontend/Dockerfile
     restart: unless-stopped
     environment:
       VITE_API_BASE_URL: http://localhost:8000
     volumes:
-      - ../frontend/src:/app/src
-      - ../frontend/index.html:/app/index.html
+      - ../frontend/src:/app/frontend/src
+      - ../frontend/index.html:/app/frontend/index.html
     ports:
       - "5173:5173"
 

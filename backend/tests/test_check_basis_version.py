@@ -182,16 +182,35 @@ def test_1_9_vs_1_10_is_not_compared_lexicographically() -> None:
 # --- (в) собственный журнал изменений в "Основании" -----------------------
 
 
+def test_cited_version_returns_the_first_citation_not_the_last() -> None:
+    # PR #167 review, второй круг: прямой тест на разбор, не сквозной
+    # через find_violations - различает стратегии "первое совпадение"
+    # и "последнее совпадение" по построению (requirements.md процитирован
+    # ДВАЖДЫ с разными номерами), а не по совпадению чисел в фикстуре.
+    # Мутация _cited_version на finditer()[-1] вместо .search() обязана
+    # уронить именно этот assert: (1, 18) != (1, 12).
+    block = "`requirements.md` v1.18 (декларативная цитата); позже `requirements.md` v1.12 (журнал)"
+
+    cited = _check_basis_version._cited_version(
+        block, "docs/requirements.md", "docs/plan.md"
+    )
+
+    assert cited == (1, 18)
+
+
 def test_own_changelog_inside_basis_does_not_false_positive() -> None:
-    # plan.md-подобный текст: декларативная цитата в начале, затем
-    # собственный журнал версий plan.md, упоминающий requirements.md
-    # повторно со СТАРЫМИ номерами ("в v1.13 ... requirements.md v1.17").
-    # Наивное "взять последнее упоминание" споткнулось бы об 1.17.
+    # plan.md-подобный текст: декларативная цитата в начале (1.18, равна
+    # фактической), затем собственный журнал версий plan.md, упоминающий
+    # requirements.md повторно со СТАРЫМИ номерами, заканчиваясь на 1.17 -
+    # ОТЛИЧНЫМ от фактической 1.18 (PR #167 review, второй круг: исходная
+    # фикстура заканчивалась на 1.18 тоже, и "взять последнее совпадение"
+    # случайно давало тот же результат, что "взять первое" - этот тест не
+    # отличал стратегии, несмотря на название. Теперь отличает: "последнее
+    # совпадение" вернёт 1.17 != 1.18 и даст лишний "stale").
     basis = (
         "`docs/requirements.md`, версия 1.18 (...); в v1.12 ... "
         "(`requirements.md` v1.12, §13); в v1.13 решением владельца "
-        "продукта (`requirements.md` v1.17, FR-AUTH-001/3) ...; в v1.14 "
-        "(`requirements.md` v1.18, раздел 13, п. 27)"
+        "продукта (`requirements.md` v1.17, FR-AUTH-001/3) ..."
     )
     documents = {
         "docs/plan.md": _basis_header(version="1.14", basis=basis),
@@ -201,6 +220,25 @@ def test_own_changelog_inside_basis_does_not_false_positive() -> None:
     violations = find_violations(["docs/plan.md"], documents)
 
     assert violations == []
+
+
+def test_declined_case_mention_is_not_parsed_as_a_citation() -> None:
+    # PR #167 review, второй круг: "версии 1.12" (родительный падеж) - та
+    # самая форма, которой журнал ссылается на прошлое ("называла
+    # requirements.md версии 1.17") - не совпадает с _citation_pattern
+    # вовсе (он принимает только "версия X.Y" именительный и "vX.Y").
+    # Это сознательная узость, а не недоделка (см. docstring модуля,
+    # ловушка (в)): без неё устаревший номер внутри склонённой фразы
+    # читался бы как настоящая цитата и сравнивался с фактической версией
+    # - "версии" упомянут (substring), поэтому результат - не "нечего
+    # разобрать" (None), а UnrecognizedCitationFormat: имя есть, формат
+    # не совпал, число 1.12 никогда не извлекается и не сравнивается.
+    block = "называла `requirements.md` версии 1.12, фактическая стала 1.18"
+
+    with pytest.raises(UnrecognizedCitationFormat):
+        _check_basis_version._cited_version(
+            block, "docs/requirements.md", "docs/plan.md"
+        )
 
 
 # --- файл изменён vs. не изменён ------------------------------------------

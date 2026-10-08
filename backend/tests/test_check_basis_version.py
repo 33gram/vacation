@@ -118,16 +118,40 @@ def test_unrecognized_format_raises_not_silence() -> None:
         find_violations(["docs/plan.md"], documents)
 
 
-def test_upstream_not_mentioned_at_all_is_silent() -> None:
-    # plan.md обязан цитировать requirements.md, но в этой фикстуре имя
-    # вовсе не упомянуто в "Основании" - нечего разобрать, нечего
-    # сравнить; это не тот же случай, что нераспознанный формат.
+def test_missing_required_citation_is_flagged_not_silent() -> None:
+    # PR #167 review: plan.md ОБЯЗАН цитировать requirements.md
+    # (_REQUIRED_CITATIONS), а в этой фикстуре имя вовсе не упомянуто в
+    # "Основании" - удаление цитаты - такой же путь к "нет нарушений",
+    # как исправление номера, если отсутствие молчит. Это другой случай,
+    # чем нераспознанный формат (там цитата ЕСТЬ, но непонятна).
     documents = {
         "docs/plan.md": _basis_header(version="1.13", basis="(ничего не цитирует)"),
         "docs/requirements.md": _basis_header(version="1.18", basis="n/a"),
     }
 
     violations = find_violations(["docs/plan.md"], documents)
+
+    assert len(violations) == 1
+    assert violations[0].kind == "missing"
+    assert violations[0].target_path == "docs/plan.md"
+    assert violations[0].upstream_path == "docs/requirements.md"
+
+
+def test_missing_citation_declared_in_allowlist_is_silent() -> None:
+    # Зеркало предыдущего теста: та же фикстура, но пара объявлена в
+    # _ALLOWED_WITHOUT_CITATION - сознательное исключение, а не дырка.
+    documents = {
+        "docs/plan.md": _basis_header(version="1.13", basis="(ничего не цитирует)"),
+        "docs/requirements.md": _basis_header(version="1.18", basis="n/a"),
+    }
+    key = ("docs/plan.md", "docs/requirements.md")
+    _check_basis_version._ALLOWED_WITHOUT_CITATION[key] = (
+        "тест: временно объявлено исключением"
+    )
+    try:
+        violations = find_violations(["docs/plan.md"], documents)
+    finally:
+        del _check_basis_version._ALLOWED_WITHOUT_CITATION[key]
 
     assert violations == []
 
@@ -139,7 +163,10 @@ def test_1_9_vs_1_10_is_not_compared_lexicographically() -> None:
     # Лексикографически "1.9" > "1.10" (symbol '9' > '1') - обратный
     # результату как парам чисел (9 > 10 ложно). Ровно случай caa7d38.
     documents = {
-        "docs/tasks.md": _basis_header(version="1.30", basis="`plan.md` v1.9"),
+        "docs/tasks.md": _basis_header(
+            version="1.30",
+            basis="`requirements.md` v1.0, `plan.md` v1.9, `ui.md` v1.0",
+        ),
         "docs/plan.md": _basis_header(version="1.10", basis="n/a"),
         "docs/requirements.md": _basis_header(version="1.0", basis="n/a"),
         "docs/ui.md": _basis_header(version="1.0", basis="n/a"),
@@ -181,7 +208,9 @@ def test_own_changelog_inside_basis_does_not_false_positive() -> None:
 
 def test_changed_file_with_stale_citation_is_flagged() -> None:
     documents = {
-        "docs/ui.md": _basis_header(version="1.4", basis="`requirements.md` v1.12"),
+        "docs/ui.md": _basis_header(
+            version="1.4", basis="`requirements.md` v1.12, `plan.md` v1.0"
+        ),
         "docs/requirements.md": _basis_header(version="1.18", basis="n/a"),
         "docs/plan.md": _basis_header(version="1.0", basis="n/a"),
     }

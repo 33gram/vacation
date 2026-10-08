@@ -1,6 +1,6 @@
-/// <reference types="vitest/config" />
 import react from '@vitejs/plugin-react'
 import { defineConfig } from 'vite'
+import { configDefaults } from 'vitest/config'
 
 // https://vite.dev/config/
 export default defineConfig({
@@ -9,6 +9,13 @@ export default defineConfig({
     environment: 'jsdom',
     globals: true,
     setupFiles: ['./src/setupTests.ts'],
+    // T-M1-24: Playwright E2E-спеки живут в `e2e/*.spec.ts` — тот же
+    // суффикс, что у vitest-юнит-тестов, и дефолтный `exclude` vitest 5
+    // (`configDefaults.exclude`) — это только `node_modules`/`.git`, он
+    // их не отфильтровал бы. Явный список ЗАМЕНЯЕТ дефолт, а не
+    // дополняет его (поведение vitest) — поэтому дефолт здесь
+    // распакован явно, а не потерян молча.
+    exclude: [...configDefaults.exclude, 'e2e/**'],
     // T-M1-19 review raised this to 15000 (from the vitest default 5000)
     // to paper over CPU contention under parallel-file runs, rather than
     // removing the contention - T-M1-54 reversed that: `fileParallelism:

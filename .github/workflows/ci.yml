@@ -133,6 +133,81 @@ jobs:
       - name: Build
         run: npm run build
 
+  e2e-tests:
+    # T-M1-24: единственный прогон, проверяющий путь «вход по LDAP ->
+    # карточка сотрудника» целиком — backend проверяется против настоящего
+    # каталога, frontend — против подменённого fetch, а между ними до
+    # этой задачи никто. Полный стек через docker compose (тот же образец,
+    # что у backend-tests для openldap, здесь — весь infra/docker-
+    # compose.yml) с оверрайдом `docker-compose.e2e.yml`: приложение
+    # открывается через nginx (:80), как в прод-форме (plan.md §8), и
+    # `VITE_API_BASE_URL` на этот прогон пуст — иначе браузер звал бы
+    # backend напрямую через :8000, минуя nginx (проверено прогоном при
+    # разработке этой задачи, см. комментарий у docker-compose.e2e.yml).
+    name: E2E (Playwright, LDAP login)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      # Версия браузера определяется локально установленным
+      # @playwright/test (package-lock.json) - не отдельно закреплённым
+      # номером здесь, чтобы те два места не могли разойтись.
+      - name: Install Playwright browsers
+        working-directory: frontend
+        run: npx playwright install --with-deps chromium
+
+      - name: Prepare .env
+        run: cp .env.example .env
+
+      - name: Start full stack (nginx + backend + frontend + test LDAP)
+        run: |
+          docker compose --env-file .env -f infra/docker-compose.yml -f infra/docker-compose.e2e.yml up -d
+
+      # Опрос реального признака готовности в цикле с таймаутом - тот же
+      # принцип, что у backend-tests (см. его шаг "Start test OpenLDAP"),
+      # не sleep на фиксированное время.
+      - name: Wait for test OpenLDAP
+        run: |
+          timeout 30 bash -c '
+            until docker compose --env-file .env -f infra/docker-compose.yml -f infra/docker-compose.e2e.yml \
+                exec -T openldap ldapwhoami -x -H ldap://localhost:1389 \
+                -D "cn=admin,dc=company,dc=local" -w changeme >/dev/null 2>&1; do
+              sleep 1
+            done
+          '
+
+      - name: Wait for the app through nginx
+        run: |
+          timeout 60 bash -c 'until curl -sf http://localhost/healthz >/dev/null 2>&1; do sleep 1; done'
+          timeout 60 bash -c 'until curl -sf http://localhost/login >/dev/null 2>&1; do sleep 1; done'
+
+      - name: Run DB migrations
+        run: |
+          docker compose --env-file .env -f infra/docker-compose.yml -f infra/docker-compose.e2e.yml \
+              exec -T backend alembic upgrade head
+
+      - name: Run E2E tests
+        working-directory: frontend
+        run: npx playwright test
+
+      - name: Upload Playwright traces on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-traces
+          path: frontend/test-results/
+          retention-days: 7
+
   conflict-marker-check:
     # T-M1-51: 24.09.2026 при слиянии PR #149 файл docs/tasks.md попал в
     # main со служебными маркерами git внутри (исправлено в PR #151) — ни

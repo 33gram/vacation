@@ -16,7 +16,7 @@ PIP_TOOLS_VERSION = 7.4.1
 # --platform linux/amd64 python:3.12-slim --format '{{index .RepoDigests 0}}'`.
 LOCK_BASE_IMAGE = python@sha256:02108f5d322dd89f1c9e552442c25acb0543dfdbc455693a5599624f20d9155d
 
-.PHONY: up down logs test-backend test-frontend lint-backend lint-frontend openapi-export openapi-client check-conflict-markers check-task-checkbox check-basis-version lock-backend
+.PHONY: up down logs test-backend test-frontend test-e2e lint-backend lint-frontend openapi-export openapi-client check-conflict-markers check-task-checkbox check-basis-version lock-backend
 
 up:
 	@test -f .env || { echo "Нет .env — выполните: cp .env.example .env"; exit 1; }
@@ -49,6 +49,44 @@ lint-backend:
 
 test-frontend:
 	cd frontend && npm run test -- --run
+
+# T-M1-24: отдельный оверрайд компоуза (infra/docker-compose.e2e.yml),
+# не обычный `$(COMPOSE)` — приложение открывается через nginx (:80), а
+# `VITE_API_BASE_URL` на время этого прогона должен быть пустым, иначе
+# браузер звал бы backend напрямую через :8000, минуя nginx, и прокси в
+# сценарии не участвовал бы (см. комментарий у `docker-compose.e2e.yml` и
+# `frontend/playwright.config.ts`). Готовность стека ждём опросом
+# реального признака (как `backend-tests` в CI ждёт openldap), не `sleep`.
+# После прогона (успешного или нет) возвращает `frontend` к обычному
+# конфигу — иначе обычный `make up`/разработческий :5173 молча ломается
+# следующим обращением к API. Предполагает, что зависимости уже
+# установлены (`cd frontend && npm ci && npx playwright install
+# --with-deps chromium`) — этот шаг делается один раз, не на каждый прогон.
+COMPOSE_E2E = docker compose --env-file .env -f infra/docker-compose.yml -f infra/docker-compose.e2e.yml
+
+test-e2e:
+	@test -f .env || { echo "Нет .env — выполните: cp .env.example .env"; exit 1; }
+	$(COMPOSE_E2E) up -d
+	@echo "Ожидание готовности тестового LDAP..."
+	@bash -c ' \
+		source .env; \
+		for i in $$(seq 1 30); do \
+			$(COMPOSE_E2E) exec -T openldap ldapwhoami -x -H ldap://localhost:1389 \
+				-D "cn=admin,dc=company,dc=local" -w "$$LDAP_ADMIN_PASSWORD" >/dev/null 2>&1 && exit 0; \
+			sleep 1; \
+		done; \
+		echo "Тестовый LDAP не ответил за 30 секунд"; exit 1 \
+	'
+	@echo "Ожидание готовности приложения через nginx..."
+	@bash -c ' \
+		for i in $$(seq 1 60); do \
+			curl -sf http://localhost/healthz >/dev/null 2>&1 && exit 0; \
+			sleep 1; \
+		done; \
+		echo "Не дождались http://localhost/healthz за 60 секунд"; exit 1 \
+	'
+	$(COMPOSE_E2E) exec -T backend alembic upgrade head
+	cd frontend && npx playwright test; status=$$?; cd ..; $(COMPOSE) up -d frontend; exit $$status
 
 lint-frontend:
 	cd frontend && npm run lint

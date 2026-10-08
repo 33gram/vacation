@@ -27,6 +27,11 @@ frontend/.vite/
 coverage/
 *.tsbuildinfo
 
+# T-M1-24: отчёты/трейсы прогонов Playwright (frontend/playwright.config.ts)
+frontend/test-results/
+frontend/playwright-report/
+frontend/blob-report/
+
 # --- Переменные окружения и секреты ---
 .env
 .env.*

@@ -169,9 +169,13 @@ jobs:
       - name: Prepare .env
         run: cp .env.example .env
 
-      - name: Start full stack (nginx + backend + frontend + test LDAP)
+      # Только postgres/redis/openldap - не backend/frontend/nginx (см.
+      # комментарий у "Run DB migrations" ниже: backend не может
+      # подняться на пустой БД вовсе, приводить его раньше миграций
+      # бессмысленно).
+      - name: Start data-layer services (postgres + redis + test LDAP)
         run: |
-          docker compose --env-file .env -f infra/docker-compose.yml -f infra/docker-compose.e2e.yml up -d
+          docker compose --env-file .env -f infra/docker-compose.yml -f infra/docker-compose.e2e.yml up -d postgres redis openldap
 
       # Опрос реального признака готовности в цикле с таймаутом - тот же
       # принцип, что у backend-tests (см. его шаг "Start test OpenLDAP"),
@@ -186,19 +190,42 @@ jobs:
             done
           '
 
+      # T-M1-24, обнаружено прогоном (не предположено): на пустой БД
+      # backend падает при старте - lifespan проверяет наличие
+      # bootstrap-администратора запросом к таблице `accounts`, которой
+      # до миграций не существует ("relation \"accounts\" does not
+      # exist", см. тело коммита за полным traceback). Миграции
+      # обязаны применяться ОДНОРАЗОВЫМ контейнером (`run --rm`) ДО
+      # того, как сервис `backend` поднимется сам, а не после попытки
+      # его поднять - `run --rm` сам ждёт `postgres`/`redis` healthy
+      # (depends_on уже объявлен на сервисе `backend` в
+      # docker-compose.yml), отдельный опрос перед этим шагом не нужен.
+      - name: Run DB migrations
+        run: |
+          docker compose --env-file .env -f infra/docker-compose.yml -f infra/docker-compose.e2e.yml \
+              run --rm backend alembic upgrade head
+
+      - name: Start the rest of the stack (nginx + backend + frontend)
+        run: |
+          docker compose --env-file .env -f infra/docker-compose.yml -f infra/docker-compose.e2e.yml up -d
+
       - name: Wait for the app through nginx
         run: |
           timeout 60 bash -c 'until curl -sf http://localhost/healthz >/dev/null 2>&1; do sleep 1; done'
           timeout 60 bash -c 'until curl -sf http://localhost/login >/dev/null 2>&1; do sleep 1; done'
 
-      - name: Run DB migrations
-        run: |
-          docker compose --env-file .env -f infra/docker-compose.yml -f infra/docker-compose.e2e.yml \
-              exec -T backend alembic upgrade head
-
+      # BOOTSTRAP_ADMIN_LOGIN/PASSWORD, LDAP_ADMIN_PASSWORD - секреты
+      # окружения (NFR-SEC-004), не хардкод (frontend/e2e/support/
+      # ldapScenario.ts) - Playwright запускается на раннере, не в
+      # контейнере, и не получает их через `env_file:` компоуза, как
+      # backend; читает тот же `.env` явно.
       - name: Run E2E tests
         working-directory: frontend
-        run: npx playwright test
+        run: |
+          set -a
+          source ../.env
+          set +a
+          npx playwright test
 
       - name: Upload Playwright traces on failure
         if: failure()

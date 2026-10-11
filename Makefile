@@ -66,7 +66,7 @@ COMPOSE_E2E = docker compose --env-file .env -f infra/docker-compose.yml -f infr
 
 test-e2e:
 	@test -f .env || { echo "Нет .env — выполните: cp .env.example .env"; exit 1; }
-	$(COMPOSE_E2E) up -d
+	$(COMPOSE_E2E) up -d postgres redis openldap
 	@echo "Ожидание готовности тестового LDAP..."
 	@bash -c ' \
 		source .env; \
@@ -77,6 +77,16 @@ test-e2e:
 		done; \
 		echo "Тестовый LDAP не ответил за 30 секунд"; exit 1 \
 	'
+	@# T-M1-24, обнаружено прогоном: backend падает при старте на пустой
+	@# БД (lifespan проверяет bootstrap-администратора запросом к
+	@# `accounts`, которой до миграций не существует) - миграции
+	@# обязаны применяться ОДНОРАЗОВЫМ контейнером (`run --rm`) ДО
+	@# того, как сервис `backend` поднимется сам, а не после попытки
+	@# его поднять. `run --rm` сам ждёт `postgres`/`redis` healthy
+	@# (depends_on уже объявлен на сервисе `backend`), отдельный опрос
+	@# не нужен.
+	$(COMPOSE_E2E) run --rm backend alembic upgrade head
+	$(COMPOSE_E2E) up -d
 	@echo "Ожидание готовности приложения через nginx..."
 	@bash -c ' \
 		for i in $$(seq 1 60); do \
@@ -85,8 +95,12 @@ test-e2e:
 		done; \
 		echo "Не дождались http://localhost/healthz за 60 секунд"; exit 1 \
 	'
-	$(COMPOSE_E2E) exec -T backend alembic upgrade head
-	cd frontend && npx playwright test; status=$$?; cd ..; $(COMPOSE) up -d frontend; exit $$status
+	@# T-M1-24: BOOTSTRAP_ADMIN_LOGIN/PASSWORD и LDAP_ADMIN_PASSWORD -
+	@# секреты окружения (NFR-SEC-004), не хардкод (frontend/e2e/support/
+	@# ldapScenario.ts) - playwright запускается на хосте, не в
+	@# контейнере, поэтому читает `.env` явно, а не получает их через
+	@# `env_file:` компоуза, как backend.
+	bash -c 'set -a; source .env; set +a; cd frontend && npx playwright test'; status=$$?; $(COMPOSE) up -d frontend; exit $$status
 
 lint-frontend:
 	cd frontend && npm run lint

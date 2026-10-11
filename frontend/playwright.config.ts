@@ -21,6 +21,14 @@ import { defineConfig, devices } from "@playwright/test";
 export default defineConfig({
   testDir: "./e2e",
   fullyParallel: false,
+  // ldap-login.spec.ts's two tests share state (the singleton
+  // `ldap_settings` row, a fixed-email employee) and depend on running
+  // in file-declaration order - `fullyParallel: false` already keeps
+  // tests WITHIN a file serial, but a second spec file could still run
+  // in a separate worker AT THE SAME TIME. One worker removes that
+  // possibility outright; this suite is small enough that the cost is
+  // negligible.
+  workers: 1,
   // Один браузер — цель сценария не кроссбраузерность (T-M1-24).
   projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
   use: {

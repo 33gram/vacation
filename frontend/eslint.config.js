@@ -25,4 +25,13 @@ export default tseslint.config(
       ],
     },
   },
+  // T-M1-24: e2e/ runs under Node (Playwright test runner), not the
+  // browser - `process.env`/top-level `fetch` are Node globals there,
+  // not DOM ones; the block above's `globals.browser` wouldn't know them.
+  {
+    files: ['e2e/**/*.ts'],
+    languageOptions: {
+      globals: globals.node,
+    },
+  },
 )

@@ -1,13 +1,14 @@
 import { expect, test } from "@playwright/test";
 
+import { startOpenldapAndWaitReady, stopOpenldap } from "./support/dockerControl";
 import { DIRECTORY_USER, setupLdapScenario } from "./support/ldapScenario";
 
-// T-M1-24. Два теста в ОДНОМ файле, в этом порядке, намеренно:
+// T-M1-24. Три теста в ОДНОМ файле, в этом порядке, намеренно:
 // `ldap_settings` — singleton-таблица (одна строка на всю систему,
-// `ldap_settings_service.py`), и второй тест сохраняет её с заведомо
-// неверным паролем служебной записи — если он выполнится первым (или
-// параллельно), первый тест столкнулся бы с уже испорченными
-// параметрами, которые он сам не трогает. `playwright.config.ts`
+// `ldap_settings_service.py`), и третий тест сохраняет её с заведомо
+// неверным паролем служебной записи — если он выполнится раньше (или
+// параллельно с) первых двух, они столкнулись бы с уже испорченными
+// параметрами, которые сами не трогают. `playwright.config.ts`
 // фиксирует `workers: 1` ради этого же порядка между файлами (здесь
 // он единственный, где это важно) — тесты этого набора не независимы
 // друг от друга, это сознательное решение, а не оплошность.
@@ -15,7 +16,7 @@ import { DIRECTORY_USER, setupLdapScenario } from "./support/ldapScenario";
 test.describe.configure({ mode: "serial" });
 
 test("logs in via LDAP, and the admin sees the matching employee card", async ({ page }) => {
-  const { adminLogin, adminPassword, ldapConnectionConfirmed } = await setupLdapScenario();
+  const { adminToken, ldapConnectionConfirmed } = await setupLdapScenario();
   // Предусловие, не то, что проверяет этот тест: без успешной проверки
   // сохранённых параметров (`POST /ldap-settings/test`) система остаётся
   // в режиме внедрения (`is_embedded_mode`, `embedded_mode.py`) и вход
@@ -31,14 +32,21 @@ test("logs in via LDAP, and the admin sees the matching employee card", async ({
   await page.getByLabel("Пароль").fill(DIRECTORY_USER.password);
   await page.getByRole("button", { name: "Войти" }).click();
 
-  // Подтверждение входа. Карточку сотрудника эта же сессия не может
-  // открыть сама: role="employee" назначается ВСЕГДА при создании через
-  // API (нет эндпоинта, устанавливающего другую роль), а `/employees/:id`
-  // доступен только hr_admin/system_admin (roles.ts, NON_MENU_ROUTES) -
-  // сотрудник без доступного в M1 раздела видит состояние "Пусто"
-  // (StubPage). Это и есть узость, названная в docs/tasks.md (T-M1-24,
-  // пункт 10): карточка проверяется ниже сессией администратора, не
-  // сессией только что вошедшего сотрудника каталога.
+  // Подтверждение входа. Карточку сотрудника эта же сессия сама дальше
+  // не открывает - НЕ потому что такого пути нет вовсе (на уровне API
+  // он есть, см. docs/tasks.md T-M1-24 за ссылкой на can_view_employee),
+  // а потому что интерфейс M1 его не предоставляет: при создании через
+  // API карточке назначается role="employee" (проверено прогоном
+  // 2026-10-11 - во всём backend ровно три места строят `Account(...)`:
+  // bootstrap.py, role="system_admin" для одноразовой bootstrap-записи;
+  // employee_service.py и import_service.py, оба role="employee"
+  // без параметра - свойство верно на сегодняшнюю поверхность API, не
+  // навсегда), а `/employees/:id` на фронтенде доступен только
+  // hr_admin/system_admin (roles.ts,
+  // NON_MENU_ROUTES) - сотрудник без доступного в M1 раздела видит
+  // состояние "Пусто" (StubPage). Карточка проверяется ниже сессией
+  // администратора - той же, что готовила данные (токен из
+  // setupLdapScenario, без повторного входа через интерфейс, см. ниже).
   await expect(page.getByRole("button", { name: "Выйти" })).toBeVisible();
   await expect(page.getByText("Разделы этой роли ещё не готовы")).toBeVisible();
 
@@ -47,50 +55,97 @@ test("logs in via LDAP, and the admin sees the matching employee card", async ({
 
   // 2. Та же карточка, созданная в setupLdapScenario с тем же email, что
   // и у только что вошедшего каталожного пользователя - открыта сессией
-  // администратора (единственная роль, видящая /employees/:id в M1).
-  await page.getByLabel("Логин или e-mail").fill(adminLogin);
-  await page.getByLabel("Пароль").fill(adminPassword);
-  await page.getByRole("button", { name: "Войти" }).click();
-
-  // Ждём завершения входа ДО перехода на /employees - без этого `goto`
-  // мог бы выполниться раньше, чем приложение получит и сохранит токен
-  // (AuthGuard увидел бы отсутствие токена и увёл обратно на /login,
-  // прежде чем асинхронный ответ POST /api/auth/login вообще пришёл бы -
-  // воспроизведено прогоном, не предположено).
-  await expect(page.getByRole("button", { name: "Выйти" })).toBeVisible();
-
+  // администратора. Токен ПЕРЕИСПОЛЬЗУЕТСЯ из API-подготовки, а не
+  // получается повторным входом через интерфейс (PR #169 review,
+  // пункт 1): вход через форму вызывает `fill()` с паролем, а
+  // `trace: "retain-on-failure"` (playwright.config.ts) публикует
+  // параметры действий в trace.zip при падении - админский пароль
+  // оказался бы в артефакте CI на 7 дней. Пароль каталожного пользователя
+  // выше остаётся напечатанным намеренно (это и есть проверяемый
+  // сценарий, см. playwright.config.ts) - но для администратора в этом
+  // нет необходимости: сессия нужна только чтобы открыть карточку,
+  // и `localStorage`-ключ, который приложение проверяет
+  // (`TOKEN_STORAGE_KEY`, src/app/auth.ts), публичен по имени, а не по
+  // секретности.
+  await page.evaluate((token) => {
+    localStorage.setItem("vt_access_token", token);
+  }, adminToken);
   await page.goto("/employees");
   await page.getByRole("link", { name: DIRECTORY_USER.fullName }).click();
 
   await expect(page.getByText(DIRECTORY_USER.fullName)).toBeVisible();
   await expect(page.getByText(DIRECTORY_USER.email)).toBeVisible();
+});
 
-  await page.getByRole("button", { name: "Выйти" }).click();
+test("отрицательный контроль: вход каталожным паролем падает, когда каталог недоступен", async ({
+  page,
+}) => {
+  // T-M1-24, PR #169 review, пункт 2 - ГЛАВНЫЙ отрицательный контроль:
+  // доказывает, что позитивный сценарий ДЕЙСТВИТЕЛЬНО обращается к
+  // каталогу во время входа, а не только что сломанные настройки не
+  // выводят систему из режима внедрения (тот контроль - ниже, второй
+  // случай, он проверяет другое свойство и не заменяет этот). Настройки
+  // сохранены и УСПЕШНО проверены (как в позитивном сценарии) - затем
+  // сам каталог останавливается, и вход должен упасть именно на шаге
+  // входа, обратившись к недоступному каталогу.
+  const { ldapConnectionConfirmed } = await setupLdapScenario();
+  expect(
+    ldapConnectionConfirmed,
+    "подключение должно быть подтверждено ДО отключения каталога",
+  ).toBe(true);
+
+  stopOpenldap();
+  try {
+    await page.goto("/login");
+    await page.getByLabel("Логин или e-mail").fill(DIRECTORY_USER.email);
+    await page.getByLabel("Пароль").fill(DIRECTORY_USER.password);
+
+    const startedAt = Date.now();
+    await page.getByRole("button", { name: "Войти" }).click();
+    await expect(page.getByRole("button", { name: "Выйти" })).not.toBeVisible();
+    const elapsedMs = Date.now() - startedAt;
+    console.log(`[T-M1-24] login rejected ${elapsedMs}ms after click while openldap was stopped`);
+
+    // Ревью измерило ~0.3с для этого отказа (ldap3 получает "connection
+    // refused" от закрытого порта немедленно, не ждёт TCP-таймаута) -
+    // зафиксировано как ожидание, чтобы будущее зависание (таймаут
+    // подключения вместо быстрого отказа, например при смене закрытого
+    // порта на "подвисший", недостижимый без reset) было заметно само
+    // по себе, не потерялось в общем таймауте теста (30с).
+    expect(elapsedMs, "отказ входа при недоступном каталоге должен быть быстрым").toBeLessThan(
+      3000,
+    );
+  } finally {
+    // Контейнер возвращается независимо от результата проверки выше -
+    // иначе следующий тест (или следующий локальный прогон) получил бы
+    // недоступный каталог не из-за собственной причины.
+    startOpenldapAndWaitReady();
+  }
 });
 
 test("отрицательный контроль: вход каталожным паролем падает, если сервисная учётная запись LDAP не может сама войти в каталог", async ({
   page,
 }) => {
-  // T-M1-24, пункт 8 — без этого контроля позитивный сценарий ничего не
-  // доказывает: `POST /api/auth/login` диспетчеризует сотрудника с
+  // T-M1-24, пункт 8 исходной задачи - более слабый, вспомогательный
+  // случай (см. комментарий у теста выше за тем, какой контроль главный
+  // и почему): `POST /api/auth/login` диспетчеризует сотрудника с
   // `auth_type = local` на локальный вход ДАЖЕ при активном LDAP
   // (`local_service.uses_local_auth`), и если карточка была бы создана
   // локальным способом входа с совпадающим паролем, тот же сценарий
   // прошёл бы, не коснувшись каталога вовсе.
   //
-  // Механизм здесь - не живой провал bind'а ВО ВРЕМЯ входа (как можно
-  // было бы ожидать): неверный пароль служебной записи роняет саму
-  // проверку подключения (`POST /ldap-settings/test`,
-  // `setupLdapScenario`, см. её докстринг), и система остаётся в режиме
-  // внедрения (`is_embedded_mode` требует `last_test_status ==
-  // "success"`, embedded_mode.py) - `/api/auth/login` для Ивана
-  // диспетчеризуется ЛОКАЛЬНО (нет хэша пароля -> отказ), даже не
-  // пытаясь обратиться к каталогу напрямую. Наблюдаемый результат тот
-  // же (вход отказывает), и то, что он доказывает, не меняется: ломая
-  // ТОЛЬКО связь с каталогом (не саму карточку, не способ входа), вход
-  // каталожным паролем перестаёт работать - значит позитивный сценарий
-  // выше зависел именно от исправной связи с LDAP, а не от случайного
-  // совпадения с локальным паролем.
+  // Механизм здесь - не живой провал bind'а ВО ВРЕМЯ входа (это
+  // проверяет тест выше, остановкой самого каталога): неверный пароль
+  // служебной записи роняет саму проверку подключения (`POST
+  // /ldap-settings/test`, `setupLdapScenario`, см. её докстринг), и
+  // система остаётся в режиме внедрения (`is_embedded_mode` требует
+  // `last_test_status == "success"`, embedded_mode.py) -
+  // `/api/auth/login` для Ивана диспетчеризуется ЛОКАЛЬНО (нет хэша
+  // пароля -> отказ), даже не пытаясь обратиться к каталогу напрямую.
+  // Наблюдаемый результат тот же (вход отказывает), но то, что ДОКАЗЫВАЕТ
+  // именно этот контроль, у́же: что сломанные учётные данные службы не
+  // дают системе выйти из режима внедрения - не то, что сам вход
+  // обращается к каталогу (для этого см. тест выше).
   const { ldapConnectionConfirmed } = await setupLdapScenario({
     ldapBindPassword: "definitely-wrong-service-account-password",
   });

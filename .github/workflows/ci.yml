@@ -139,13 +139,15 @@ jobs:
     # каталога, frontend — против подменённого fetch, а между ними до
     # этой задачи никто. Полный стек через docker compose (тот же образец,
     # что у backend-tests для openldap, здесь — весь infra/docker-
-    # compose.yml) с оверрайдом `docker-compose.e2e.yml`: приложение
-    # открывается через nginx (:80), как в прод-форме (plan.md §8), и
-    # `VITE_API_BASE_URL` на этот прогон пуст — иначе браузер звал бы
-    # backend напрямую через :8000, минуя nginx (проверено прогоном при
-    # разработке этой задачи, см. комментарий у docker-compose.e2e.yml).
+    # compose.yml) с оверрайдом `docker-compose.e2e.yml` — почему именно
+    # он, см. `frontend/playwright.config.ts` (не дублируется здесь,
+    # PR #169 review, пункт 5).
     name: E2E (Playwright, LDAP login)
     runs-on: ubuntu-latest
+    env:
+      # По образцу Makefile's COMPOSE_E2E — один источник, не пять
+      # повторений инлайн (PR #169 review, пункт 5).
+      COMPOSE_FILES: -f infra/docker-compose.yml -f infra/docker-compose.e2e.yml
     steps:
       - uses: actions/checkout@v7
 
@@ -175,7 +177,7 @@ jobs:
       # бессмысленно).
       - name: Start data-layer services (postgres + redis + test LDAP)
         run: |
-          docker compose --env-file .env -f infra/docker-compose.yml -f infra/docker-compose.e2e.yml up -d postgres redis openldap
+          docker compose --env-file .env $COMPOSE_FILES up -d postgres redis openldap
 
       # Опрос реального признака готовности в цикле с таймаутом - тот же
       # принцип, что у backend-tests (см. его шаг "Start test OpenLDAP"),
@@ -183,7 +185,7 @@ jobs:
       - name: Wait for test OpenLDAP
         run: |
           timeout 30 bash -c '
-            until docker compose --env-file .env -f infra/docker-compose.yml -f infra/docker-compose.e2e.yml \
+            until docker compose --env-file .env $COMPOSE_FILES \
                 exec -T openldap ldapwhoami -x -H ldap://localhost:1389 \
                 -D "cn=admin,dc=company,dc=local" -w changeme >/dev/null 2>&1; do
               sleep 1
@@ -202,12 +204,11 @@ jobs:
       # docker-compose.yml), отдельный опрос перед этим шагом не нужен.
       - name: Run DB migrations
         run: |
-          docker compose --env-file .env -f infra/docker-compose.yml -f infra/docker-compose.e2e.yml \
-              run --rm backend alembic upgrade head
+          docker compose --env-file .env $COMPOSE_FILES run --rm backend alembic upgrade head
 
       - name: Start the rest of the stack (nginx + backend + frontend)
         run: |
-          docker compose --env-file .env -f infra/docker-compose.yml -f infra/docker-compose.e2e.yml up -d
+          docker compose --env-file .env $COMPOSE_FILES up -d
 
       - name: Wait for the app through nginx
         run: |

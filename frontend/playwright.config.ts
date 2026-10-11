@@ -21,7 +21,7 @@ import { defineConfig, devices } from "@playwright/test";
 export default defineConfig({
   testDir: "./e2e",
   fullyParallel: false,
-  // ldap-login.spec.ts's two tests share state (the singleton
+  // ldap-login.spec.ts's three tests share state (the singleton
   // `ldap_settings` row, a fixed-email employee) and depend on running
   // in file-declaration order - `fullyParallel: false` already keeps
   // tests WITHIN a file serial, but a second spec file could still run
@@ -33,6 +33,18 @@ export default defineConfig({
   projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
   use: {
     baseURL: "http://localhost",
+    // PR #169 review, пункт 1: трассировка упавшего прогона публикуется
+    // как артефакт CI на 7 дней (.github/workflows/ci.yml) и пишет
+    // параметры КАЖДОГО действия, включая `fill()`. Админский пароль
+    // никогда не попадает в браузер вовсе (ldap-login.spec.ts
+    // переиспользует токен из API-подготовки, не входит через форму) -
+    // отключать трассировку ради этого не нужно. Остаточный случай,
+    // осознанный, а не упущенный: пароль КАТАЛОЖНОГО пользователя
+    // (`TestPass123!`, infra/openldap/seed/01-people.ldif) всё равно
+    // печатается в браузер через форму входа и может попасть в trace.zip
+    // при падении - это синтетические данные, лежащие в репозитории с
+    // M0, и именно их ввод и есть проверяемый сценарий (вход по LDAP),
+    // поэтому их присутствие в трассировке допустимо.
     trace: "retain-on-failure",
   },
   // CI поднимает стек и ждёт готовности отдельным шагом (poll по реальному

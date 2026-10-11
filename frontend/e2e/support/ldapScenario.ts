@@ -98,12 +98,11 @@ interface LoginResponseBody {
   must_change_password: boolean;
 }
 
-async function loginAsAdmin(): Promise<{ token: string; password: string }> {
+async function loginAsAdmin(): Promise<string> {
   let login = await api<LoginResponseBody>("/api/auth/login", {
     method: "POST",
     body: { login: ADMIN_LOGIN, password: ADMIN_BOOTSTRAP_PASSWORD },
   });
-  let password = ADMIN_BOOTSTRAP_PASSWORD;
 
   if (login.status === 401) {
     // Пароль уже сменён более ранним вызовом этой функции в той же БД
@@ -113,7 +112,6 @@ async function loginAsAdmin(): Promise<{ token: string; password: string }> {
       method: "POST",
       body: { login: ADMIN_LOGIN, password: NEW_ADMIN_PASSWORD },
     });
-    password = NEW_ADMIN_PASSWORD;
   }
 
   if (login.status !== 200) {
@@ -133,10 +131,9 @@ async function loginAsAdmin(): Promise<{ token: string; password: string }> {
     if (changed.status !== 204) {
       throw new Error(`Не удалось сменить пароль администратора: ${changed.status}`);
     }
-    password = NEW_ADMIN_PASSWORD;
   }
 
-  return { token, password };
+  return token;
 }
 
 interface EmployeeOutBody {
@@ -182,8 +179,7 @@ async function createOrReuseDirectoryEmployee(
 }
 
 export interface ScenarioSetupResult {
-  adminLogin: string;
-  adminPassword: string;
+  adminToken: string;
   employeeId: number;
   ldapConnectionConfirmed: boolean;
 }
@@ -193,7 +189,7 @@ export async function setupLdapScenario(
 ): Promise<ScenarioSetupResult> {
   const bindPassword = options.ldapBindPassword ?? LDAP_SERVICE_ACCOUNT_PASSWORD;
 
-  const { token, password } = await loginAsAdmin();
+  const token = await loginAsAdmin();
 
   const ldapSettings = await api("/api/admin/ldap-settings", {
     method: "PUT",
@@ -241,5 +237,5 @@ export async function setupLdapScenario(
 
   const employeeId = await createOrReuseDirectoryEmployee(token, department.body.id);
 
-  return { adminLogin: ADMIN_LOGIN, adminPassword: password, employeeId, ldapConnectionConfirmed };
+  return { adminToken: token, employeeId, ldapConnectionConfirmed };
 }

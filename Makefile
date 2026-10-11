@@ -51,17 +51,15 @@ test-frontend:
 	cd frontend && npm run test -- --run
 
 # T-M1-24: отдельный оверрайд компоуза (infra/docker-compose.e2e.yml),
-# не обычный `$(COMPOSE)` — приложение открывается через nginx (:80), а
-# `VITE_API_BASE_URL` на время этого прогона должен быть пустым, иначе
-# браузер звал бы backend напрямую через :8000, минуя nginx, и прокси в
-# сценарии не участвовал бы (см. комментарий у `docker-compose.e2e.yml` и
-# `frontend/playwright.config.ts`). Готовность стека ждём опросом
-# реального признака (как `backend-tests` в CI ждёт openldap), не `sleep`.
-# После прогона (успешного или нет) возвращает `frontend` к обычному
-# конфигу — иначе обычный `make up`/разработческий :5173 молча ломается
-# следующим обращением к API. Предполагает, что зависимости уже
-# установлены (`cd frontend && npm ci && npx playwright install
-# --with-deps chromium`) — этот шаг делается один раз, не на каждый прогон.
+# не обычный `$(COMPOSE)` — почему именно этот оверрайд, см.
+# `frontend/playwright.config.ts` (не дублируется здесь, PR #169 review,
+# пункт 5). Готовность стека ждём опросом реального признака (как
+# `backend-tests` в CI ждёт openldap), не `sleep`. После прогона
+# (успешного или нет) возвращает `frontend` к обычному конфигу — иначе
+# обычный `make up`/разработческий :5173 молча ломается следующим
+# обращением к API. Предполагает, что зависимости уже установлены
+# (`cd frontend && npm ci && npx playwright install --with-deps
+# chromium`) — этот шаг делается один раз, не на каждый прогон.
 COMPOSE_E2E = docker compose --env-file .env -f infra/docker-compose.yml -f infra/docker-compose.e2e.yml
 
 test-e2e:

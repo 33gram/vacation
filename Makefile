@@ -8,7 +8,8 @@ PIP_TOOLS_VERSION = 7.4.1
 # PR #162 review: закреплено по digest, не по тегу `python:3.12-slim` —
 # тот же довод, что у `bitnamilegacy/openldap` в `infra/docker-compose.yml`:
 # тег может быть молча перезаписан другим содержимым, и тогда перегенерация
-# `constraints.txt` через месяц дала бы другое разрешение зависимостей по
+# `backend/requirements.lock` (`T-M1-55`, прежде — `constraints.txt`,
+# `T-M1-43`) через месяц дала бы другое разрешение зависимостей по
 # причине, не связанной ни с одной из них самих, подрывая именно то
 # свойство (воспроизводимость), ради которого заведён этот файл.
 # Обновляется явно и отдельно от версий зависимостей: `docker pull
@@ -127,19 +128,23 @@ check-task-checkbox:
 check-basis-version:
 	python3 scripts/check_basis_version.py
 
-# T-M1-43: одноразовый контейнер `--platform linux/amd64`, НЕ обычный
-# `backend`-сервис `$(COMPOSE)` — у части пакетов состав зависимостей
-# платформенно-условный, а раннер CI и прод linux/amd64, тогда как
-# `backend`-сервис на arm64-хосте (например, macOS) сам тоже aarch64.
-# Результат не должен зависеть от архитектуры машины, которая выполняет
-# эту команду — см. заголовок backend/constraints.txt.
+# T-M1-43/T-M1-55: одноразовый контейнер `--platform linux/amd64`, НЕ
+# обычный `backend`-сервис `$(COMPOSE)` — у части пакетов состав
+# зависимостей платформенно-условный, а раннер CI и прод linux/amd64,
+# тогда как `backend`-сервис на arm64-хосте (например, macOS) сам тоже
+# aarch64. Результат не должен зависеть от архитектуры машины, которая
+# выполняет эту команду. `--generate-hashes` добавлен в `T-M1-55` — риск
+# для arm64 (хэши только amd64-колёс) проверен прогоном и не
+# подтвердился: `pip-compile` хэширует все файлы релиза с PyPI, не
+# только то, что скачал при разрешении — см. заголовок
+# backend/requirements.lock.
 lock-backend:
 	docker run --rm --platform linux/amd64 \
 		-v "$(CURDIR)/backend:/workspace" -w /workspace \
 		$(LOCK_BASE_IMAGE) bash -c " \
 			pip install --no-cache-dir --quiet pip-tools==$(PIP_TOOLS_VERSION) && \
-			pip-compile --extra dev --strip-extras --no-header --quiet \
-				--output-file=/tmp/constraints.body.txt pyproject.toml && \
-			cat constraints.header.txt /tmp/constraints.body.txt > constraints.txt \
+			pip-compile --extra dev --strip-extras --generate-hashes --no-header --quiet \
+				--output-file=/tmp/requirements.lock.body.txt pyproject.toml && \
+			cat requirements.lock.header.txt /tmp/requirements.lock.body.txt > requirements.lock \
 		"
-	@echo "Перегенерировано: backend/constraints.txt. Обновление версий — отдельным коммитом (см. заголовок файла)."
+	@echo "Перегенерировано: backend/requirements.lock. Обновление версий — отдельным коммитом (см. заголовок файла)."

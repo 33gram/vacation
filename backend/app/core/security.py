@@ -44,9 +44,12 @@ def normalize_password(password: str) -> str:
     трогают пароль напрямую — они вызывают эти четыре функции, то есть
     покрыты транзитивно, без собственного вызова. Проверка, что все
     четыре функции действительно вызывают `normalize_password`, —
-    `backend/tests/test_password_normalization_coverage.py` (по
-    аналогии с `test_endpoint_auth_coverage.py`/`test_constraints_
-    applied.py` — перечисление по сигнатуре функции, не договорённость).
+    `backend/tests/test_password_normalization_coverage.py` (та же линия
+    «обнаружение, а не договорённость», что у `test_endpoint_auth_
+    coverage.py` и `test_hashed_lock_applied.py`, но не тот же механизм:
+    здесь — импорт всех модулей `app/` и разбор сигнатур функций, там —
+    обход дерева по списку шаблонов имён файлов; обе избегают ручного
+    списка конкретных имён, не разделяя при этом способ обхода).
     """
     return unicodedata.normalize("NFC", password)
 

@@ -1,5 +1,7 @@
-"""Every backend-project `pip install` anywhere in the repository follows
-the two-step hashed form (`T-M1-55`): dependencies installed from
+"""Every backend-project `pip install` in a file this module's filename-
+pattern list recognizes as build/CI/ops configuration (`Dockerfile*`,
+`docker-compose*.yml`, `.github/workflows/*.yml`/`*.yaml`, `Makefile*`,
+`*.sh`) follows the two-step hashed form (`T-M1-55`): dependencies installed from
 `requirements.lock` with `--require-hashes`, the project itself installed
 separately with `--no-deps`. A new install site added later in either
 step's old one-shot form (`pip install -e . -c constraints.txt`, or
@@ -37,8 +39,9 @@ first step already installed.
 Discovery by an EXPANDED filename-pattern list, not by content - `T-M1-
 55`'s first edition inherited the module this replaces' pattern list
 (`.github/workflows/*.yml`/`*.yaml`, `Dockerfile*`, `docker-compose*.yml`)
-and that was already narrower than this docstring's own opening claim
-("anywhere in the repository"), caught by review (PR #171): the root
+and that was already narrower than this docstring's own opening claim AT
+THE TIME ("anywhere in the repository" - since corrected above), caught
+by review (PR #171): the root
 `Makefile` carries a real `pip install` today (the `pip-tools` install
 inside `make lock-backend`) and matched none of those patterns, so a
 `pip install -e .` added there as a new recipe went undetected - verified
@@ -70,11 +73,24 @@ to need: `Dockerfile*`, `docker-compose*.yml`, `.github/workflows/
 and `*.sh` anywhere in the tree (the next most plausible kind of file to
 carry a `pip install` - an entrypoint or setup script - even though none
 exists in this repository today). `.git`/`node_modules` are excluded by
-path part, as before. The headline claim above is narrowed by this
-docstring to "every pip install in a file this pattern list recognizes
-as build/CI/ops configuration" - not literally every file in the
-repository; `test_discover_matches_makefile_by_pattern` below is the
-regression test for the specific gap review measured.
+path part, as before. `test_discover_matches_makefile_by_pattern` below
+is the regression test for the specific gap review measured.
+
+Known, named boundary (rule 8, CLAUDE.md) - not just "not literally every
+file", but which plausible install sites specifically sit outside this
+pattern list today: a composite GitHub Action's own definition
+(`.github/actions/*/action.yml`), `tox.ini`, and `noxfile.py` would each
+be a legitimate place to write a `pip install`, and none of the five
+patterns above matches any of them - confirmed by running `find` over
+this repository: none of the three exists here today, so the gap is
+theoretical, not measured debt the way the `Makefile`/`*.sh` gap was.
+Left unclosed on purpose, not by oversight: adding a pattern for a file
+kind that does not exist yet would have no regression test backing it
+(the project's own convention here is a real, injected negative control
+per pattern, not a speculative one) - the pattern list grows the next
+time one of these three actually appears, the same way `Makefile*`/
+`*.sh` were added once `make lock-backend`'s real recipe exposed the
+previous list's gap.
 
 Same path-resolution guard as `test_ears_criteria_coverage.py`, for the
 same reason - not inherited as a blanket property of every check in this
@@ -162,20 +178,34 @@ something else entirely. Examples actually run, not an exhaustive list:
   - `pip install ./dist/pkg-1.0-py3-none-any.whl` is flagged, even
     though it installs a built wheel, not this project's source - no
     flag precedes the path for this module to recognize and skip.
-  - T-M1-55 PR #171 review's own fix hit this directly, in its own
-    commit: a comment narrating the real command as `pip install -r
-    requirements.lock --require-hashes` (the flag glued to the closing
-    backtick, no separating whitespace) tokenizes its last word as the
-    flag text plus a trailing backtick character, which does not equal
-    the bare flag `_REQUIRE_HASHES_FLAG` checks for - flagged
-    as "missing --require-hashes" in a line that is not a command at
-    all. Fixed by not wrapping that one phrase in backticks, not by
-    teaching this module about Markdown.
-All four are loud failures on something harmless, not silent misses on
+All three are loud failures on something harmless, not silent misses on
 something real - the deliberate direction to err in, given the choice. A
 real install written any of these ways would need an
 `_ALLOWED_WITHOUT_HASHED_LOCK` entry; none of these forms appears
 anywhere in this repository today.
+
+A fifth case, found in this branch's own PR #171 review round, was NOT
+left as a loud false positive: a comment narrating the real command as
+`` `pip install -r requirements.lock --require-hashes` `` in
+`backend/Dockerfile`'s prose (the flag glued to the closing Markdown
+backtick, no separating whitespace) tokenized its last word as the flag
+text plus a trailing backtick character, which does not equal the bare
+flag `_REQUIRE_HASHES_FLAG` checks for - flagged as "missing
+--require-hashes" in a line that is not a command at all. The first fix
+(same PR #171 review round) removed the backticks from that one phrase
+in the comment - narrow: the next prose mentioning a flag in backticks
+anywhere in a scanned file reproduces the same false positive, and the
+fix leaves no trace of WHY backticks were avoided there for the next
+person editing that comment. Replaced by a second PR #171 review round
+with a mechanism fix: `_tokenize` (below) treats a backtick the same as
+whitespace before splitting a command into tokens - not Markdown
+parsing, one character substitution at the same level as the command
+separators above. This closes the whole class, not one phrase, and the
+backtick is restored to `backend/Dockerfile`'s prose for readability.
+`test_backtick_quoted_flag_in_prose_is_not_flagged` below is the
+regression test for this; `test_bare_dot_install_without_no_deps_is_
+flagged` and the rest of the suite above confirm a real command missing
+a real flag is still caught after this change.
 
 One known, ACCEPTED false NEGATIVE, left open on purpose, inherited in
 spirit from the module this replaces: `-r requirements.lock-backup` reads
@@ -258,6 +288,17 @@ def _split_shell_commands(line: str) -> list[str]:
     return [part for part in _COMMAND_SEPARATOR.split(line) if part.strip()]
 
 
+def _tokenize(command: str) -> list[str]:
+    # Бэктик - тот же разделитель, что и пробел, а не часть токена:
+    # закрывающая кавычка Markdown, приклеенная к флагу в прозе
+    # комментария (`` `--require-hashes` ``), иначе становится частью
+    # последнего токена и не совпадает ни с одной проверяемой константой
+    # (PR #171 review - воспроизведено на реальном комментарии
+    # `backend/Dockerfile`, см. докстринг выше). Одна замена символа
+    # перед `split()`, не разбор Markdown.
+    return command.replace("`", " ").split()
+
+
 def _command_targets_backend_project(tokens: list[str]) -> bool:
     # Токенизация по пробелам, не разбор shell: value-consuming флаги
     # потребляют СЛЕДУЮЩИЙ токен как значение и никогда не рассматриваются
@@ -294,7 +335,7 @@ def _line_has_hashed_lock_install(line: str) -> bool:
     for command in _split_shell_commands(line):
         if "pip install" not in command:
             continue
-        if _command_is_hashed_lock_install(command.split()):
+        if _command_is_hashed_lock_install(_tokenize(command)):
             return True
     return False
 
@@ -309,7 +350,7 @@ def find_unhashed_project_installs(files: dict[str, str]) -> list[str]:
             for command in _split_shell_commands(line):
                 if "pip install" not in command:
                     continue
-                tokens = command.split()
+                tokens = _tokenize(command)
                 stripped = command.strip()
                 if stripped in _ALLOWED_WITHOUT_HASHED_LOCK:
                     continue
@@ -645,6 +686,36 @@ def test_blank_line_between_paired_steps_breaks_adjacency_and_is_flagged() -> No
 
     assert len(violations) == 1
     assert "нет рядом установки requirements.lock" in violations[0]
+
+
+def test_backtick_quoted_flag_in_prose_is_not_flagged() -> None:
+    # PR #171 review, второй круг: воссоздаёт реальный сбой из первого
+    # круга на РЕАЛЬНОЙ форме комментария - фраза в прозе, флаг приклеен
+    # к закрывающему бэктику без пробела. До введения `_tokenize` этот
+    # текст давал ложное "requirements.lock без --require-hashes" в
+    # строке, которая не является командой вовсе.
+    violations = find_unhashed_project_installs(
+        {
+            "Dockerfile": (
+                "# narrating the real command as `pip install -r "
+                "requirements.lock --require-hashes`\n"
+            )
+        }
+    )
+
+    assert violations == []
+
+
+def test_real_missing_require_hashes_is_still_flagged_after_tokenize_fix() -> None:
+    # Обратный контроль к тесту выше: `_tokenize` не глотает флаг, когда
+    # он по-настоящему отсутствует - лечение бэктика не стало тихим
+    # пропуском настоящего нарушения.
+    violations = find_unhashed_project_installs(
+        {"ci.yml": "- run: pip install -r requirements.lock\n"}
+    )
+
+    assert len(violations) == 1
+    assert "requirements.lock без --require-hashes" in violations[0]
 
 
 # --- _discover_candidate_files само по себе ---------------------------------

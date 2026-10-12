@@ -24,17 +24,47 @@ therefore sit OUTSIDE hash-checking mode entirely, and `--no-deps` on
 that step is what stops it from re-resolving (unhashed) everything the
 first step already installed.
 
-Discovery, not an enumerated list, inherited unchanged from the module
-this replaces: a new install site is likely to arrive in a NEW file -
-`plan.md` §8 plans M7 production deployment with `backend`/`worker`
-containers, almost certainly another backend dependency install,
-plausibly in a file this module has never heard of. `_discover_candidate_
-files` walks the repo root: every `.github/workflows/*.yml`/`*.yaml`,
-every `Dockerfile*` at any depth, every `docker-compose*.yml` at any
-depth. `frontend/Dockerfile` is excluded by its CONTENT (it installs npm
-packages, never mentions `pip install`), not by an entry in an exceptions
-list - verified by running the real-file test below with it included in
-the scan.
+Discovery by an EXPANDED filename-pattern list, not by content - `T-M1-
+55`'s first edition inherited the module this replaces' pattern list
+(`.github/workflows/*.yml`/`*.yaml`, `Dockerfile*`, `docker-compose*.yml`)
+and that was already narrower than this docstring's own opening claim
+("anywhere in the repository"), caught by review (PR #171): the root
+`Makefile` carries a real `pip install` today (the `pip-tools` install
+inside `make lock-backend`) and matched none of those patterns, so a
+`pip install -e .` added there as a new recipe went undetected - verified
+by running before this fix.
+
+Content-based discovery (read every file `git ls-files` tracks, check
+its text for `pip install`) was tried first and REJECTED, verified by
+running, not on suspicion: it finds every actual install site, but it
+also finds every PROSE mention of the phrase "pip install" - this
+module's own docstring, `docs/tasks.md`'s account of this very task,
+`requirements.lock`'s header explaining the two-step form in a comment -
+none of which are commands. Run against the real tree, content-based
+discovery turned the real-file test's `assert not violations` into two
+dozen failures from documentation text, not install sites; closing that
+would need a per-file or per-line exceptions list large enough to defeat
+the "discovery, not enumeration" point of scanning at all. `Dockerfile*`/
+`docker-compose*.yml`/CI workflow files do not have this problem in
+practice - they are config, not prose, and a `pip install` mention
+inside one is either a real command or a comment about one line away
+from it (the documented, accepted false positive family below) -
+whereas scanning EVERY tracked file reaches markdown, docstrings and
+changelog-style entries where such mentions are the norm.
+
+`_discover_candidate_files` therefore still matches by filename, but the
+pattern list is now aligned with what review actually measured as
+missing, not just the three file kinds the module this replaces happened
+to need: `Dockerfile*`, `docker-compose*.yml`, `.github/workflows/
+*.yml`/`*.yaml` (unchanged), plus `Makefile*` (closes the measured gap)
+and `*.sh` anywhere in the tree (the next most plausible kind of file to
+carry a `pip install` - an entrypoint or setup script - even though none
+exists in this repository today). `.git`/`node_modules` are excluded by
+path part, as before. The headline claim above is narrowed by this
+docstring to "every pip install in a file this pattern list recognizes
+as build/CI/ops configuration" - not literally every file in the
+repository; `test_discover_matches_makefile_by_pattern` below is the
+regression test for the specific gap review measured.
 
 Same path-resolution guard as `test_ears_criteria_coverage.py`, for the
 same reason - not inherited as a blanket property of every check in this
@@ -275,19 +305,31 @@ def find_unhashed_project_installs(files: dict[str, str]) -> list[str]:
     return violations
 
 
+_CANDIDATE_RGLOB_PATTERNS = ("Dockerfile*", "docker-compose*.yml", "Makefile*", "*.sh")
+
+
 def _discover_candidate_files(repo_root: Path) -> dict[str, str]:
     files: dict[str, str] = {}
 
-    if _WORKFLOWS_DIR.is_dir():
+    workflows_dir = repo_root / ".github" / "workflows"
+    if workflows_dir.is_dir():
         for pattern in ("*.yml", "*.yaml"):
-            for path in sorted(_WORKFLOWS_DIR.glob(pattern)):
+            for path in sorted(workflows_dir.glob(pattern)):
                 files[str(path.relative_to(repo_root))] = path.read_text(encoding="utf-8")
 
-    for pattern in ("Dockerfile*", "docker-compose*.yml"):
+    for pattern in _CANDIDATE_RGLOB_PATTERNS:
         for path in sorted(repo_root.rglob(pattern)):
             if ".git" in path.parts or "node_modules" in path.parts:
                 continue
-            files[str(path.relative_to(repo_root))] = path.read_text(encoding="utf-8")
+            if not path.is_file():
+                continue
+            try:
+                text = path.read_text(encoding="utf-8")
+            except (UnicodeDecodeError, OSError):
+                # Бинарный или нечитаемый файл - "pip install" в нём не
+                # встретится и не нуждается в разборе.
+                continue
+            files[str(path.relative_to(repo_root))] = text
 
     return files
 
@@ -543,6 +585,48 @@ def test_blank_line_between_paired_steps_breaks_adjacency_and_is_flagged() -> No
     assert "нет рядом установки requirements.lock" in violations[0]
 
 
+# --- _discover_candidate_files само по себе ---------------------------------
+
+
+def test_discover_matches_makefile_by_pattern(tmp_path: Path) -> None:
+    # T-M1-55 PR #171 review, воссозданный пробел: Makefile - реальный,
+    # сегодняшний файл с `pip install` (pip-tools, lock-backend), и прежний
+    # шаблонный список (Dockerfile*/docker-compose*.yml/.github/workflows/
+    # *.yml) его не покрывал вовсе - воспроизведено прогоном до этой правки.
+    (tmp_path / "Makefile").write_text("fake-install:\n\tpip install -e .\n", encoding="utf-8")
+
+    files = _discover_candidate_files(tmp_path)
+
+    assert "Makefile" in files
+    assert "pip install -e ." in files["Makefile"]
+
+
+def test_discover_matches_shell_scripts_anywhere(tmp_path: Path) -> None:
+    nested = tmp_path / "infra"
+    nested.mkdir()
+    (nested / "entrypoint.sh").write_text("pip install -e .\n", encoding="utf-8")
+
+    files = _discover_candidate_files(tmp_path)
+
+    assert "infra/entrypoint.sh" in files
+
+
+def test_discover_excludes_git_and_node_modules_directories(tmp_path: Path) -> None:
+    (tmp_path / "node_modules").mkdir()
+    (tmp_path / "node_modules" / "Makefile").write_text(
+        "fake:\n\tpip install -e .\n", encoding="utf-8"
+    )
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".git" / "Makefile").write_text(
+        "fake:\n\tpip install -e .\n", encoding="utf-8"
+    )
+    (tmp_path / "Makefile").write_text("real:\n\tpip install -e .\n", encoding="utf-8")
+
+    files = _discover_candidate_files(tmp_path)
+
+    assert list(files) == ["Makefile"]
+
+
 # --- против настоящего дерева репозитория -----------------------------------
 
 
@@ -552,6 +636,9 @@ def test_every_project_pip_install_uses_hashed_lock_with_no_deps() -> None:
     # frontend/Dockerfile обязан попасть в скан (доказательство, что он не
     # даёт ложного срабатывания - по содержимому, не по исключению).
     assert "frontend/Dockerfile" in files
+    # Makefile - реальный файл с `pip install`, которого прежний шаблонный
+    # список не ловил вовсе (см. тест выше).
+    assert "Makefile" in files
 
     violations = find_unhashed_project_installs(files)
 

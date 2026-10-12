@@ -184,26 +184,40 @@ export interface ScenarioSetupResult {
   ldapConnectionConfirmed: boolean;
 }
 
+// PR #171 review, пункт 2(б): временная замерная обвязка - раскладывает
+// бюджет setupLdapScenario по шагам, не оценивает его. Удалить после
+// того, как лечение по измерению выбрано (см. тело коммита).
+async function timed<T>(label: string, fn: () => Promise<T>): Promise<T> {
+  const startedAt = Date.now();
+  try {
+    return await fn();
+  } finally {
+    console.log(`[T-M1-55 PR#171 timing] ${label}: ${Date.now() - startedAt}ms`);
+  }
+}
+
 export async function setupLdapScenario(
   options: { ldapBindPassword?: string } = {},
 ): Promise<ScenarioSetupResult> {
   const bindPassword = options.ldapBindPassword ?? LDAP_SERVICE_ACCOUNT_PASSWORD;
 
-  const token = await loginAsAdmin();
+  const token = await timed("loginAsAdmin", () => loginAsAdmin());
 
-  const ldapSettings = await api("/api/admin/ldap-settings", {
-    method: "PUT",
-    token,
-    body: {
-      server_url: "openldap",
-      port: 1389,
-      base_dn: "dc=company,dc=local",
-      bind_dn: "cn=admin,dc=company,dc=local",
-      bind_password: bindPassword,
-      user_match_attribute: "mail",
-      is_active: true,
-    },
-  });
+  const ldapSettings = await timed("PUT /ldap-settings", () =>
+    api("/api/admin/ldap-settings", {
+      method: "PUT",
+      token,
+      body: {
+        server_url: "openldap",
+        port: 1389,
+        base_dn: "dc=company,dc=local",
+        bind_dn: "cn=admin,dc=company,dc=local",
+        bind_password: bindPassword,
+        user_match_attribute: "mail",
+        is_active: true,
+      },
+    }),
+  );
   if (ldapSettings.status !== 200) {
     throw new Error(`Не удалось сохранить параметры LDAP: ${ldapSettings.status}`);
   }
@@ -220,22 +234,29 @@ export async function setupLdapScenario(
   // см. тело коммита. Пустое тело - проверка именно СОХРАНЁННЫХ
   // параметров (ldap_settings_service.test_ldap_connection), а не
   // черновых.
-  const ldapTest = await api<{ success: boolean; detail: string }>(
-    "/api/admin/ldap-settings/test",
-    { method: "POST", token, body: {} },
+  const ldapTest = await timed("POST /ldap-settings/test", () =>
+    api<{ success: boolean; detail: string }>("/api/admin/ldap-settings/test", {
+      method: "POST",
+      token,
+      body: {},
+    }),
   );
   const ldapConnectionConfirmed = ldapTest.status === 200 && ldapTest.body.success === true;
 
-  const department = await api<{ id: number }>("/api/departments", {
-    method: "POST",
-    token,
-    body: { name: `E2E Отдел ${Date.now()}` },
-  });
+  const department = await timed("POST /departments", () =>
+    api<{ id: number }>("/api/departments", {
+      method: "POST",
+      token,
+      body: { name: `E2E Отдел ${Date.now()}` },
+    }),
+  );
   if (department.status !== 201) {
     throw new Error(`Не удалось создать подразделение: ${department.status}`);
   }
 
-  const employeeId = await createOrReuseDirectoryEmployee(token, department.body.id);
+  const employeeId = await timed("createOrReuseDirectoryEmployee", () =>
+    createOrReuseDirectoryEmployee(token, department.body.id),
+  );
 
   return { adminToken: token, employeeId, ldapConnectionConfirmed };
 }

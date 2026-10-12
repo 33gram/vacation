@@ -43,8 +43,8 @@ COPY scripts ./scripts
 # потребитель `ARG` — `infra/docker-compose.yml` (`INSTALL_DEV: "true"`),
 # других в репозитории не найдено, и прод-профиля (`T-M7-10`) ещё не
 # существует — но когда он появится, использовать этот `Dockerfile` как
-# есть означало бы прод-образ с pytest/ruff внутри. `T-M7-10` дополнен
-# критерием: отдельный хэшированный замок без `--extra dev`.
+# есть означало бы прод-образ с pytest/ruff внутри. Долг заведён отдельной
+# задачей `T-M7-12`: отдельный хэшированный замок без `--extra dev`.
 ARG INSTALL_DEV=false
 RUN if [ "$INSTALL_DEV" = "true" ]; then \
       pip install --no-cache-dir -r requirements.lock --require-hashes && pip install --no-cache-dir --no-deps -e ".[dev]"; \

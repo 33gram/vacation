@@ -137,13 +137,18 @@ check-basis-version:
 # для arm64 (хэши только amd64-колёс) проверен прогоном и не
 # подтвердился: `pip-compile` хэширует все файлы релиза с PyPI, не
 # только то, что скачал при разрешении — см. заголовок
-# backend/requirements.lock.
+# backend/requirements.lock. `-c constraints.txt` добавлен PR #171
+# review: без него эта же команда поднимала версии транзитивных
+# пакетов относительно `T-M1-43`, не только добавляла хэши — см.
+# заголовок constraints.txt. Осознанный подъём версий — отдельная
+# задача (T-M1-57), правящая constraints.txt, не эту команду.
 lock-backend:
 	docker run --rm --platform linux/amd64 \
 		-v "$(CURDIR)/backend:/workspace" -w /workspace \
 		$(LOCK_BASE_IMAGE) bash -c " \
 			pip install --no-cache-dir --quiet pip-tools==$(PIP_TOOLS_VERSION) && \
-			pip-compile --extra dev --strip-extras --generate-hashes --no-header --quiet \
+			pip-compile --extra dev --strip-extras --generate-hashes -c constraints.txt \
+				--no-header --quiet \
 				--output-file=/tmp/requirements.lock.body.txt pyproject.toml && \
 			cat requirements.lock.header.txt /tmp/requirements.lock.body.txt > requirements.lock \
 		"

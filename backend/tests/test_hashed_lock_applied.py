@@ -9,6 +9,16 @@ without anyone noticing. Same failure class as `T-M1-46` and
 `department_service`'s `head_employee_id` invariant: a rule enforced in
 several places with nothing checking all of them together.
 
+The invariant is NOT only about the project-install step, since PR #171
+review: any `pip install -r requirements.lock` is checked for
+`--require-hashes` on its OWN, independently of whether a project
+install sits anywhere near it. A dependencies-only job (a separate CI
+job, a separate workflow file, lint-only tooling) that installs the lock
+file without `--require-hashes` is a real silent gap - verified by
+running before this fix: a one-line workflow doing exactly that passed
+with zero violations, because the main loop only ever looked at commands
+that also matched "this installs the project itself".
+
 This module REPLACES `test_constraints_applied.py` (`T-M1-43`, `PR #162
 review`) rather than extending it - the invariant changed shape, not
 just its flag spelling. The old invariant was "one command, carrying
@@ -152,7 +162,16 @@ something else entirely. Examples actually run, not an exhaustive list:
   - `pip install ./dist/pkg-1.0-py3-none-any.whl` is flagged, even
     though it installs a built wheel, not this project's source - no
     flag precedes the path for this module to recognize and skip.
-All three are loud failures on something harmless, not silent misses on
+  - T-M1-55 PR #171 review's own fix hit this directly, in its own
+    commit: a comment narrating the real command as `pip install -r
+    requirements.lock --require-hashes` (the flag glued to the closing
+    backtick, no separating whitespace) tokenizes its last word as the
+    flag text plus a trailing backtick character, which does not equal
+    the bare flag `_REQUIRE_HASHES_FLAG` checks for - flagged
+    as "missing --require-hashes" in a line that is not a command at
+    all. Fixed by not wrapping that one phrase in backticks, not by
+    teaching this module about Markdown.
+All four are loud failures on something harmless, not silent misses on
 something real - the deliberate direction to err in, given the choice. A
 real install written any of these ways would need an
 `_ALLOWED_WITHOUT_HASHED_LOCK` entry; none of these forms appears
@@ -220,11 +239,13 @@ _PROJECT_PATH_TOKEN = re.compile(
 )
 
 _LOCK_FLAGS = ("-r", "--requirement")
-# Необязательный префикс "./" - "-r ./requirements.lock" и "-r
-# requirements.lock" называют один и тот же файл. "-r
-# ../requirements.lock" (другой каталог) сюда не попадает намеренно - это
-# не то же самое исключение.
-_LOCK_VALUE = re.compile(r"^(?:\./)?requirements\.lock\b")
+# Необязательный префикс "./" и спуск в подкаталог ("backend/
+# requirements.lock" - тот же файл, что "requirements.lock" внутри
+# backend/, если смотреть из корня репозитория, где может запускаться
+# workflow) называют один и тот же файл. Подъём на уровень выше
+# ("../requirements.lock") сюда не попадает намеренно - это другой файл,
+# не то же самое исключение (`^(?!\.\.)` отсекает его явно).
+_LOCK_VALUE = re.compile(r"^(?!\.\.)(?:\./)?(?:[^./][^/]*/)*requirements\.lock\b")
 _REQUIRE_HASHES_FLAG = "--require-hashes"
 _NO_DEPS_FLAG = "--no-deps"
 
@@ -257,13 +278,16 @@ def _command_targets_backend_project(tokens: list[str]) -> bool:
     return False
 
 
-def _command_is_hashed_lock_install(tokens: list[str]) -> bool:
-    has_lock_arg = False
+def _command_references_lock_file(tokens: list[str]) -> bool:
     for index, token in enumerate(tokens):
         if token in _LOCK_FLAGS and index + 1 < len(tokens):
             if _LOCK_VALUE.match(tokens[index + 1]):
-                has_lock_arg = True
-    return has_lock_arg and _REQUIRE_HASHES_FLAG in tokens
+                return True
+    return False
+
+
+def _command_is_hashed_lock_install(tokens: list[str]) -> bool:
+    return _command_references_lock_file(tokens) and _REQUIRE_HASHES_FLAG in tokens
 
 
 def _line_has_hashed_lock_install(line: str) -> bool:
@@ -286,10 +310,24 @@ def find_unhashed_project_installs(files: dict[str, str]) -> list[str]:
                 if "pip install" not in command:
                     continue
                 tokens = command.split()
-                if not _command_targets_backend_project(tokens):
-                    continue
                 stripped = command.strip()
                 if stripped in _ALLOWED_WITHOUT_HASHED_LOCK:
+                    continue
+
+                # T-M1-55 PR #171 review: эта проверка - про сам замок, не
+                # про установку проекта, и выполняется НЕЗАВИСИМО от неё.
+                # Прежняя форма входила в разбор команды только тогда,
+                # когда она ставит сам проект, и установка requirements.lock
+                # без `--require-hashes` там, где рядом нет установки
+                # проекта (отдельный CI-job, отдельный workflow), проходила
+                # незамеченной - зависимости вставали бы без проверки хэшей,
+                # и ни одна команда в файле не была бы "целью" проверки.
+                if _command_references_lock_file(tokens) and _REQUIRE_HASHES_FLAG not in tokens:
+                    violations.append(
+                        f"{label}: {stripped} (requirements.lock без --require-hashes)"
+                    )
+
+                if not _command_targets_backend_project(tokens):
                     continue
                 if _NO_DEPS_FLAG not in tokens:
                     violations.append(f"{label}: {stripped} (нет --no-deps)")
@@ -467,6 +505,30 @@ def test_hashed_lock_pointing_elsewhere_is_still_a_violation() -> None:
 
     assert len(violations) == 1
     assert "нет рядом установки requirements.lock" in violations[0]
+
+
+def test_lock_install_without_require_hashes_flags_even_with_no_project_install_nearby() -> None:
+    # T-M1-55 PR #171 review, воссозданный пробел: до этой правки
+    # `find_unhashed_project_installs` разбирало команду только если она
+    # САМА ставит проект - эта строка его не ставит, и проходила бы
+    # незамеченной. Ровно сценарий ревью: отдельный workflow, одна строка,
+    # без --require-hashes, без установки проекта рядом.
+    violations = find_unhashed_project_installs(
+        {".github/workflows/lint.yml": "- run: pip install -r backend/requirements.lock\n"}
+    )
+
+    assert len(violations) == 1
+    assert "requirements.lock без --require-hashes" in violations[0]
+
+
+def test_lock_install_with_require_hashes_and_no_project_install_is_not_flagged() -> None:
+    # Обратный контроль: тот же изолированный шаг, но с --require-hashes -
+    # ничего не ставит проект, и это не обязано флагироваться.
+    violations = find_unhashed_project_installs(
+        {".github/workflows/lint.yml": "- run: pip install -r requirements.lock --require-hashes\n"}
+    )
+
+    assert violations == []
 
 
 def test_long_form_requirement_flag_is_accepted() -> None:

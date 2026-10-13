@@ -2,9 +2,15 @@
 `app/` that takes a parameter literally named `password` must contain a
 REAL call to `normalize_password`, unless it is named in
 `_ALLOWED_WITHOUT_OWN_CALL` with a reason - discovered by importing every
-module under `app/` (same discovery-over-enumeration style as
-`test_constraints_applied.py`'s file walk) and inspecting each module's
-top-level functions, not by naming two files. PR #164 review: the
+module under `app/` and inspecting each module's top-level functions,
+not by naming two files - the same discover-over-enumerate principle as
+`test_hashed_lock_applied.py`'s guard (`T-M1-55`), but not the same
+mechanism: that one walks the repo tree by a filename-pattern list and
+explicitly rejected scanning every tracked file's content (too many
+prose false positives for ITS kind of target); this one has no such
+problem importing every module under `app/`, since a module either
+defines a `password`-named parameter or it doesn't - there is no prose
+to misread. PR #164 review: the
 original version of this check only imported `app.core.security` and
 `app.modules.auth.password_policy` - a real password-touching function
 in any OTHER module (the next candidate is `T-M1-30`'s password-reset

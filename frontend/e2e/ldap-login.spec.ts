@@ -156,15 +156,23 @@ test("отрицательный контроль: вход каталожным
   // именно этот контроль, у́же: что сломанные учётные данные службы не
   // дают системе выйти из режима внедрения - не то, что сам вход
   // обращается к каталогу (для этого см. тест выше).
+  // PR #171 review, пункт 2(б): временные метки времени - удалить после
+  // выбора лечения по итогам измерения (см. тело коммита).
+  const scenarioStartedAt = Date.now();
   const { ldapConnectionConfirmed } = await setupLdapScenario({
     ldapBindPassword: "definitely-wrong-service-account-password",
   });
+  console.log(`[T-M1-55 PR#171 timing] setupLdapScenario total: ${Date.now() - scenarioStartedAt}ms`);
   expect(ldapConnectionConfirmed, "неверный пароль должен был уронить проверку подключения").toBe(
     false,
   );
 
+  const gotoStartedAt = Date.now();
   await page.goto("/login");
+  console.log(`[T-M1-55 PR#171 timing] page.goto: ${Date.now() - gotoStartedAt}ms`);
+  const fillStartedAt = Date.now();
   await page.getByLabel("Логин или e-mail").fill(DIRECTORY_USER.email);
+  console.log(`[T-M1-55 PR#171 timing] fill login: ${Date.now() - fillStartedAt}ms`);
   await page.getByLabel("Пароль").fill(DIRECTORY_USER.password);
   await page.getByRole("button", { name: "Войти" }).click();
 

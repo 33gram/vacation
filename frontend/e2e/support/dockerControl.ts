@@ -30,10 +30,15 @@ export function stopOpenldap(): void {
 // соединения, прежде чем вернуть управление - опрос реального признака
 // готовности, тот же принцип, что в Makefile/CI (не фиксированный sleep).
 export function startOpenldapAndWaitReady(timeoutMs = 30_000): void {
+  // PR #171 review, пункт 2(б)/(в): временная метка - удалить после
+  // выбора лечения по итогам измерения (см. тело коммита).
+  const startedAt = Date.now();
   execFileSync("docker", [...COMPOSE_ARGS, "start", "openldap"], { stdio: "pipe" });
 
   const deadline = Date.now() + timeoutMs;
+  let attempts = 0;
   while (Date.now() < deadline) {
+    attempts += 1;
     try {
       execFileSync(
         "docker",
@@ -52,6 +57,9 @@ export function startOpenldapAndWaitReady(timeoutMs = 30_000): void {
           requireLdapAdminPassword(),
         ],
         { stdio: "pipe" },
+      );
+      console.log(
+        `[T-M1-55 PR#171 timing] startOpenldapAndWaitReady: ${Date.now() - startedAt}ms, ${attempts} attempt(s)`,
       );
       return;
     } catch {

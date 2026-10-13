@@ -56,8 +56,9 @@ export default defineConfig({
     //
     // Измерение привязано к мажору Node 22 (`.nvmrc`); точный patch-релиз
     // образа `node:22` не зафиксирован (в отличие от digest-закрепления
-    // `T-M1-43`'s `constraints.txt`-генератора) - при смене мажора Node
-    // измерение придётся повторить.
+    // образа-генератора `requirements.lock` - `LOCK_BASE_IMAGE` в
+    // корневом `Makefile`, `T-M1-43`, хэши добавлены в `T-M1-55`) - при
+    // смене мажора Node измерение придётся повторить.
     fileParallelism: false,
   },
 })

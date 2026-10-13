@@ -31,6 +31,31 @@ class Settings(BaseSettings):
 
     ldap_password_encryption_key: str = "changeme-32-byte-encryption-key"
 
+    # T-M1-58: бюджет ожидания одного обращения к LDAP-каталогу (connect
+    # и приём ответа — `ldap3`'s `connect_timeout`/`receive_timeout`, оба
+    # `None` по умолчанию у самой библиотеки, то есть без ограничения).
+    # Общий для входа пользователя (`ldap_service.authenticate_via_ldap`)
+    # и администраторской проверки (`ldap_settings_service._run_ldap_
+    # test`) — оба делают один и тот же вид операции (bind + search) к
+    # одному и тому же каталогу, и риск, от которого бюджет защищает
+    # (поток воркера заблокирован на неотвечающем каталоге), для обоих
+    # путей одинаков; раздельные бюджеты добавили бы две настройки без
+    # содержательной причины различаться. НЕ запись `business_rules_
+    # config` (правило 5, CLAUDE.md) — это не бизнес-правило из раздела 5
+    # требований, а эксплуатационный предел сетевого ожидания. НЕ колонка
+    # `ldap_settings` — настраиваемость через интерфейс администратора
+    # была бы изменением `FR-ADMIN-005`, которое правится в требованиях
+    # ДО кода (правило 3), не этой задачей.
+    # Целые секунды, не float: `ldap3==2.9.1`'s `receive_timeout` требует
+    # int - float роняет сокетный вызов с `struct.error: required
+    # argument is not an integer` (воспроизведено прогоном против
+    # настоящего тестового каталога; `connect_timeout` на `Server`
+    # принимает float без ошибки, но оба поля сделаны int ради
+    # единообразия и чтобы не держать именно этот нюанс в голове у
+    # вызывающей стороны).
+    ldap_connect_timeout_seconds: int = 5
+    ldap_receive_timeout_seconds: int = 10
+
     bootstrap_admin_login: str = "admin"
     bootstrap_admin_password: str = "changeme"
 

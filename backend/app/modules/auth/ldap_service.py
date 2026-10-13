@@ -38,19 +38,27 @@ async def authenticate_via_ldap(session: AsyncSession, login: str, password: str
             "LDAP is not configured; the system is running in embedded mode (FR-AUTH-003)"
         )
 
+    settings = get_settings()
     params = LdapSettingsData(
         server_url=ldap_settings.server_url,
         port=ldap_settings.port,
         base_dn=ldap_settings.base_dn,
         bind_dn=ldap_settings.bind_dn,
         bind_password=decrypt(
-            ldap_settings.bind_password_encrypted, get_settings().ldap_password_encryption_key
+            ldap_settings.bind_password_encrypted, settings.ldap_password_encryption_key
         ),
         user_match_attribute=ldap_settings.user_match_attribute,
     )
 
     try:
-        matched_value = await asyncio.to_thread(ldap_bind_and_search, params, login, password)
+        matched_value = await asyncio.to_thread(
+            ldap_bind_and_search,
+            params,
+            login,
+            password,
+            connect_timeout=settings.ldap_connect_timeout_seconds,
+            receive_timeout=settings.ldap_receive_timeout_seconds,
+        )
     except LdapAuthError as exc:
         raise AuthenticationError("Invalid LDAP login or password") from exc
 

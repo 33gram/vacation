@@ -137,18 +137,30 @@ check-basis-version:
 # для arm64 (хэши только amd64-колёс) проверен прогоном и не
 # подтвердился: `pip-compile` хэширует все файлы релиза с PyPI, не
 # только то, что скачал при разрешении — см. заголовок
-# backend/requirements.lock. `-c constraints.txt` добавлен PR #171
-# review: без него эта же команда поднимала версии транзитивных
-# пакетов относительно `T-M1-43`, не только добавляла хэши — см.
-# заголовок constraints.txt. Осознанный подъём версий — отдельная
-# задача (T-M1-57), правящая constraints.txt, не эту команду.
+# backend/requirements.lock.
+#
+# PR #171 review, четвёртый круг: временный выходной файл СЕЕТСЯ текущим
+# `requirements.lock` перед запуском `pip-compile`, а не остаётся пустым/
+# одноразовым. `pip-compile`, видя уже закреплённые версии в файле, на
+# который указывает `--output-file`, предпочитает их и поднимает версию
+# пакета только если диапазон `pyproject.toml` требует этого или пакет
+# явно назван через `-P`/`--upgrade-package` — измерено тремя
+# контролируемыми прогонами (посев существующим закреплённым файлом →
+# диф пуст; посев + `-P pkg==X` → поднимается ровно названный пакет;
+# `--output-file` без посева вовсе → воспроизводятся именно те девять
+# версий, что дрейфовали до этого круга). Третий круг того же ревью
+# временно возвращал `backend/constraints.txt` отдельным версионным
+# полом для `-c` — измерением выяснилось, что это не нужно: посев тем же
+# `requirements.lock` даёт тот же результат без второго файла. Удалён
+# повторно, не возвращается. Осознанный подъём версий — через `-P` в
+# этой же команде (`T-M1-57`), не правка отдельного файла.
 lock-backend:
 	docker run --rm --platform linux/amd64 \
 		-v "$(CURDIR)/backend:/workspace" -w /workspace \
 		$(LOCK_BASE_IMAGE) bash -c " \
 			pip install --no-cache-dir --quiet pip-tools==$(PIP_TOOLS_VERSION) && \
-			pip-compile --extra dev --strip-extras --generate-hashes -c constraints.txt \
-				--no-header --quiet \
+			cp requirements.lock /tmp/requirements.lock.body.txt 2>/dev/null || true; \
+			pip-compile --extra dev --strip-extras --generate-hashes --no-header --quiet \
 				--output-file=/tmp/requirements.lock.body.txt pyproject.toml && \
 			cat requirements.lock.header.txt /tmp/requirements.lock.body.txt > requirements.lock \
 		"

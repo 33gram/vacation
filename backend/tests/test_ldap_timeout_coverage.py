@@ -40,11 +40,21 @@ constructs either today and this check was not asked to anticipate one
 that does not exist. If a method ever does, this check needs widening
 first, the same way `T-M1-42`'s review round widened its own scan from
 two named modules to the whole `app/` tree only once a third real
-caller existed. Also not caught: a budget passed via `**kwargs` spread
-rather than a literal `connect_timeout=`/`receive_timeout=` keyword -
-no call under `app/` does this today, and engineering around a
-spreading style nothing in this repository uses would be guarding
-against a hypothetical, not a measured gap.
+caller existed.
+
+A budget passed via `**kwargs` spread (`Connection(server, **opts)`
+where `opts` holds `receive_timeout`) is NOT a silent miss, the
+opposite direction from the boundary above - verified by running, not
+assumed: `find_calls_without_budget` reads a call's keywords as literal
+`ast.keyword` nodes, so a `**opts` spread never matches `kw.arg ==
+"receive_timeout"` and the call is flagged as missing the budget EVEN
+WHEN the budget is actually there at runtime. A loud false positive on
+something compliant, the same direction this module's sibling checks
+(`test_hashed_lock_applied.py`) already accept elsewhere, not a silent
+pass on something broken - no call under `app/` is written this way
+today, so nothing in this repository actually trips it, but a real one
+written this way would need an `_ALLOWED_WITHOUT_BUDGET` entry with a
+reason, same as any other false positive this family produces.
 """
 
 from __future__ import annotations
@@ -164,6 +174,23 @@ def test_unrelated_call_is_not_flagged() -> None:
         return SomethingElse("host")  # noqa: F821
 
     assert find_calls_without_budget(fake_connect) == []
+
+
+def test_budget_passed_via_kwargs_spread_is_a_false_positive_not_a_miss() -> None:
+    # Названо в докстринге модуля: ast.keyword не видит **opts, и вызов,
+    # который на деле несёт бюджет через распаковку, всё равно флагуется
+    # - громкое ложное срабатывание на совместимом коде, не тихий
+    # пропуск. Закрепляет утверждение докстринга прогоном, не только
+    # описывает его словами.
+    def fake_connect():
+        opts = {"connect_timeout": 5}
+        return Connection(Server("host", **opts), **opts)  # noqa: F821
+
+    violations = find_calls_without_budget(fake_connect)
+
+    assert len(violations) == 2
+    assert any("Server(...) без connect_timeout=" in v for v in violations)
+    assert any("Connection(...) без receive_timeout=" in v for v in violations)
 
 
 # --- против настоящего дерева app/ -------------------------------------------

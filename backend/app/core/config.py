@@ -1,7 +1,7 @@
 from functools import lru_cache
 from urllib.parse import quote_plus
 
-from pydantic import model_validator
+from pydantic import PositiveInt, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -53,8 +53,27 @@ class Settings(BaseSettings):
     # принимает float без ошибки, но оба поля сделаны int ради
     # единообразия и чтобы не держать именно этот нюанс в голове у
     # вызывающей стороны).
-    ldap_connect_timeout_seconds: int = 5
-    ldap_receive_timeout_seconds: int = 10
+    #
+    # PositiveInt (>=1), не просто int - проверено прогоном против
+    # настоящего тестового каталога: `0`/`-1` ПРОХОДЯТ валидацию `int` и
+    # ломаются только на самом вызове, причём по-разному и оба тихо.
+    # `receive_timeout=0` даёт немедленный `LDAPSocketReceiveError:
+    # [Errno 11] Resource temporarily unavailable` - любой вход через
+    # каталог отказывает, неотличимо от неверного пароля (оба -
+    # `LdapAuthError`), без единого предупреждения о причине.
+    # `receive_timeout=-1`/`connect_timeout=-1` дают `ValueError: Timeout
+    # value out of range` - `ValueError` НЕ подкласс `LDAPException`,
+    # перехват в `ldap_client.py` его не ловит, и наружу уходит
+    # необработанное исключение (500) вместо единообразного отказа
+    # входа. `connect_timeout=0` против настоящего каталога прошёл
+    # успешно (сеть локальная и быстрая, не успевает проявиться) - не
+    # довод в пользу того, что `0` безопасен, только что эта конкретная
+    # сеть не вскрыла проблему; `PositiveInt` закрывает оба поля сразу,
+    # не оставляя разбираться, какое именно значение на какой сети
+    # сработает. Недопустимое значение теперь роняет старт приложения
+    # (pydantic ValidationError) с внятным сообщением, а не каждый вход.
+    ldap_connect_timeout_seconds: PositiveInt = 5
+    ldap_receive_timeout_seconds: PositiveInt = 10
 
     bootstrap_admin_login: str = "admin"
     bootstrap_admin_password: str = "changeme"

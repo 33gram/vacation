@@ -41,3 +41,25 @@ def test_test_environment_with_default_secrets_starts() -> None:
 
     default_password = Settings.model_fields["bootstrap_admin_password"].default
     assert settings.bootstrap_admin_password == default_password
+
+
+# T-M1-58: `0`/значение отрицательное проходили простую валидацию `int`
+# и ломались только на самом вызове ldap3 - по-разному и оба тихо (`0`
+# у receive_timeout давал мгновенный отказ входа, неотличимый от
+# неверного пароля; `-1` у обоих полей давал необработанный `ValueError`
+# вместо единообразного отказа, т.к. `ValueError` не подкласс
+# `LDAPException`) - измерено прогоном против настоящего тестового
+# каталога, см. тело коммита. `PositiveInt` переносит отказ на старт
+# приложения, с внятным сообщением.
+@pytest.mark.parametrize("field", ["ldap_connect_timeout_seconds", "ldap_receive_timeout_seconds"])
+@pytest.mark.parametrize("invalid_value", ["0", "-1", "2.5", "abc"])
+def test_ldap_timeout_field_rejects_invalid_values(field: str, invalid_value: str) -> None:
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, **{field: invalid_value})
+
+
+@pytest.mark.parametrize("field", ["ldap_connect_timeout_seconds", "ldap_receive_timeout_seconds"])
+def test_ldap_timeout_field_accepts_a_positive_integer(field: str) -> None:
+    settings = Settings(_env_file=None, **{field: "5"})
+
+    assert getattr(settings, field) == 5

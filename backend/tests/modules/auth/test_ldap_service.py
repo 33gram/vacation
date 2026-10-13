@@ -23,6 +23,7 @@ import pytest
 from app.core.config import get_settings
 from app.core.crypto import encrypt
 from app.models.ldap_settings import LdapSettings
+from app.modules.auth import ldap_service
 from app.modules.auth.exceptions import (
     AccessDeniedError,
     AuthenticationError,
@@ -30,6 +31,7 @@ from app.modules.auth.exceptions import (
 )
 from app.modules.auth.ldap_service import authenticate_via_ldap
 from tests.ldap_guard import LDAP_TEST_HOST, LDAP_TEST_PORT, requires_ldap
+from tests.ldap_hang_fixtures import black_hole_server
 from tests.modules.auth.factories import make_account, make_employee
 
 LDAP_TEST_BASE_DN = "dc=company,dc=local"
@@ -82,6 +84,44 @@ async def test_wrong_password_raises_authentication_error(db_session) -> None:
 
     with pytest.raises(AuthenticationError):
         await authenticate_via_ldap(db_session, "petrov@company.local", "wrong-password")
+
+
+async def test_unresponsive_directory_raises_authentication_error(
+    db_session, monkeypatch
+) -> None:
+    # T-M1-58: таймаут обращения к каталогу на пути ВХОДА - тот же
+    # AuthenticationError, что и неверный пароль, не 500 и не иной
+    # текст (FR-AUTH-001). Бюджет укорочен монкипатчем `get_settings`
+    # как его видит `ldap_service.py` - только этот тест ждёт недолго,
+    # не весь прогон (реальный процесс кэширует `Settings`).
+    fast_settings = get_settings().model_copy(
+        update={"ldap_connect_timeout_seconds": 1, "ldap_receive_timeout_seconds": 1}
+    )
+    monkeypatch.setattr(ldap_service, "get_settings", lambda: fast_settings)
+
+    with black_hole_server() as port:
+        settings_row = LdapSettings(
+            server_url="127.0.0.1",
+            port=port,
+            base_dn=LDAP_TEST_BASE_DN,
+            bind_dn=LDAP_TEST_ADMIN_DN,
+            bind_password_encrypted=encrypt(
+                LDAP_TEST_ADMIN_PASSWORD, key=fast_settings.ldap_password_encryption_key
+            ),
+            user_match_attribute="mail",
+            is_active=True,
+        )
+        db_session.add(settings_row)
+        await db_session.flush()
+        employee = await make_employee(db_session, email="sidorova@company.local")
+        await make_account(
+            db_session, employee_id=employee.id, auth_type="ldap", role="employee"
+        )
+
+        with pytest.raises(AuthenticationError):
+            await authenticate_via_ldap(
+                db_session, "sidorova@company.local", LDAP_TEST_USER_PASSWORD
+            )
 
 
 async def test_unknown_ldap_user_raises_authentication_error(db_session) -> None:

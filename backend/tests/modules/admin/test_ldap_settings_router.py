@@ -12,6 +12,7 @@ from app.modules.admin import ldap_settings_service
 from app.modules.auth.embedded_mode import is_embedded_mode
 from app.schemas.ldap_settings import LdapSettingsIn
 from tests.ldap_guard import LDAP_TEST_HOST, LDAP_TEST_PORT, requires_ldap
+from tests.ldap_hang_fixtures import black_hole_server
 from tests.modules.auth.factories import bearer_header, make_account, make_employee
 
 
@@ -558,6 +559,54 @@ async def test_test_saved_settings_persists_failure_and_keeps_embedded_mode(
     body = get_response.json()
     assert body["last_test_status"] == "failure"
     assert body["last_tested_at"] is not None
+
+
+async def test_test_saved_settings_with_unresponsive_directory_fails_like_other_failures(
+    db_session, api_client, monkeypatch
+) -> None:
+    """T-M1-58: таймаут обращения к каталогу - это ТОТ ЖЕ отказ, что и
+    прочие сбои каталога (FR-AUTH-001/FR-ADMIN-005), сквозь настоящий
+    эндпоинт - не иной текст, не 500, и `last_test_status`/режим
+    внедрения реагируют так же, как на неверный пароль служебной записи
+    (см. `test_test_saved_settings_persists_failure_and_keeps_embedded_
+    mode` выше - тот же сценарий, другая причина отказа). Бюджет
+    укорочен монкипатчем `get_settings`, не глобальной переменной
+    окружения - реальный процесс кэширует `Settings` (`lru_cache`), и
+    только этот тест должен ждать недолго, не весь прогон."""
+    fast_settings = get_settings().model_copy(
+        update={"ldap_connect_timeout_seconds": 1, "ldap_receive_timeout_seconds": 1}
+    )
+    monkeypatch.setattr(ldap_settings_service, "get_settings", lambda: fast_settings)
+
+    account = await _make_admin(db_session)
+    with black_hole_server() as port:
+        await api_client.put(
+            "/api/admin/ldap-settings",
+            json={
+                "server_url": "127.0.0.1",
+                "port": port,
+                "base_dn": "dc=company,dc=local",
+                "bind_dn": "cn=admin,dc=company,dc=local",
+                "bind_password": "irrelevant",
+                "is_active": True,
+            },
+            headers=bearer_header(account),
+        )
+
+        response = await api_client.post(
+            "/api/admin/ldap-settings/test", json={}, headers=bearer_header(account)
+        )
+
+    assert response.status_code == 200
+    assert response.json()["success"] is False
+
+    get_response = await api_client.get(
+        "/api/admin/ldap-settings", headers=bearer_header(account)
+    )
+    body = get_response.json()
+    assert body["last_test_status"] == "failure"
+    assert body["last_tested_at"] is not None
+    assert await is_embedded_mode(db_session) is True
 
     assert await is_embedded_mode(db_session) is True
 

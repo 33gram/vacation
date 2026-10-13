@@ -159,7 +159,7 @@ lock-backend:
 		-v "$(CURDIR)/backend:/workspace" -w /workspace \
 		$(LOCK_BASE_IMAGE) bash -c " \
 			pip install --no-cache-dir --quiet pip-tools==$(PIP_TOOLS_VERSION) && \
-			cp requirements.lock /tmp/requirements.lock.body.txt 2>/dev/null || true; \
+			if [ -f requirements.lock ]; then cp requirements.lock /tmp/requirements.lock.body.txt; fi && \
 			pip-compile --extra dev --strip-extras --generate-hashes --no-header --quiet \
 				--output-file=/tmp/requirements.lock.body.txt pyproject.toml && \
 			cat requirements.lock.header.txt /tmp/requirements.lock.body.txt > requirements.lock \

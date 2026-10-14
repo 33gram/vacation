@@ -93,10 +93,13 @@ import threading
 import time
 
 import pytest
+from ldap3 import Connection
 from ldap3.core.exceptions import LDAPException
 
+import app.core.ldap_client as _ldap_client_module
 from app.core.ldap_client import LdapAuthError, LdapSettingsData, authenticate
 from app.core.ldap_client import test_connection as ldap_test_connection
+from tests.ldap_guard import LDAP_TEST_HOST, LDAP_TEST_PORT, requires_ldap
 from tests.ldap_hang_fixtures import black_hole_server as _black_hole_server
 from tests.ldap_hang_fixtures import hanging_connect_target as _hanging_connect_target
 
@@ -265,4 +268,56 @@ def test_timed_out_calls_do_not_leak_threads_from_the_executor_pool() -> None:
     assert after - before <= 1, (
         f"потоки до: {before}, после: {after} - рост больше одного "
         "говорит об утечке потоков исполнителя на зависших вызовах"
+    )
+
+
+# --- get_info=LDAP_GET_INFO_NONE закреплено поведением, не комментарием -----
+#
+# T-M1-58, PR #172 review (4-й круг, п. 2а): число РЕАЛЬНЫХ LDAP-операций
+# на один authenticate() против настоящего тестового openldap не должно
+# расти обратно к измеренному дефолту ldap3 (7 операций при get_info=
+# SCHEMA, см. authenticate()'s докстринг) - считается через ldap3's
+# collect_usage=True, тот же механизм, которым это было измерено. Монки-
+# патчим app.core.ldap_client.Connection, а не сам ldap3.Connection -
+# подмена видна в точности там, откуда authenticate() на деле берёт имя
+# (import Connection в ldap_client.py), не глобально для всего процесса.
+
+
+@requires_ldap
+def test_authenticate_does_not_exceed_the_measured_number_of_real_ldap_operations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real_connection_cls = _ldap_client_module.Connection
+    captured: list[Connection] = []
+
+    def _connection_with_usage_tracking(*args: object, **kwargs: object) -> Connection:
+        kwargs["collect_usage"] = True
+        conn = real_connection_cls(*args, **kwargs)
+        captured.append(conn)
+        return conn
+
+    monkeypatch.setattr(_ldap_client_module, "Connection", _connection_with_usage_tracking)
+
+    settings = LdapSettingsData(
+        server_url=LDAP_TEST_HOST,
+        port=LDAP_TEST_PORT,
+        base_dn="dc=company,dc=local",
+        bind_dn="cn=admin,dc=company,dc=local",
+        bind_password="changeme",
+        user_match_attribute="mail",
+    )
+
+    matched_value = authenticate(
+        settings, "ivanov@company.local", "TestPass123!", connect_timeout=5, receive_timeout=5
+    )
+
+    assert matched_value == "ivanov@company.local"
+    assert len(captured) == 2, "authenticate() должна была открыть ровно два Connection"
+    total_ops = sum(conn.usage.operations for conn in captured)
+    assert total_ops <= 3, (
+        f"authenticate() выполнила {total_ops} реальных LDAP-операций - "
+        "измеренный максимум при get_info=LDAP_GET_INFO_NONE - 3 (bind + "
+        "search в первом соединении, bind во втором); превышение значит, "
+        "что get_info вернулся к дефолту ldap3 (SCHEMA) и снова читает "
+        "DSE/схему на каждый bind"
     )

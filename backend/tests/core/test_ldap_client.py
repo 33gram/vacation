@@ -1,27 +1,51 @@
 """`app.core.ldap_client.authenticate`/`test_connection`'s
 `connect_timeout`/`receive_timeout` budget (T-M1-58, PR #171 review on
-`T-M1-55`): without it, `ldap3`'s own defaults (`connect_timeout`/
-`receive_timeout` both `None`) let a reachable-but-unresponsive
-directory block the calling thread indefinitely - measured there at 20s
-against a TCP listener that accepted a connection and never answered,
-bounded only by when the OTHER side gave up, not by anything on this
-side.
+`T-M1-55`): without either, `ldap3`'s own defaults (both `None`) let a
+reachable-but-unresponsive directory block the calling thread
+indefinitely - measured there at 20s against a TCP listener that
+accepted a connection and never answered, bounded only by when the
+OTHER side gave up, not by anything on this side.
 
-Two DIFFERENT failure shapes, bounded by two DIFFERENT `ldap3`
-parameters, each needs its own real-socket negative control - this is
-the main way this task could look closed while actually leaving one
-scenario open:
-  - the directory ACCEPTS the TCP connection and then never answers
-    (an overloaded or stuck `slapd`) - the TCP handshake completes
-    instantly, the hang is in waiting for a response. Bounded by
-    `receive_timeout`.
-  - the directory never even completes the TCP handshake (packets
-    dropped, an unreachable route) - the hang is in `connect()` itself.
-    Bounded by `connect_timeout`.
-A STOPPED directory (connection refused) is neither of these - the OS
-answers immediately, nothing is waiting on anything, and it is already
-covered by `frontend/e2e/ldap-login.spec.ts`'s existing negative
-control. Not in scope here on purpose.
+PR #172 review (blocking finding): the ACTUAL mechanics are not "two
+independently-bounded failure modes", and the first edition of this
+module claimed exactly that - wrong, verified by running against
+`ldap3==2.9.1`. `connect_timeout` bounds the `connect()` phase. When
+`receive_timeout` is ALSO given, it independently governs the
+subsequent receive-wait - not a narrowing of `connect_timeout`'s value,
+a full replacement that can be smaller OR LARGER than `connect_timeout`
+(`connect_timeout=5, receive_timeout=10` failed at 10.02s, not 5s;
+`connect_timeout=1, receive_timeout=10` failed at 10.02s too - entirely
+unbounded by the smaller `connect_timeout`). When `receive_timeout` is
+NOT given at all, the receive phase falls back to whatever
+`connect_timeout` set on the underlying socket, because nothing resets
+it for the switch into the read - this is WHY a socket that accepts the
+connection and stays silent, with no `receive_timeout` at all, still
+failed bounded by `connect_timeout` alone (2.01s at `connect_timeout=2`,
+8.01s at `connect_timeout=8`). Read casually, that looks like "connect_
+timeout is a ceiling receive_timeout narrows within" - the first
+edition of this module said exactly that, and it is wrong: there is no
+ceiling relationship, only a fallback when `receive_timeout` is absent.
+
+Two scenarios are still tested separately below, but for a narrower,
+correct reason than "two parameters, two modes": one scenario proves
+`connect_timeout` bounds a hang that happens INSIDE `connect()` itself
+(nothing for `receive_timeout` to do there - it is kept generous in
+that test on purpose, so the test's own pass/fail turns on `connect_
+timeout` alone). The other proves `receive_timeout`, when given,
+actually GOVERNS the receive-phase wait rather than doing nothing -
+which requires giving `connect_timeout` a GENEROUS value and `receive_
+timeout` a TIGHT one, and asserting the observed time tracks the tight
+bound, not the generous one. A test that gives both parameters the
+same value (the first edition's mistake) cannot tell "receive_timeout
+worked" apart from "connect_timeout was doing all the work via the
+fallback and receive_timeout did nothing" - removing `receive_timeout=`
+from the real call left both of that edition's receive-wait tests just
+as green as before (bounded by the fallback to `connect_timeout`
+instead), which is exactly how this was caught (see the commit body for
+the measurement). A STOPPED directory (connection refused) is neither
+scenario - the OS answers immediately, nothing is waiting on anything,
+and it is already covered by `frontend/e2e/ldap-login.spec.ts`'s
+existing negative control. Not in scope here on purpose.
 
 Both real-socket fixtures below are self-contained (localhost only, no
 firewall rules, no external network dependency, no elevated
@@ -34,8 +58,8 @@ not have this guarantee, and was tried and dropped for exactly that
 reason before landing on the techniques below:
   - `_black_hole_server` reproduces "accepts, never answers": a real
     TCP listener that `accept()`s a connection and then does nothing -
-    verified by running to actually hang past receive_timeout's bound
-    when receive_timeout is NOT set (not asserted here, since that
+    verified by running to actually hang past `connect_timeout`'s own
+    bound when NEITHER timeout is set (not asserted here, since that
     would make every regular pytest run pay a multi-second tax; it was
     confirmed once by hand during this task, see the commit body).
   - `_hanging_connect_target` reproduces "connect itself never
@@ -54,9 +78,12 @@ float raises `struct.error: required argument is not an integer` from
 inside `ldap3`'s own socket-handling code, reproduced by running
 against the real test directory before `Settings.ldap_connect_timeout_
 seconds`/`ldap_receive_timeout_seconds` were typed `int` to match (see
-`app/core/config.py`). Not a premise this task's instructions stated
-explicitly, but exactly the kind of thing rule 8 (CLAUDE.md) asks to
-report plainly rather than route around silently.
+`app/core/config.py`). `connect_timeout` itself accepts a float value
+silently (no error) - the two parameters are not symmetric in this
+respect either, confirmed by running; both fields are `PositiveInt` in
+`Settings` regardless, so this difference is unreachable through the
+environment-variable path (a string that parses as a float fails int
+validation for both fields before either ever reaches `ldap3`).
 """
 
 from __future__ import annotations
@@ -87,34 +114,56 @@ def _settings_for(port: int) -> LdapSettingsData:
     )
 
 
-# --- receive_timeout: directory accepts, never answers ----------------------
+# --- receive_timeout actually GOVERNS the receive wait, not just "has a
+# --- value that happens not to matter" ---------------------------------
+#
+# connect_timeout generous (8s), receive_timeout tight (1s): the observed
+# time must track the TIGHT bound, not the generous one. Giving both
+# parameters the same value (the bug this round fixed) cannot tell
+# "receive_timeout worked" apart from "connect_timeout's fallback was
+# doing all the bounding, because nothing overrode it" - removing
+# receive_timeout= from the real call left the old version of these two
+# tests just as green, since connect_timeout=2's fallback bounded the
+# hang on its own either way (see the module docstring for why this is a
+# fallback, not a ceiling receive_timeout narrows within).
 
 
-def test_authenticate_bounds_an_unresponsive_but_connected_directory() -> None:
+def test_authenticate_bounds_the_receive_wait_tighter_than_connect() -> None:
     with _black_hole_server() as port:
         settings = _settings_for(port)
         started_at = time.monotonic()
         with pytest.raises(LdapAuthError):
             authenticate(
-                settings, "ivanov@company.local", "pw", connect_timeout=2, receive_timeout=2
+                settings, "ivanov@company.local", "pw", connect_timeout=8, receive_timeout=1
             )
         elapsed = time.monotonic() - started_at
 
-    assert elapsed < 4, f"receive_timeout=2 должен был остановить bind заметно раньше ({elapsed}s)"
+    assert elapsed < 4, (
+        f"receive_timeout=1 должен был остановить bind заметно раньше, чем "
+        f"connect_timeout=8 ({elapsed}s)"
+    )
 
 
-def test_test_connection_bounds_an_unresponsive_but_connected_directory() -> None:
+def test_test_connection_bounds_the_receive_wait_tighter_than_connect() -> None:
     with _black_hole_server() as port:
         settings = _settings_for(port)
         started_at = time.monotonic()
         with pytest.raises(LdapAuthError):
-            ldap_test_connection(settings, connect_timeout=2, receive_timeout=2)
+            ldap_test_connection(settings, connect_timeout=8, receive_timeout=1)
         elapsed = time.monotonic() - started_at
 
-    assert elapsed < 4, f"receive_timeout=2 должен был остановить bind заметно раньше ({elapsed}s)"
+    assert elapsed < 4, (
+        f"receive_timeout=1 должен был остановить bind заметно раньше, чем "
+        f"connect_timeout=8 ({elapsed}s)"
+    )
 
 
 # --- connect_timeout: the connect() call itself never completes -------------
+#
+# receive_timeout generous (8s) here on purpose - the hang is INSIDE
+# connect(), before receive is ever reached, so receive_timeout cannot be
+# what bounds it; keeping it generous makes each test's pass/fail turn on
+# connect_timeout alone, not on an ambiguous combination of both.
 
 
 def test_authenticate_bounds_a_hanging_connect() -> None:
@@ -123,7 +172,7 @@ def test_authenticate_bounds_a_hanging_connect() -> None:
         started_at = time.monotonic()
         with pytest.raises(LdapAuthError):
             authenticate(
-                settings, "ivanov@company.local", "pw", connect_timeout=2, receive_timeout=2
+                settings, "ivanov@company.local", "pw", connect_timeout=2, receive_timeout=8
             )
         elapsed = time.monotonic() - started_at
 
@@ -135,7 +184,7 @@ def test_test_connection_bounds_a_hanging_connect() -> None:
         settings = _settings_for(port)
         started_at = time.monotonic()
         with pytest.raises(LdapAuthError):
-            ldap_test_connection(settings, connect_timeout=2, receive_timeout=2)
+            ldap_test_connection(settings, connect_timeout=2, receive_timeout=8)
         elapsed = time.monotonic() - started_at
 
     assert elapsed < 4, f"connect_timeout=2 должен остановить connect заметно раньше ({elapsed}s)"

@@ -608,8 +608,6 @@ async def test_test_saved_settings_with_unresponsive_directory_fails_like_other_
     assert body["last_tested_at"] is not None
     assert await is_embedded_mode(db_session) is True
 
-    assert await is_embedded_mode(db_session) is True
-
 
 @requires_ldap
 async def test_editing_saved_settings_resets_verification_status(db_session, api_client) -> None:

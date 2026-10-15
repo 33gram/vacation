@@ -87,8 +87,14 @@ def _settings_data_from_row(row: LdapSettings) -> LdapSettingsData:
 
 
 async def _run_ldap_test(params: LdapSettingsData) -> tuple[bool, str]:
+    settings = get_settings()
     try:
-        await asyncio.to_thread(ldap_test_connection, params)
+        await asyncio.to_thread(
+            ldap_test_connection,
+            params,
+            connect_timeout=settings.ldap_connect_timeout_seconds,
+            receive_timeout=settings.ldap_receive_timeout_seconds,
+        )
     except LdapAuthError as exc:
         return False, str(exc)
     return True, "Соединение установлено"

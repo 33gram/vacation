@@ -20,25 +20,43 @@ flag set inside `pip-compile`'s own command line). Keeping them apart
 avoids forcing one module to understand two unrelated grammars.
 
 Honest boundary (rule 8, CLAUDE.md), named directly rather than implied:
-this checks the RECIPE'S TEXT, never its execution. It confirms the
-seed step and the `--output-file` target name the same path, that
-`--generate-hashes` is present, and that `--upgrade`/`-U` is absent -
-all three by inspecting the shell command string `lock-backend` embeds
-in the Makefile. It does NOT run `pip-compile` and does NOT confirm
-that seeding actually prevents drift at any given moment - the pins
-could still drift if, for example, the seeded file itself were already
-wrong when `lock-backend` runs, or `pip-compile` changed its own
+`find_recipe_violations` checks the RECIPE'S TEXT, never its execution.
+It confirms the seed step and the `--output-file` target name the same
+path, that `--generate-hashes` is present, and that `--upgrade`/`-U` is
+absent - all three by inspecting the shell command string `lock-backend`
+embeds in the Makefile. It does NOT run `pip-compile` and does NOT
+confirm that seeding actually prevents drift at any given moment - the
+pins could still drift if, for example, the seeded file itself were
+already wrong when `lock-backend` runs, or `pip-compile` changed its own
 incremental-reuse behavior in some future version. Catching an ACTUAL
 drift requires running `make lock-backend` and diffing pins, exactly
 as this round did by hand (`--platform linux/amd64` container,
 network fetch against PyPI) - not something to run on every CI
 invocation of `pytest` for cost reasons, and not something a text
 check can do without running the thing it is checking.
+
+T-M1-57 widens this boundary for ONE narrow piece: `LOCK_UPGRADE`
+(`make lock-backend LOCK_UPGRADE="-P pkg==X.Y.Z ..."`, the addressed-
+bump mechanism) is a Make VARIABLE substituted into the recipe
+textually, which means `find_recipe_violations`'s `--upgrade`/`-U` scan
+over the recipe's own literal text can never see what a caller actually
+passes through it at invocation time - a text check cannot validate a
+runtime value. The recipe therefore validates `LOCK_UPGRADE`'s content
+itself, as its own first, separate shell invocation (accepting only
+`-P`/`name==version` pairs, rejecting everything else, including
+`--upgrade`/`-U`), BEFORE the `docker run` step. `test_lock_upgrade_
+validation_*` below actually EXECUTES just that first invocation via
+real `sh` (substituting `$(LOCK_UPGRADE)` the same textual way `make`
+does, including `make`'s own `$$` -> `$` reduction) - genuine behavior,
+not a text pattern, and the one exception to the "never its execution"
+boundary stated above. It still does not run `pip-compile` or `docker
+run` - only the validation step that precedes them.
 """
 
 from __future__ import annotations
 
 import re
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -221,3 +239,98 @@ def test_lock_backend_recipe_seeds_before_compiling() -> None:
     violations = find_recipe_violations(recipe)
 
     assert not violations, "\n".join(violations)
+
+
+# --- T-M1-57: LOCK_UPGRADE's own runtime validation, executed for real ------
+#
+# find_recipe_violations above cannot see this: LOCK_UPGRADE is a Make
+# variable substituted into the recipe textually, so whatever a caller
+# passes at invocation time is invisible to a check that only reads the
+# recipe's own literal text. The recipe therefore validates LOCK_UPGRADE
+# itself, as a separate shell invocation preceding `docker run` (see the
+# module docstring). The functions below extract exactly that first
+# invocation and run it via real `sh` - genuine behavior, not a pattern
+# match - substituting `$(LOCK_UPGRADE)` and reducing `$$` -> `$` the
+# same textual way `make` itself does before handing a recipe line to
+# the shell.
+
+
+def _lock_backend_validation_script(makefile_text: str, lock_upgrade: str) -> str:
+    lines = makefile_text.splitlines()
+    start = None
+    for i, line in enumerate(lines):
+        if line.startswith("lock-backend:"):
+            start = i + 1
+            break
+    assert start is not None, "цель lock-backend не найдена в Makefile"
+
+    chunk: list[str] = []
+    for line in lines[start:]:
+        assert line.startswith("\t"), f"ожидалась строка рецепта с табом: {line!r}"
+        body = line[1:]
+        if not chunk and body.startswith("@"):
+            body = body[1:]
+        chunk.append(body)
+        if not body.rstrip().endswith("\\"):
+            # Первая строка рецепта БЕЗ продолжения `\` заканчивает эту
+            # shell-инвокацию (make запускает каждую непродолженную
+            # строку рецепта отдельной командой) - здесь кончается
+            # валидация, до отдельной, не связанной с ней команды
+            # `docker run`.
+            break
+
+    script = "\n".join(chunk)
+    script = script.replace("$(LOCK_UPGRADE)", lock_upgrade)
+    script = script.replace("$$", "$")
+    return script
+
+
+def _run_lock_upgrade_validation(lock_upgrade: str) -> subprocess.CompletedProcess[str]:
+    makefile_text = _MAKEFILE_PATH.read_text(encoding="utf-8")
+    script = _lock_backend_validation_script(makefile_text, lock_upgrade)
+    return subprocess.run(["sh", "-c", script], capture_output=True, text=True)
+
+
+@_skip_without_full_checkout
+@pytest.mark.parametrize(
+    "lock_upgrade",
+    [
+        "",
+        "-P amqp==5.4.1",
+        "-P amqp==5.4.1 -P pydantic==2.14.1 -P pydantic-core==2.50.1",
+    ],
+)
+def test_lock_upgrade_validation_accepts_well_formed_pins(lock_upgrade: str) -> None:
+    result = _run_lock_upgrade_validation(lock_upgrade)
+
+    assert result.returncode == 0, result.stderr
+
+
+@_skip_without_full_checkout
+@pytest.mark.parametrize(
+    "lock_upgrade",
+    [
+        "--upgrade",
+        "-U",
+        "-P amqp==5.4.1 --upgrade",
+        "-P amqp==5.4.1 -U",
+        "-P",
+        "amqp==5.4.1",
+        "-P amqp",
+        "-P amqp== -P pydantic==2.14.1",
+    ],
+)
+def test_lock_upgrade_validation_rejects_everything_else(lock_upgrade: str) -> None:
+    # Отрицательный контроль из п. 1 задачи: попытка протащить --upgrade/
+    # -U (голым или подмешанным к валидным -P парам) через переменную
+    # обязана закончиться отказом, а не тихим полным апгрейдом. Это тот
+    # же самый сценарий, что был прогнан руками против настоящего `make
+    # lock-backend LOCK_UPGRADE=...` (см. тело коммита) - здесь закреплён
+    # тестом, воспроизводимо.
+    result = _run_lock_upgrade_validation(lock_upgrade)
+
+    assert result.returncode != 0, (
+        f"LOCK_UPGRADE={lock_upgrade!r} должна была быть отвергнута, "
+        f"прошла с кодом {result.returncode}"
+    )
+    assert "LOCK_UPGRADE" in result.stderr, result.stderr

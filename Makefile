@@ -17,6 +17,19 @@ PIP_TOOLS_VERSION = 7.4.1
 # --platform linux/amd64 python:3.12-slim --format '{{index .RepoDigests 0}}'`.
 LOCK_BASE_IMAGE = python@sha256:02108f5d322dd89f1c9e552442c25acb0543dfdbc455693a5599624f20d9155d
 
+# T-M1-57: адресный подъём версий — `make lock-backend LOCK_UPGRADE="-P
+# amqp==5.4.1 -P pydantic==2.14.1"` — ровно та же цель, не отдельная
+# команда, которую пришлось бы сочинять заново при следующем подъёме.
+# Пусто по умолчанию: обычный `make lock-backend` не поднимает ничего
+# сверх того, что уже требует `pyproject.toml` (см. комментарий к
+# `lock-backend` самой цели). Содержимое ПРОВЕРЯЕТСЯ самой целью перед
+# вызовом `pip-compile` (см. ниже) — допустимы только пары `-P имя==
+# версия`, ничего другого, в частности не `--upgrade`/`-U`: иначе эта
+# переменная была бы дырой в защите от дрейфа, которую проверяет
+# `backend/tests/test_lock_backend_recipe.py` — тот тест читает ТЕКСТ
+# рецепта и не видит, что подставит переменная при вызове.
+LOCK_UPGRADE ?=
+
 .PHONY: up down logs test-backend test-frontend test-e2e lint-backend lint-frontend openapi-export openapi-client check-conflict-markers check-task-checkbox check-basis-version lock-backend
 
 up:
@@ -153,14 +166,42 @@ check-basis-version:
 # полом для `-c` — измерением выяснилось, что это не нужно: посев тем же
 # `requirements.lock` даёт тот же результат без второго файла. Удалён
 # повторно, не возвращается. Осознанный подъём версий — через `-P` в
-# этой же команде (`T-M1-57`), не правка отдельного файла.
+# этой же команде (`T-M1-57`), не правка отдельного файла: `make lock-
+# backend LOCK_UPGRADE="-P pkg==X.Y.Z ..."` (см. `LOCK_UPGRADE` выше).
+#
+# T-M1-57: валидация `LOCK_UPGRADE` — первый шаг рецепта, ДО запуска
+# контейнера (дешевле упасть здесь, чем после загрузки образа). Без неё
+# `LOCK_UPGRADE="--upgrade"` (или `-U`, или что угодно ещё) прошло бы
+# прямо в `pip-compile` и обесценило бы весь смысл посева, молча. Разбор
+# POSIX-совместимый (`sh`, не `bash` — `/bin/sh` на раннере CI это
+# `dash`, где нет массивов) - читает токены парами: `-P`, затем токен,
+# содержащий `==`; что угодно ещё - отказ до docker run.
 lock-backend:
+	@ok=1; expect_value=0; \
+	for tok in $(LOCK_UPGRADE); do \
+		if [ "$$expect_value" = "1" ]; then \
+			case "$$tok" in \
+				?*==?*) expect_value=0 ;; \
+				*) echo "LOCK_UPGRADE: '$$tok' - ожидался токен вида имя==версия после -P" >&2; ok=0; break ;; \
+			esac; \
+		else \
+			if [ "$$tok" != "-P" ]; then \
+				echo "LOCK_UPGRADE: '$$tok' - допустимы только пары -P имя==версия" >&2; ok=0; break; \
+			fi; \
+			expect_value=1; \
+		fi; \
+	done; \
+	if [ "$$ok" = "1" ] && [ "$$expect_value" = "1" ]; then \
+		echo "LOCK_UPGRADE: '-P' без значения на конце" >&2; ok=0; \
+	fi; \
+	if [ "$$ok" != "1" ]; then exit 1; fi
 	docker run --rm --platform linux/amd64 \
 		-v "$(CURDIR)/backend:/workspace" -w /workspace \
 		$(LOCK_BASE_IMAGE) bash -c " \
 			pip install --no-cache-dir --quiet pip-tools==$(PIP_TOOLS_VERSION) && \
 			if [ -f requirements.lock ]; then cp requirements.lock /tmp/requirements.lock.body.txt; fi && \
 			pip-compile --extra dev --strip-extras --generate-hashes --no-header --quiet \
+				$(LOCK_UPGRADE) \
 				--output-file=/tmp/requirements.lock.body.txt pyproject.toml && \
 			cat requirements.lock.header.txt /tmp/requirements.lock.body.txt > requirements.lock \
 		"

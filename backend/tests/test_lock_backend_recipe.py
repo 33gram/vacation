@@ -37,50 +37,97 @@ check can do without running the thing it is checking.
 
 T-M1-57 widens this boundary for ONE narrow piece: `LOCK_UPGRADE`
 (`make lock-backend LOCK_UPGRADE="-P pkg==X.Y.Z ..."`, the addressed-
-bump mechanism) is a Make VARIABLE substituted into the recipe
-textually, which means `find_recipe_violations`'s `--upgrade`/`-U` scan
-over the recipe's own literal text can never see what a caller actually
-passes through it at invocation time - a text check cannot validate a
-runtime value. The recipe therefore validates `LOCK_UPGRADE`'s content
-itself, as its own first, separate shell invocation, BEFORE the
-`docker run` step.
+bump mechanism) is a value a caller supplies at invocation time, and
+whatever it carries is invisible to a check that only reads the
+recipe's own literal text - a text check cannot validate a runtime
+value. The recipe therefore validates it itself, as its own first,
+separate shell invocation, BEFORE the `docker run` step.
 
-PR #173 review (found before this round's own review - rule 8): the
-FIRST edition of this validation accepted a `-P`/`name==version` pair
-by SHAPE alone (`?*==?*` - something, then `==`, then something) and
-let the matched token through WHOLE, quotes and shell metacharacters
-included. Since `$(LOCK_UPGRADE)` is substituted textually a SECOND
-time later, into the double-quoted `bash -c "..."` string that invokes
-`pip-compile`, a value shaped like `name==version` but containing an
+PR #173 review, 1st round (found before this round's own review - rule
+8): the FIRST edition of this validation accepted a `-P`/`name==version`
+pair by SHAPE alone (`?*==?*` - something, then `==`, then something)
+and let the matched token through WHOLE, quotes and shell metacharacters
+included. `$(LOCK_UPGRADE)` was substituted textually a SECOND time,
+into the double-quoted `bash -c "..."` string that invokes
+`pip-compile`, so a value shaped like `name==version` but containing an
 unescaped `"` could break out of that later quoting and run arbitrary
-shell commands on the HOST (confirmed by running, not reasoned about:
-`LOCK_UPGRADE='-P a==1" && echo INJECTED && echo "'` printed `INJECTED`
-and exited 0). The validation now additionally splits each pair on the
-first `==` and rejects either half if it contains a character outside
-the set that real package names (letters/digits/`.`/`_`/`-`) and real
-versions (letters/digits/`.`/`+`/`!`/`-`, PEP 440's epoch/local-version
-separators) are actually made of - closing the gap between what the
-rejection message claimed ("only -P name==version pairs") and what the
-shape check alone actually enforced.
+shell commands on the HOST (confirmed by running: `LOCK_UPGRADE='-P
+a==1" && echo INJECTED && echo "'` printed `INJECTED` and exited 0).
+Fixed that round by splitting each pair on the first `==` and rejecting
+either half if it contains a character outside the set real package
+names (letters/digits/`.`/`_`/`-`) and real versions
+(letters/digits/`.`/`+`/`!`/`-`, PEP 440's epoch/local-version
+separators) are actually made of.
+
+PR #173 review, 2nd round (found before this round's own review too):
+that character-set fix did not touch the actual CAUSE - `$(LOCK_UPGRADE)`
+was still substituted by Make TEXTUALLY into the shell command's own
+source, in BOTH places (the validation loop's `for tok in
+$(LOCK_UPGRADE)` and the later `pip-compile` line), so the shell's own
+PARSING of that line - which happens before any `case` pattern ever
+runs - already executes backtick/`$(...)` command substitution found
+inside the value. No character-set check can prevent this: it only
+inspects the RESULT of a substitution it has no power to stop.
+Confirmed by running: `LOCK_UPGRADE='-P a==`touch /tmp/PWNED`'` exited
+2 (validation correctly rejected the resulting token) - but `/tmp/PWNED`
+was created anyway, because `touch` ran during the shell's OWN word-
+splitting of the (by-then Make-substituted) text, strictly before the
+`case` pattern that rejected it ever got a chance to run.
+
+Fixed by moving the value out of the recipe's CODE entirely and into
+the ENVIRONMENT: `lock-backend: export LOCK_UPGRADE_VALUE := $(LOCK_UPGRADE)`
+sets an exported Make variable scoped to this target, and the recipe
+reads it as a plain shell variable (`$$LOCK_UPGRADE_VALUE` ->
+`$LOCK_UPGRADE_VALUE` after Make's own `$$` -> `$` reduction), tokenized
+via `set -- $$LOCK_UPGRADE_VALUE` (deliberately unquoted, for IFS word-
+splitting) and consumed as `"$$@"`. Expanding an already-set shell
+variable is a single-pass operation - it does not re-scan its own
+result for command substitution, the way parsing a literal source line
+does. Confirmed by running in isolation (not reasoned about):
+`export LOCK_UPGRADE_VALUE='-P a==`touch /tmp/PWNED`'; sh -c 'set --
+$LOCK_UPGRADE_VALUE; for t in "$@"; do echo "[$t]"; done'` prints the
+backticks back as literal text and creates no file - true whether that
+`sh` runs on the host or, forwarded via `docker run -e
+LOCK_UPGRADE_VALUE`, inside the container. `docker run`'s `bash -c '...'`
+is single-quoted now, not double - a double-quoted host-side string
+would let the HOST shell expand `$LOCK_UPGRADE_VALUE` into the argument
+handed to the container's `bash -c`, and that argument gets parsed as
+FRESH CODE once it reaches the container, reopening the exact same hole
+one quoting layer later. Single-quoting keeps the literal text
+`$LOCK_UPGRADE_VALUE` intact until the container's own shell expands it
+from its OWN environment - the only point where expansion happens.
 
 `test_lock_upgrade_validation_*` below actually EXECUTES just that
-first invocation via real `sh` (substituting `$(LOCK_UPGRADE)` the same
-textual way `make` does, including `make`'s own `$$` -> `$` reduction)
-- genuine behavior, not a text pattern, and the one exception to the
-"never its execution" boundary stated above. It still does not run
-`pip-compile` or `docker run` - only the validation step that precedes
-them. `test_lock_upgrade_validation_blocks_shell_metacharacters` goes
-further than checking the exit code: it asserts no injected command's
-own output appears as a standalone line, which is what distinguishes
-"the value was rejected" from "the rejection message happened to quote
-the rejected value back, and that quoting coincidentally contains text
-that looks like the marker" - the latter is NOT execution and tripped
-an earlier, cruder version of this same check (substring, not line
-match) for three of these parametrized cases.
+first invocation via real `sh` (reducing `make`'s own `$$` -> `$` the
+same textual way `make` does, and passing the test's value through a
+REAL environment variable - `LOCK_UPGRADE_VALUE` - never through text
+substitution into the script, since the real mechanism no longer does
+that either) - genuine behavior, not a text pattern, and the one
+exception to the "never its execution" boundary stated above. It still
+does not run `pip-compile` or `docker run` - only the validation step
+that precedes them.
+
+`test_lock_upgrade_validation_blocks_shell_injection` checks each case
+by SIDE EFFECT - attempting to create a marker file in a fresh `tmp_path`
+and asserting it does not exist - not by scanning output text. That is
+not a style preference: checking for a marker STRING in stdout/stderr
+is exactly the check that missed the backtick-pre-execution case above,
+since `touch` produces no output on success at all - a string-based
+check would have reported "no injection" whether or not the file was
+actually created. A still-earlier edition of this same test checked
+for the marker as a *substring* of output, which gave 3 false failures
+of its own (the rejection message honestly quotes back the value it
+rejected, and an echoed marker shows up inside that quote without
+anything having executed) - checking for a whole, standalone output
+LINE fixed that false-positive direction, but the backtick case shows
+the opposite failure mode exists too: a command that runs but produces
+no output at all. The file-based check catches both; it is therefore
+the only way any of these cases now gets checked.
 """
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -270,24 +317,38 @@ def test_lock_backend_recipe_seeds_before_compiling() -> None:
 # --- T-M1-57: LOCK_UPGRADE's own runtime validation, executed for real ------
 #
 # find_recipe_violations above cannot see this: LOCK_UPGRADE is a Make
-# variable substituted into the recipe textually, so whatever a caller
-# passes at invocation time is invisible to a check that only reads the
-# recipe's own literal text. The recipe therefore validates LOCK_UPGRADE
-# itself, as a separate shell invocation preceding `docker run` (see the
-# module docstring). The functions below extract exactly that first
-# invocation and run it via real `sh` - genuine behavior, not a pattern
-# match - substituting `$(LOCK_UPGRADE)` and reducing `$$` -> `$` the
-# same textual way `make` itself does before handing a recipe line to
-# the shell.
+# variable, and whatever a caller passes at invocation time is invisible
+# to a check that only reads the recipe's own literal text. The recipe
+# therefore validates the value itself, as a separate shell invocation
+# preceding `docker run` (see the module docstring).
+#
+# PR #173 review, 2-й круг: `$(LOCK_UPGRADE)` сам по себе больше НЕ
+# подставляется в текст рецепта - цель экспортирует `LOCK_UPGRADE_VALUE`
+# как переменную ОКРУЖЕНИЯ (`lock-backend: export LOCK_UPGRADE_VALUE :=
+# $(LOCK_UPGRADE)`), и рецепт читает её как `$$LOCK_UPGRADE_VALUE`
+# (ссылка на переменную shell, не код). Симуляция здесь обязана делать
+# то же самое: извлечённый текст рецепта больше НЕ подвергается
+# текстовой замене `$(LOCK_UPGRADE)` -> значение (этой подстроки в
+# рецепте больше нет вовсе) - вместо этого тестовое значение передаётся
+# РЕАЛЬНОЙ переменной окружения `LOCK_UPGRADE_VALUE` самому `sh`, точно
+# так же, как `make`/`docker run -e` передают её в жизни. `$$` -> `$`
+# make всё равно сводит текстуально, независимо от переменных окружения
+# - это не изменилось.
 
 
-def _lock_backend_validation_script(makefile_text: str, lock_upgrade: str) -> str:
+def _lock_backend_validation_script(makefile_text: str) -> str:
     lines = makefile_text.splitlines()
     start = None
     for i, line in enumerate(lines):
         if line.startswith("lock-backend:"):
+            # Цель объявлена ДВУМЯ идущими подряд строками -
+            # `lock-backend: export LOCK_UPGRADE_VALUE := ...` (целевая
+            # переменная, без табуляции) и затем бare `lock-backend:`
+            # перед самим рецептом. Обе начинаются с "lock-backend:" -
+            # берём позицию ПОСЛЕ ПОСЛЕДНЕЙ такой строки, не первой,
+            # иначе старт попадёт на вторую строку заголовка, а не на
+            # первую строку рецепта с табуляцией.
             start = i + 1
-            break
     assert start is not None, "цель lock-backend не найдена в Makefile"
 
     chunk: list[str] = []
@@ -306,15 +367,15 @@ def _lock_backend_validation_script(makefile_text: str, lock_upgrade: str) -> st
             break
 
     script = "\n".join(chunk)
-    script = script.replace("$(LOCK_UPGRADE)", lock_upgrade)
     script = script.replace("$$", "$")
     return script
 
 
-def _run_lock_upgrade_validation(lock_upgrade: str) -> subprocess.CompletedProcess[str]:
+def _run_lock_upgrade_validation(lock_upgrade_value: str) -> subprocess.CompletedProcess[str]:
     makefile_text = _MAKEFILE_PATH.read_text(encoding="utf-8")
-    script = _lock_backend_validation_script(makefile_text, lock_upgrade)
-    return subprocess.run(["sh", "-c", script], capture_output=True, text=True)
+    script = _lock_backend_validation_script(makefile_text)
+    env = {**os.environ, "LOCK_UPGRADE_VALUE": lock_upgrade_value}
+    return subprocess.run(["sh", "-c", script], capture_output=True, text=True, env=env)
 
 
 @_skip_without_full_checkout
@@ -362,67 +423,84 @@ def test_lock_upgrade_validation_rejects_everything_else(lock_upgrade: str) -> N
     assert "LOCK_UPGRADE" in result.stderr, result.stderr
 
 
-# --- PR #173 review: значение проверялось формой `?*==?*`, а не допустимыми
-# --- символами - любой токен с "==" где-то внутри принимался ЦЕЛИКОМ, кавычки
-# --- и метасимволы shell включительно -------------------------------------
+# --- PR #173 review, 2-й круг: проверка ПО ПОБОЧНОМУ ЭФФЕКТУ, не по тексту
+# --- вывода -----------------------------------------------------------------
 #
-# `$(LOCK_UPGRADE)` подставляется в рецепт ТЕКСТУАЛЬНО (как и в этот
-# валидационный шаг, и позже - в строку `bash -c "..."` вызова
-# `pip-compile`), поэтому значение, вышедшее за рамки `-P имя==версия`,
-# способно вырваться из охватывающих кавычек и исполниться как часть
-# ОКРУЖАЮЩЕЙ shell-команды - проверено прогоном на настоящем `Makefile`
-# (без заглушки для `docker`, см. тело коммита): `LOCK_UPGRADE='-P a==1"
-# && echo INJECTED && echo "'` печатало `INJECTED` и отработало с кодом 0
-# до этого круга. Каждый случай ниже проверяет НЕ ТОЛЬКО код возврата, а
-# то, что маркер инъекции не появился ни в stdout, ни в stderr - отказ по
-# коду без этой проверки не отличил бы «отклонено валидацией» от «команда
-# инъекции сама завершилась с ошибкой, но успела что-то вывести».
-_INJECTION_MARKER = "LOCK_UPGRADE_INJECTION_SHOULD_NOT_RUN"
+# Прежняя редакция этого теста (1-й круг) проверяла, что маркер
+# инъекции не появился СВОЕЙ строкой в stdout/stderr - этого достаточно
+# для `echo MARKER`, но НЕ для `touch <файл>`: успешный `touch` не
+# печатает НИЧЕГО. Проверка по тексту вывода объявила бы находку этого
+# круга (`-P a==\`touch /tmp/PWNED\``) безопасной, потому что ни строка
+# `LOCK_UPGRADE_INJECTION_SHOULD_NOT_RUN`, ни что-либо похожее не
+# появилось бы в выводе - при этом файл создавался (см. докстринг
+# модуля). Текст вывода отвечает на вопрос «что процитировал отказ», не
+# «что исполнилось» - для backtick/`$(...)`-инъекции эти два вопроса
+# расходятся. Проверка ниже задаёт настоящий вопрос прямо: пытается
+# создать файл в СВЕЖЕМ временном каталоге (`tmp_path`, свой на каждый
+# параметризованный случай - не общий путь, который могла бы оставить
+# позади другая инъекция) и утверждает, что файла нет - это верно и для
+# случаев, которые что-то печатают (`echo`), и для тех, что не печатают
+# ничего (`touch`), поэтому один и тот же механизм проверки годится для
+# всех случаев сразу, без двух разных критериев успеха.
+#
+# Семь случаев прежнего теста пересмотрены на этот же вопрос («что они
+# доказывают: отказ или отсутствие исполнения») и объединены с новым
+# восьмым (голые обратные кавычки до любого отказа) под одной проверкой:
+# шесть несут `touch {marker}` вместо `echo MARKER` и проверяются по
+# файлу; пробел-в-кавычках не имеет исполняемой нагрузки вовсе (он про
+# допустимые символы, не про инъекцию) и оставлен с проверкой только
+# кода возврата, без утверждения про файл.
 
 
 @_skip_without_full_checkout
 @pytest.mark.parametrize(
-    "lock_upgrade",
+    "lock_upgrade_template",
     [
-        # Кавычка - воспроизводит находку проверяющего буквально.
-        f'-P a==1" && echo {_INJECTION_MARKER} && echo "',
+        # Обратные кавычки голые - находка ЭТОГО круга: исполняются при
+        # разборе `for tok in $(LOCK_UPGRADE)` ДО того, как до токена
+        # добирается хоть один образец `case`, независимо от вердикта
+        # валидации (см. докстринг модуля).
+        "-P a==`touch {marker}`",
+        # $(...) - тот же эффект, другой синтаксис подстановки команд.
+        "-P a==$(touch {marker})",
+        # Кавычка - находка 1-го круга: вырывалась из `bash -c "..."`
+        # вызова `pip-compile`, не из цикла валидации.
+        '-P a==1" && touch {marker} && echo "',
         # && / ; / | - три разных способа дописать вторую команду.
-        f"-P pkg==1 && echo {_INJECTION_MARKER}",
-        f"-P pkg==1; echo {_INJECTION_MARKER}",
-        f"-P pkg==1 | echo {_INJECTION_MARKER}",
-        # $ - подстановка команды через $(...) и через обратные кавычки.
-        f"-P pkg==$(echo {_INJECTION_MARKER})",
-        f"-P pkg==`echo {_INJECTION_MARKER}`",
-        # Пробел внутри кавычек - делает токен, не совпадающий по форме с
-        # распознаваемым -P/значение, но принимавшийся прежним образцом
-        # `?*==?*`, который пробел не отличал от любого другого символа.
-        '-P "pkg==1 2"',
+        "-P pkg==1 && touch {marker}",
+        "-P pkg==1; touch {marker}",
+        "-P pkg==1 | touch {marker}",
     ],
 )
-def test_lock_upgrade_validation_blocks_shell_metacharacters(lock_upgrade: str) -> None:
-    # Проверяется не подстрока маркера, а ОТДЕЛЬНАЯ СТРОКА, равная ему
-    # целиком: отказ сам по себе честно цитирует отвергнутое значение в
-    # сообщении об ошибке (`LOCK_UPGRADE: версия '...MARKER...' содержит
-    # символ...`), и маркер оказывается подстрокой этого сообщения без
-    # какого-либо исполнения - проверено прогоном, что три из семи
-    # случаев ложно падали именно по этой причине при подстрочном
-    # сравнении. Настоящий `echo MARKER`, если бы он исполнился, напечатал
-    # бы MARKER один, на своей строке, без кавычек и окружающего текста -
-    # только это отличает «инъекция выполнилась» от «отказ процитировал
-    # то, что отверг».
-    result = _run_lock_upgrade_validation(lock_upgrade)
+def test_lock_upgrade_validation_blocks_shell_injection(
+    lock_upgrade_template: str, tmp_path
+) -> None:
+    marker = tmp_path / "SHOULD_NOT_EXIST"
+    lock_upgrade_value = lock_upgrade_template.format(marker=marker)
+
+    result = _run_lock_upgrade_validation(lock_upgrade_value)
+
+    assert not marker.exists(), (
+        f"LOCK_UPGRADE_VALUE={lock_upgrade_value!r} создал файл-маркер - "
+        f"инъекция исполнилась независимо от вердикта валидации. "
+        f"returncode={result.returncode} stdout={result.stdout!r} "
+        f"stderr={result.stderr!r}"
+    )
+    assert result.returncode != 0, (
+        f"LOCK_UPGRADE_VALUE={lock_upgrade_value!r} должна была быть "
+        f"отвергнута, прошла с кодом {result.returncode}"
+    )
+
+
+@_skip_without_full_checkout
+def test_lock_upgrade_validation_rejects_space_inside_a_quoted_token() -> None:
+    # Пробел внутри кавычек - делает токен, не совпадающий по форме с
+    # распознаваемым -P/значение, но принимавшийся прежним (1-й круг)
+    # образцом `?*==?*`, который пробел не отличал от любого другого
+    # символа. Без исполняемой нагрузки (не инъекция, а вопрос
+    # допустимых символов) - проверяется только код возврата.
+    result = _run_lock_upgrade_validation('-P "pkg==1 2"')
 
     assert result.returncode != 0, (
-        f"LOCK_UPGRADE={lock_upgrade!r} должна была быть отвергнута, "
-        f"прошла с кодом {result.returncode}"
-    )
-    executed_marker_lines = [
-        line
-        for line in result.stdout.splitlines() + result.stderr.splitlines()
-        if line == _INJECTION_MARKER
-    ]
-    assert not executed_marker_lines, (
-        f"LOCK_UPGRADE={lock_upgrade!r} - маркер инъекции напечатан своей "
-        f"строкой, команда исполнилась: stdout={result.stdout!r} "
-        f"stderr={result.stderr!r}"
+        f"должна была быть отвергнута, прошла с кодом {result.returncode}"
     )

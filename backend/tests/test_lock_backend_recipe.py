@@ -22,11 +22,14 @@ avoids forcing one module to understand two unrelated grammars.
 Honest boundary (rule 8, CLAUDE.md), named directly rather than implied:
 `find_recipe_violations` checks the RECIPE'S TEXT, never its execution.
 It confirms the seed step and the `--output-file` target name the same
-path, that `--generate-hashes` is present, and that `--upgrade`/`-U` is
-absent - all three by inspecting the shell command string `lock-backend`
-embeds in the Makefile. It does NOT run `pip-compile` and does NOT
-confirm that seeding actually prevents drift at any given moment - the
-pins could still drift if, for example, the seeded file itself were
+path, that `--generate-hashes` is present, that `--upgrade`/`-U` is
+absent, and (PR #173 review, 3rd round - see "Second layer" below) that
+the container's `bash -c` argument is single-quoted, that
+`$(LOCK_UPGRADE)` is never substituted into the recipe's text and that
+`docker run` forwards `-e LOCK_UPGRADE_VALUE` - all by inspecting the
+shell command string `lock-backend` embeds in the Makefile. It does NOT
+run `pip-compile` and does NOT confirm that seeding actually prevents
+drift at any given moment - the pins could still drift if, for example, the seeded file itself were
 already wrong when `lock-backend` runs, or `pip-compile` changed its own
 incremental-reuse behavior in some future version. Catching an ACTUAL
 drift requires running `make lock-backend` and diffing pins, exactly
@@ -97,6 +100,20 @@ one quoting layer later. Single-quoting keeps the literal text
 `$LOCK_UPGRADE_VALUE` intact until the container's own shell expands it
 from its OWN environment - the only point where expansion happens.
 
+Second layer (PR #173 review, 3rd round): the character set above
+already rejects `"`, `` ` `` and `$`, so a regression back to a
+double-quoted `bash -c "..."` (or to `$(LOCK_UPGRADE)` substituted into
+the text) is unreachable through today's validation - and therefore
+invisible to every test that only feeds values through it. Review
+showed this by mutation: the double quotes restored, the full suite
+stayed green. `find_recipe_violations` now flags all three shapes in
+the recipe's text (single quotes, no `$(LOCK_UPGRADE)`, `-e
+LOCK_UPGRADE_VALUE` present), so the second layer holds even if the
+first is loosened later. Still a TEXT check (the boundary above): it
+does not execute `docker run`, and does not prove the container
+actually receives the value - only that the recipe is written the way
+that makes it so.
+
 `test_lock_upgrade_validation_*` below actually EXECUTES just that
 first invocation via real `sh` (reducing `make`'s own `$$` -> `$` the
 same textual way `make` does, and passing the test's value through a
@@ -152,6 +169,8 @@ _skip_without_full_checkout = pytest.mark.skipif(
 _SEED_PATTERN = re.compile(r"cp\s+requirements\.lock\s+([^\s;\\]+)")
 _OUTPUT_FILE_PATTERN = re.compile(r"--output-file[=\s]+([^\s;\\]+)")
 _UPGRADE_FLAGS = ("--upgrade", "-U")
+_CONTAINER_COMMAND_PATTERN = re.compile(r"bash\s+-c\s+(\S)")
+_ENV_FORWARD_PATTERN = re.compile(r"-e\s+LOCK_UPGRADE_VALUE(?![=\w])")
 
 
 def _extract_target_recipe(makefile_text: str, target: str) -> str | None:
@@ -214,6 +233,26 @@ def find_recipe_violations(recipe_text: str) -> list[str]:
     if "--generate-hashes" not in recipe_text:
         violations.append("рецепт не содержит --generate-hashes")
 
+    container_command = _CONTAINER_COMMAND_PATTERN.search(recipe_text)
+    if container_command is None or container_command.group(1) != "'":
+        violations.append(
+            "команда контейнера (bash -c) не в одинарных кавычках - в двойных "
+            "хостовый shell раскроет $LOCK_UPGRADE_VALUE, и bash в контейнере "
+            "разберёт результат как новый код (PR #173 review)"
+        )
+
+    if "$(LOCK_UPGRADE)" in recipe_text:
+        violations.append(
+            "рецепт подставляет $(LOCK_UPGRADE) в текст команды - значение "
+            "передаётся только через переменную окружения LOCK_UPGRADE_VALUE"
+        )
+
+    if not _ENV_FORWARD_PATTERN.search(recipe_text):
+        violations.append(
+            "docker run не пробрасывает -e LOCK_UPGRADE_VALUE - контейнер не "
+            "получит значение из окружения"
+        )
+
     return violations
 
 
@@ -224,13 +263,16 @@ _BODY = "/tmp/body.txt"
 
 _GOOD_RECIPE = (
     "\tdocker run --rm --platform linux/amd64 \\\n"
-    "\t\t$(LOCK_BASE_IMAGE) bash -c \" \\\n"
+    "\t\t-e LOCK_UPGRADE_VALUE \\\n"
+    "\t\t$(LOCK_BASE_IMAGE) bash -c ' \\\n"
     "\t\t\tpip install --no-cache-dir --quiet pip-tools==7.4.1 && \\\n"
     f"\t\t\tif [ -f requirements.lock ]; then cp requirements.lock {_BODY}; fi && \\\n"
+    "\t\t\tset -- $$LOCK_UPGRADE_VALUE && \\\n"
     "\t\t\tpip-compile --extra dev --strip-extras --generate-hashes --no-header --quiet \\\n"
+    '\t\t\t\t"$$@" \\\n'
     f"\t\t\t\t--output-file={_BODY} pyproject.toml && \\\n"
     f"\t\t\tcat requirements.lock.header.txt {_BODY} > requirements.lock \\\n"
-    '\t\t"\n'
+    "\t\t'\n"
 )
 
 _SEED_LINE = f"if [ -f requirements.lock ]; then cp requirements.lock {_BODY}; fi && \\\n"
@@ -298,6 +340,38 @@ def test_missing_output_file_is_flagged() -> None:
 
     assert len(violations) == 1
     assert "не задаёт --output-file" in violations[0]
+
+
+def test_double_quoted_container_command_is_flagged() -> None:
+    # Второй слой защиты LOCK_UPGRADE (PR #173 review, 3-й круг): внутри
+    # двойных кавычек `$$LOCK_UPGRADE_VALUE` раскрыл бы хостовый shell, и
+    # bash в контейнере разобрал бы результат как новый код (см. докстринг
+    # модуля). Первый слой (набор допустимых символов) сегодня не
+    # пропускает `"`/`` ` ``/`$`, поэтому без этой проверки возврат двойных
+    # кавычек ничем бы не замечался.
+    double_quoted = _GOOD_RECIPE.replace("bash -c ' \\\n", 'bash -c " \\\n').replace(
+        "\t\t'\n", '\t\t"\n'
+    )
+    violations = find_recipe_violations(double_quoted)
+
+    assert len(violations) == 1
+    assert "одинарных кавычках" in violations[0]
+
+
+def test_textual_lock_upgrade_substitution_is_flagged() -> None:
+    substituted = _GOOD_RECIPE.replace("set -- $$LOCK_UPGRADE_VALUE", "set -- $(LOCK_UPGRADE)")
+    violations = find_recipe_violations(substituted)
+
+    assert len(violations) == 1
+    assert "$(LOCK_UPGRADE)" in violations[0]
+
+
+def test_missing_env_forwarding_is_flagged() -> None:
+    without_env = _GOOD_RECIPE.replace("\t\t-e LOCK_UPGRADE_VALUE \\\n", "")
+    violations = find_recipe_violations(without_env)
+
+    assert len(violations) == 1
+    assert "-e LOCK_UPGRADE_VALUE" in violations[0]
 
 
 # --- против настоящего Makefile ----------------------------------------------

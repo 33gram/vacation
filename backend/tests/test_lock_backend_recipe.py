@@ -114,6 +114,10 @@ does not execute `docker run`, and does not prove the container
 actually receives the value - only that the recipe is written the way
 that makes it so.
 
+This docstring is the one detailed account of the mechanism (rounds 1-3
+above, plus the side-effect rationale below); the `Makefile` comment at
+`lock-backend` keeps only the three reasons in short and refers here.
+
 `test_lock_upgrade_validation_*` below actually EXECUTES just that
 first invocation via real `sh` (reducing `make`'s own `$$` -> `$` the
 same textual way `make` does, and passing the test's value through a

@@ -47,7 +47,7 @@ _ATTRIBUTE_COLUMNS: dict[str, tuple[str, ...]] = {
     # `approval_routes.leave_type_id` (`plan.md` §4, T-M3-04).
     "Требует согласования": ("requires_approval",),
     "Годовой лимит": ("annual_limit", "carry_over_policy"),
-    "Учитывать выходные/праздники внутри периода": ("exclude_weekends_holidays",),
+    "Учитывать выходные/праздники внутри периода": ("counted_non_working_days",),
 }
 
 # Колонки, которым НЕ соответствует строка раздела 6: ключ и признак

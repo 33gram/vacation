@@ -103,3 +103,16 @@ async def test_running_the_seed_again_does_not_overwrite_an_admin_edit(db_sessio
         True,
         5.0,
     )
+
+
+async def test_counted_non_working_days_follow_art_120_and_the_unit(db_session) -> None:
+    rows = await _rows(db_session)
+
+    # Ст. 120 ТК РФ: у ежегодных отпусков праздники не входят, выходные входят.
+    assert rows["annual_paid"]["counted_non_working_days"] == "weekends_only"
+    assert rows["additional_paid"]["counted_non_working_days"] == "weekends_only"
+    # Вид в рабочих днях: ни выходные, ни праздники не входят.
+    assert rows["time_off"]["counted_non_working_days"] == "none"
+    assert {
+        code for code, row in rows.items() if row["counted_non_working_days"] == "all"
+    } == {"unpaid", "study", "maternity_childcare", "sick", "business_trip"}

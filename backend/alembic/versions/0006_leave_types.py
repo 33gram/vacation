@@ -52,7 +52,7 @@ _LEAVE_TYPES = sa.table(
     sa.column("requires_approval", sa.Boolean),
     sa.column("annual_limit", sa.Numeric),
     sa.column("carry_over_policy", sa.String),
-    sa.column("exclude_weekends_holidays", sa.Boolean),
+    sa.column("counted_non_working_days", sa.String),
     sa.column("is_active", sa.Boolean),
 )
 
@@ -66,11 +66,16 @@ _LEAVE_TYPES = sa.table(
 #    для остальных видов — ВЫБРАНО по аналогии (заявки одного движка).
 #  - carry_over_policy = 'none' везде, кроме основного отпуска: ВЫБРАНО,
 #    поведение переноса не определено ни одним FR и не читается (T-M3-30).
-#  - exclude_weekends_holidays = False у видов в календарных днях: ВЫБРАНО.
-#    Ограничение булевой колонки: для основного отпуска ст. 120 ТК РФ
-#    исключает праздники, но НЕ выходные, — один флаг этого не выражает;
-#    расчёт количества дней (T-M3-05, FR-REQ-001 «где применимо») решает
-#    это своей логикой, колонка здесь значения не навязывает.
+#  - counted_non_working_days (раздел 6 требований v1.21): `all` у видов в
+#    календарных днях, кроме ежегодных отпусков, — ВЫБРАНО (требования
+#    называют только ст. 120 для ежегодных отпусков; для остальных видов
+#    праздничные дни в количество входят). `weekends_only` у основного и
+#    дополнительного отпуска — ВЫВЕДЕНО из ст. 120 ТК РФ: праздничные дни
+#    в число календарных дней отпуска не включаются, выходные включаются
+#    (раздел 6 цитирует статью для ежегодных оплачиваемых отпусков; что она
+#    распространяется и на дополнительный, — прочтение самой статьи, а не
+#    текста требований). `none` у
+#    вида в рабочих днях — ВЫВЕДЕНО из выбора единицы.
 _PRESET: list[dict[str, object]] = [
     {
         # BR-1, FR-REQ-001: основной оплачиваемый отпуск, календарные дни —
@@ -87,7 +92,7 @@ _PRESET: list[dict[str, object]] = [
         "requires_approval": True,
         "annual_limit": None,
         "carry_over_policy": "unlimited",
-        "exclude_weekends_holidays": False,
+        "counted_non_working_days": "weekends_only",
         "is_active": True,
     },
     {
@@ -103,7 +108,7 @@ _PRESET: list[dict[str, object]] = [
         "requires_approval": True,
         "annual_limit": None,
         "carry_over_policy": "none",
-        "exclude_weekends_holidays": False,
+        "counted_non_working_days": "weekends_only",
         "is_active": False,
     },
     {
@@ -119,7 +124,7 @@ _PRESET: list[dict[str, object]] = [
         "requires_approval": True,
         "annual_limit": None,
         "carry_over_policy": "none",
-        "exclude_weekends_holidays": False,
+        "counted_non_working_days": "all",
         "is_active": True,
     },
     {
@@ -137,7 +142,7 @@ _PRESET: list[dict[str, object]] = [
         "requires_approval": True,
         "annual_limit": None,
         "carry_over_policy": "none",
-        "exclude_weekends_holidays": False,
+        "counted_non_working_days": "all",
         "is_active": True,
     },
     {
@@ -154,7 +159,7 @@ _PRESET: list[dict[str, object]] = [
         "requires_approval": True,
         "annual_limit": None,
         "carry_over_policy": "none",
-        "exclude_weekends_holidays": False,
+        "counted_non_working_days": "all",
         "is_active": True,
     },
     {
@@ -172,7 +177,7 @@ _PRESET: list[dict[str, object]] = [
         "requires_approval": True,
         "annual_limit": None,
         "carry_over_policy": "none",
-        "exclude_weekends_holidays": False,
+        "counted_non_working_days": "all",
         "is_active": True,
     },
     {
@@ -192,7 +197,7 @@ _PRESET: list[dict[str, object]] = [
         "requires_approval": True,
         "annual_limit": None,
         "carry_over_policy": "none",
-        "exclude_weekends_holidays": True,
+        "counted_non_working_days": "none",
         "is_active": True,
     },
     {
@@ -210,7 +215,7 @@ _PRESET: list[dict[str, object]] = [
         "requires_approval": True,
         "annual_limit": None,
         "carry_over_policy": "none",
-        "exclude_weekends_holidays": False,
+        "counted_non_working_days": "all",
         "is_active": True,
     },
 ]
@@ -241,7 +246,9 @@ def upgrade() -> None:
         # читается (T-M3-30). Случай «не более N дней» потребует ОТДЕЛЬНОЙ
         # колонки с лимитом переноса и миграции, а не нового значения здесь.
         sa.Column("carry_over_policy", sa.String(), nullable=False),
-        sa.Column("exclude_weekends_holidays", sa.Boolean(), nullable=False),
+        # Не булев признак: ст. 120 ТК РФ требует различать «исключать
+        # праздники, выходные оставить» и «исключать и те и другие».
+        sa.Column("counted_non_working_days", sa.String(), nullable=False),
         sa.Column("is_active", sa.Boolean(), nullable=False),
         sa.CheckConstraint(
             "is_paid IN ('full', 'none', 'partial')",
@@ -254,6 +261,10 @@ def upgrade() -> None:
         sa.CheckConstraint(
             "carry_over_policy IN ('none', 'unlimited')",
             name="ck_leave_types_carry_over_policy",
+        ),
+        sa.CheckConstraint(
+            "counted_non_working_days IN ('all', 'weekends_only', 'none')",
+            name="ck_leave_types_counted_non_working_days",
         ),
         sa.CheckConstraint(
             "annual_limit IS NULL OR annual_limit >= 0",

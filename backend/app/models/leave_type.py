@@ -13,6 +13,7 @@ from app.db.base import Base
 LEAVE_TYPE_PAID_VALUES = ("full", "none", "partial")
 LEAVE_TYPE_UNIT_VALUES = ("calendar_days", "working_days", "hours")
 LEAVE_TYPE_CARRY_OVER_VALUES = ("none", "unlimited")
+LEAVE_TYPE_COUNTED_NON_WORKING_DAYS_VALUES = ("all", "weekends_only", "none")
 
 
 class LeaveType(Base):
@@ -37,6 +38,10 @@ class LeaveType(Base):
         CheckConstraint(
             "carry_over_policy IN ('none', 'unlimited')",
             name="ck_leave_types_carry_over_policy",
+        ),
+        CheckConstraint(
+            "counted_non_working_days IN ('all', 'weekends_only', 'none')",
+            name="ck_leave_types_counted_non_working_days",
         ),
         CheckConstraint(
             "annual_limit IS NULL OR annual_limit >= 0",
@@ -68,10 +73,11 @@ class LeaveType(Base):
     # значением не выразить: ему нужна отдельная колонка с лимитом переноса
     # и миграция.
     carry_over_policy: Mapped[str] = mapped_column(nullable=False)
-    # True — дни периода, выпавшие на выходные/праздничные по
-    # производственному календарю, в количество НЕ входят. Полярность
-    # обратна формулировке раздела 6 («Учитывать выходные/праздники»).
-    exclude_weekends_holidays: Mapped[bool] = mapped_column(nullable=False)
+    # Какие нерабочие дни периода (по производственному календарю, BR-11)
+    # входят в количество: `all` — все дни периода; `weekends_only` —
+    # выходные входят, праздничные нет (ст. 120 ТК РФ, ежегодные отпуска);
+    # `none` — только рабочие дни. Раздел 6 требований v1.21.
+    counted_non_working_days: Mapped[str] = mapped_column(nullable=False)
     # Выключенный вид остаётся в справочнике (A-3.1); влияние на подачу
     # заявок ни одним FR не определено — решается в `FR-REQ-*`.
     is_active: Mapped[bool] = mapped_column(nullable=False)

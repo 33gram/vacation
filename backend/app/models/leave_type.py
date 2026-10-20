@@ -16,31 +16,40 @@ LEAVE_TYPE_CARRY_OVER_VALUES = ("none", "unlimited")
 LEAVE_TYPE_COUNTED_NON_WORKING_DAYS_VALUES = ("all", "weekends_only", "none")
 
 
+def _in_set(column: str, values: tuple[str, ...]) -> str:
+    """`column IN ('a', 'b')` из набора значений — одна копия набора в
+    приложении. Миграция `0006` повторяет их литералами намеренно (она
+    замороженный снимок схемы, см. комментарий там)."""
+    return f"{column} IN ({', '.join(repr(value) for value in values)})"
+
+
 class LeaveType(Base):
     """Справочник видов отсутствий (T-M2-01, раздел 6 требований,
     `FR-ADMIN-001`).
 
     Ни у одной колонки нет значения по умолчанию: раздел 6 определяет
-    набор атрибутов, но не их умолчания, а умолчание — это бизнес-правило
-    (CLAUDE.md, правило 5), которое не выдумывается схемой.
+    набор атрибутов, но не их умолчания, а выдумывать умолчание в схеме
+    значило бы молча принять за требование то, чего в требованиях нет.
     """
 
     __tablename__ = "leave_types"
     __table_args__ = (
         CheckConstraint(
-            "is_paid IN ('full', 'none', 'partial')",
+            _in_set("is_paid", LEAVE_TYPE_PAID_VALUES),
             name="ck_leave_types_is_paid",
         ),
         CheckConstraint(
-            "unit IN ('calendar_days', 'working_days', 'hours')",
+            _in_set("unit", LEAVE_TYPE_UNIT_VALUES),
             name="ck_leave_types_unit",
         ),
         CheckConstraint(
-            "carry_over_policy IN ('none', 'unlimited')",
+            _in_set("carry_over_policy", LEAVE_TYPE_CARRY_OVER_VALUES),
             name="ck_leave_types_carry_over_policy",
         ),
         CheckConstraint(
-            "counted_non_working_days IN ('all', 'weekends_only', 'none')",
+            _in_set(
+                "counted_non_working_days", LEAVE_TYPE_COUNTED_NON_WORKING_DAYS_VALUES
+            ),
             name="ck_leave_types_counted_non_working_days",
         ),
         CheckConstraint(

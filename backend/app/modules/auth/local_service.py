@@ -7,6 +7,8 @@
 
 from __future__ import annotations
 
+import datetime
+
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import (
@@ -19,16 +21,17 @@ from app.models.account import Account
 from app.models.employee import Employee
 from app.modules.auth.access_control import enforce_access
 from app.modules.auth.exceptions import AccessDeniedError, AuthenticationError
-from app.modules.auth.password_policy import (
-    DEFAULT_LOCKOUT_DURATION,
-    DEFAULT_MAX_FAILED_ATTEMPTS,
-)
 from app.modules.auth.repository import (
     get_account_by_employee_id,
     get_account_by_login,
     get_employee_by_email,
 )
 from app.modules.auth.tokens import AuthResult, issue_tokens
+from app.modules.business_rules.service import (
+    LOCKOUT_DURATION_MINUTES,
+    MAX_FAILED_LOGIN_ATTEMPTS,
+    get_rules,
+)
 
 
 async def _resolve_local_account(
@@ -56,8 +59,14 @@ async def uses_local_auth(session: AsyncSession, login: str) -> bool:
 
 async def _register_failed_attempt(session: AsyncSession, account: Account) -> None:
     account.failed_login_attempts += 1
-    if account.failed_login_attempts >= DEFAULT_MAX_FAILED_ATTEMPTS:
-        account.locked_until = utcnow() + DEFAULT_LOCKOUT_DURATION
+    # FR-AUTH-002/2 (T-M2-09): порог и срок блокировки — параметры из
+    # `business_rules_config`, читаются одним запросом на неуспешную
+    # попытку; значения из кода сюда не подставляются.
+    rules = await get_rules(session, MAX_FAILED_LOGIN_ATTEMPTS, LOCKOUT_DURATION_MINUTES)
+    if account.failed_login_attempts >= rules[MAX_FAILED_LOGIN_ATTEMPTS]:
+        account.locked_until = utcnow() + datetime.timedelta(
+            minutes=rules[LOCKOUT_DURATION_MINUTES]
+        )
     await session.commit()
 
 

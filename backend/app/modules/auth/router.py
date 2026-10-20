@@ -14,6 +14,7 @@ from app.modules.auth.embedded_mode import is_embedded_mode
 from app.modules.auth.password_policy import get_password_policy_hints, validate_password_strength
 from app.modules.auth.rbac import get_current_account_allowing_password_change
 from app.modules.auth.tokens import AuthResult
+from app.modules.business_rules.service import PASSWORD_MIN_LENGTH, get_int
 from app.schemas.auth import (
     LoginRequest,
     MeResponse,
@@ -130,7 +131,9 @@ async def change_password(
     # (400, список `PasswordPolicyViolationOut`), локальный `try/except`
     # был бы дублированием без дополнительной пользы.
     validate_password_strength(
-        payload.new_password.get_secret_value(), **await _identity_context(session, account)
+        payload.new_password.get_secret_value(),
+        min_length=await get_int(session, PASSWORD_MIN_LENGTH),
+        **await _identity_context(session, account),
     )
 
     account.local_password_hash = hash_password(payload.new_password.get_secret_value())
@@ -141,6 +144,7 @@ async def change_password(
 @router.get("/password-policy", response_model=list[PasswordPolicyHintOut])
 async def get_password_policy(
     _: Account = Depends(get_current_account_allowing_password_change),
+    session: AsyncSession = Depends(get_db_session),
 ) -> list[PasswordPolicyHintOut]:
     """T-M1-45: состав действующих правил парольной политики с уже
     подставленными параметрами на русском (NFR-LOC-001), чтобы
@@ -151,8 +155,10 @@ async def get_password_policy(
     требования) — не публичный эндпоинт: состав правил сам по себе не
     секрет, но раскрывать детали механизма аутентификации без
     аутентификации не требуется."""
+    min_length = await get_int(session, PASSWORD_MIN_LENGTH)
     return [
-        PasswordPolicyHintOut(code=h.code, hint=h.message) for h in get_password_policy_hints()
+        PasswordPolicyHintOut(code=h.code, hint=h.message)
+        for h in get_password_policy_hints(min_length=min_length)
     ]
 
 

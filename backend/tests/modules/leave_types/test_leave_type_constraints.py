@@ -77,7 +77,18 @@ async def test_duplicate_code_is_rejected(db_session) -> None:
 
 @pytest.mark.parametrize(
     "column",
-    ["code", "name", "is_paid", "unit", "carry_over_policy", "counted_non_working_days"],
+    [
+        "code",
+        "name",
+        "is_paid",
+        "unit",
+        "reduces_main_balance",
+        "requires_document",
+        "requires_approval",
+        "carry_over_policy",
+        "counted_non_working_days",
+        "is_active",
+    ],
 )
 async def test_required_column_rejects_null(db_session, column: str) -> None:
     with pytest.raises(IntegrityError):

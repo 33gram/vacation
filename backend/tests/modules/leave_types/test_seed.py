@@ -60,21 +60,122 @@ async def test_additional_paid_leave_is_inactive_and_the_rest_are_active(db_sess
     assert {code for code, row in rows.items() if not row["is_active"]} == {"additional_paid"}
 
 
-async def test_attributes_stated_by_the_requirements(db_session) -> None:
+# Ожидаемое содержимое справочника после миграции — ВСЕ атрибуты всех
+# восьми видов, записанные здесь независимо от миграции. Любое изменение
+# сидирования обязано покраснеть: пометка ВЫВЕДЕНО/ВЫБРАНО в миграции
+# объясняет происхождение значения, а не степень его защищённости.
+# Источники самых весомых значений: FR-SICK-001 (больничный не уменьшает
+# остаток, нужен ЭЛН), раздел 6 п. 8 (командировка не расходует остаток),
+# BR-9 (без сохранения зарплаты), BR-1 (основной отпуск — календарные
+# дни, уменьшает основной остаток), ст. 120 ТК РФ (`weekends_only`),
+# A-3.1/T-M2-04 (дополнительный отпуск неактивен), правило 5 и T-M2-03
+# (`annual_limit` пуст — нормы закона живут в `business_rules_config`).
+_EXPECTED = {
+    "annual_paid": (
+        "Основной оплачиваемый отпуск",
+        "full",
+        "calendar_days",
+        True,
+        False,
+        True,
+        None,
+        "unlimited",
+        "weekends_only",
+        True,
+    ),
+    "additional_paid": (
+        "Дополнительный оплачиваемый отпуск",
+        "full",
+        "calendar_days",
+        False,
+        False,
+        True,
+        None,
+        "none",
+        "weekends_only",
+        False,
+    ),
+    "unpaid": (
+        "Отпуск без сохранения заработной платы",
+        "none",
+        "calendar_days",
+        False,
+        False,
+        True,
+        None,
+        "none",
+        "all",
+        True,
+    ),
+    "study": (
+        "Учебный отпуск",
+        "full",
+        "calendar_days",
+        False,
+        True,
+        True,
+        None,
+        "none",
+        "all",
+        True,
+    ),
+    "maternity_childcare": (
+        "Отпуск по беременности и родам / по уходу за ребёнком",
+        "partial",
+        "calendar_days",
+        False,
+        True,
+        True,
+        None,
+        "none",
+        "all",
+        True,
+    ),
+    "sick": (
+        "Больничный (временная нетрудоспособность)",
+        "partial",
+        "calendar_days",
+        False,
+        True,
+        True,
+        None,
+        "none",
+        "all",
+        True,
+    ),
+    "time_off": ("Отгул", "full", "working_days", False, False, True, None, "none", "none", True),
+    "business_trip": (
+        "Командировка",
+        "full",
+        "calendar_days",
+        False,
+        False,
+        True,
+        None,
+        "none",
+        "all",
+        True,
+    ),
+}
+_COLUMNS = (
+    "name",
+    "is_paid",
+    "unit",
+    "reduces_main_balance",
+    "requires_document",
+    "requires_approval",
+    "annual_limit",
+    "carry_over_policy",
+    "counted_non_working_days",
+    "is_active",
+)
+
+
+async def test_every_seeded_row_matches_the_expected_table(db_session) -> None:
     rows = await _rows(db_session)
 
-    # FR-SICK-001: больничный не уменьшает остаток основного отпуска, нужны номер и даты ЭЛН.
-    assert rows["sick"]["reduces_main_balance"] is False
-    assert rows["sick"]["requires_document"] is True
-    # Раздел 6, п. 8: командировка не расходует остаток отпуска.
-    assert rows["business_trip"]["reduces_main_balance"] is False
-    # BR-9: отпуск без сохранения зарплаты неоплачиваемый.
-    assert rows["unpaid"]["is_paid"] == "none"
-    # BR-1: основной отпуск — календарные дни, уменьшает основной остаток.
-    assert rows["annual_paid"]["unit"] == "calendar_days"
-    assert rows["annual_paid"]["reduces_main_balance"] is True
-    # Нормы закона не дублируются в колонке вида (правило 5, T-M2-03).
-    assert all(row["annual_limit"] is None for row in rows.values())
+    actual = {code: tuple(row[column] for column in _COLUMNS) for code, row in rows.items()}
+    assert actual == _EXPECTED
 
 
 async def test_running_the_seed_again_creates_no_duplicates(db_session) -> None:
@@ -103,16 +204,3 @@ async def test_running_the_seed_again_does_not_overwrite_an_admin_edit(db_sessio
         True,
         5.0,
     )
-
-
-async def test_counted_non_working_days_follow_art_120_and_the_unit(db_session) -> None:
-    rows = await _rows(db_session)
-
-    # Ст. 120 ТК РФ: у ежегодных отпусков праздники не входят, выходные входят.
-    assert rows["annual_paid"]["counted_non_working_days"] == "weekends_only"
-    assert rows["additional_paid"]["counted_non_working_days"] == "weekends_only"
-    # Вид в рабочих днях: ни выходные, ни праздники не входят.
-    assert rows["time_off"]["counted_non_working_days"] == "none"
-    assert {
-        code for code, row in rows.items() if row["counted_non_working_days"] == "all"
-    } == {"unpaid", "study", "maternity_childcare", "sick", "business_trip"}

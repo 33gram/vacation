@@ -97,7 +97,7 @@ async def adjust_balance(
     Причина обязательна, пустая строка и одни пробелы причиной не являются;
     записывается обрезанной. Автор обязателен. `quantity` — со знаком
     (минус уменьшает остаток), ноль — не корректировка."""
-    stripped_reason = reason.strip() if isinstance(reason, str) else ""
+    stripped_reason = reason.strip()
     if not stripped_reason:
         raise BalanceEntryError("Укажите причину корректировки.")
     if actor_account_id is None:

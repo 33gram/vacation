@@ -36,8 +36,10 @@ NEGATIVE_ENTRY_TYPES = (USAGE,)
 NONZERO_ENTRY_TYPES = (MANUAL_ADJUSTMENT, RECALCULATION, TERMINATION_CLOSEOUT)
 # FR-BAL-003/004: причина именно у этих событий.
 REASON_REQUIRED_ENTRY_TYPES = (MANUAL_ADJUSTMENT, RECALCULATION)
-# События с автором-человеком; у остальных (начисление, списание по заявке)
-# автора нет — их пишет система (начисление, списание и возврат по заявке).
+# Автор ОБЯЗАТЕЛЕН у этих четырёх типов; у остальных трёх (`accrual`, `usage`,
+# `usage_reversal`) не требуется, но и не запрещён: события использования
+# пишет M3 (`T-M3-34`), и там автору (кто подал/отменил заявку) может найтись
+# место - запрет на NULL связал бы руки этой задаче.
 ACTOR_REQUIRED_ENTRY_TYPES = (
     MANUAL_ADJUSTMENT,
     RECALCULATION,

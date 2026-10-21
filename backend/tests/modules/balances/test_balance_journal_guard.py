@@ -5,14 +5,16 @@
 `app/`, находит те, что обращаются к журналу `leave_balance_entries`, и
 проверяет их.
 
-  1. К журналу обращается ровно разрешённый набор файлов: модель, её
-     реэкспорт и сервис `modules/balances/service.py`. Любой другой модуль
-     (отчёт, начисление, эндпоинт) со своей суммой или вставкой краснит
-     сторожа - остаток и запись событий проходят через функции сервиса.
-  2. В файлах, обращающихся к журналу, нет путей изменения и удаления:
-     вызовов `update`/`delete`/`merge`/`bulk_update_mappings`/`setattr`,
-     присваивания атрибуту чужого объекта (`entry.quantity = ...`) и
-     строковых литералов с `UPDATE`/`DELETE`/`TRUNCATE`.
+  1. К журналу обращается ровно тот набор файлов, что назван в реестре
+     `_JOURNAL_FILES` (у каждой записи - причина): модель, её реэкспорт и
+     сервис `modules/balances/service.py`. Любой другой модуль (отчёт,
+     начисление, эндпоинт) со своей суммой или вставкой краснит сторожа -
+     остаток и запись событий проходят через функции сервиса.
+  2. В КАЖДОМ из этих файлов, включая модель, нет путей изменения и
+     удаления: вызовов `update`/`delete`/`merge`/`bulk_update_mappings`/
+     `setattr`/`truncate`, присваивания атрибуту чужого объекта
+     (`entry.quantity = ...`) и строковых литералов с `UPDATE`/`DELETE`/
+     `TRUNCATE`. Строки-докстринги (отдельным выражением) не считаются.
 
 ГРАНИЦА (правило 8). Сторож видит имена и литералы, а не поведение:
   - не видит доступ к таблице, имя которой собрано из частей строки или
@@ -33,10 +35,13 @@ import re
 from pathlib import Path
 
 _APP_ROOT = Path(__file__).resolve().parents[3] / "app"
-_MODEL_FILE = _APP_ROOT / "models" / "leave_balance_entry.py"
-_ALLOWED = {
-    "models/__init__.py",
-    "modules/balances/service.py",
+# Реестр файлов, которым разрешено обращаться к журналу, с причиной у каждого
+# (по образцу `_ALLOWED_WITHOUT_*` из T-M1-58): новая запись видна в диффе и
+# требует слова «почему».
+_JOURNAL_FILES = {
+    "models/leave_balance_entry.py": "объявляет таблицу и модель (схема, не код записи)",
+    "models/__init__.py": "реэкспорт модели для Alembic и тестов, обращений к данным нет",
+    "modules/balances/service.py": "единственное место записи событий и вычисления остатка",
 }
 _MODEL_NAME = "LeaveBalanceEntry"
 _TABLE_NAME = "leave_balance_entries"
@@ -117,8 +122,6 @@ def find_mutations(source: str, filename: str) -> list[str]:
 def _journal_files() -> dict[str, str]:
     found = {}
     for path in sorted(_APP_ROOT.rglob("*.py")):
-        if path == _MODEL_FILE:
-            continue
         source = path.read_text(encoding="utf-8")
         if touches_journal(source):
             found[path.relative_to(_APP_ROOT).as_posix()] = source
@@ -126,7 +129,7 @@ def _journal_files() -> dict[str, str]:
 
 
 def test_only_the_balances_service_reaches_the_journal() -> None:
-    assert set(_journal_files()) == _ALLOWED
+    assert set(_journal_files()) == set(_JOURNAL_FILES)
 
 
 def test_files_that_reach_the_journal_have_no_update_or_delete_paths() -> None:

@@ -2,6 +2,7 @@ import { expect, test } from "@playwright/test";
 
 import { startOpenldapAndWaitReady, stopOpenldap } from "./support/dockerControl";
 import { DIRECTORY_USER, setupLdapScenario } from "./support/ldapScenario";
+import { watchPage } from "./support/pageDiagnostics";
 
 // T-M1-24. Три теста в ОДНОМ файле, в этом порядке, намеренно:
 // `ldap_settings` — singleton-таблица (одна строка на всю систему,
@@ -14,6 +15,11 @@ import { DIRECTORY_USER, setupLdapScenario } from "./support/ldapScenario";
 // друг от друга, это сознательное решение, а не оплошность.
 
 test.describe.configure({ mode: "serial" });
+
+// T-M1-61: только печать упавших запросов и ошибок страницы, см. pageDiagnostics.ts.
+test.beforeEach(({ page }) => {
+  watchPage(page);
+});
 
 test("logs in via LDAP, and the admin sees the matching employee card", async ({ page }) => {
   const { adminToken, ldapConnectionConfirmed } = await setupLdapScenario();

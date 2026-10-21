@@ -12,6 +12,11 @@
 
 import { execFileSync } from "node:child_process";
 
+import { logWithWallClock } from "./pageDiagnostics";
+
+// T-M1-61: часы стенда для сверки с `ip monitor` и `docker events`.
+const WALL_CLOCK_PREFIX = "[T-M1-55 PR#171 timing]";
+
 const COMPOSE_ARGS = [
   "compose",
   "--env-file",
@@ -24,6 +29,7 @@ const COMPOSE_ARGS = [
 
 export function stopOpenldap(): void {
   execFileSync("docker", [...COMPOSE_ARGS, "stop", "openldap"], { stdio: "pipe" });
+  logWithWallClock(WALL_CLOCK_PREFIX, "stopOpenldap returned");
 }
 
 // Поднимает контейнер и ждёт, что порт действительно принимает
@@ -34,6 +40,7 @@ export function startOpenldapAndWaitReady(timeoutMs = 30_000): void {
   // выбора лечения по итогам измерения (см. тело коммита).
   const startedAt = Date.now();
   execFileSync("docker", [...COMPOSE_ARGS, "start", "openldap"], { stdio: "pipe" });
+  logWithWallClock(WALL_CLOCK_PREFIX, "docker start openldap returned");
 
   const deadline = Date.now() + timeoutMs;
   let attempts = 0;
@@ -61,6 +68,7 @@ export function startOpenldapAndWaitReady(timeoutMs = 30_000): void {
       console.log(
         `[T-M1-55 PR#171 timing] startOpenldapAndWaitReady: ${Date.now() - startedAt}ms, ${attempts} attempt(s)`,
       );
+      logWithWallClock(WALL_CLOCK_PREFIX, "startOpenldapAndWaitReady returned");
       return;
     } catch {
       // ещё не готов - короткая синхронная пауза и повтор.

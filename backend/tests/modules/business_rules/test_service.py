@@ -162,7 +162,14 @@ def test_non_integer_text_is_refused_naming_the_key(value: str) -> None:
     assert excinfo.value.key == "annual_leave_days"
 
 
-@pytest.mark.parametrize("value", ["", "13-01", "1217", "12-3x", "ab-cd"])
+# Вторая половина списка — то, что `CHECK` базы отвергает, а `int()` и
+# `date()` без проверки формата принимают (измерено при ревью PR #176, Сп-1):
+# сервис не должен быть мягче базы, иначе запись `T-M2-12`, проверенная
+# сервисом, упадёт `IntegrityError` (500 вместо 4xx).
+@pytest.mark.parametrize(
+    "value",
+    ["", "13-01", "1217", "12-3x", "ab-cd", "1-5", " 12-17", "+1-+5", "012-017", "١٢-١٧"],
+)
 def test_malformed_month_day_text_is_refused_naming_the_key(value: str) -> None:
     with pytest.raises(BusinessRuleError) as excinfo:
         parse_stored_value("schedule_approval_deadline", value, "month_day")

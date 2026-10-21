@@ -40,6 +40,7 @@
 from __future__ import annotations
 
 import datetime
+import re
 from dataclasses import dataclass
 
 from sqlalchemy import select
@@ -161,6 +162,12 @@ def parse_stored_value(key: str, value: str, value_type: str) -> RuleValue:
                 key, f"{number} is outside the allowed range {spec.minimum}..{spec.maximum}"
             )
         return number
+    # Формат — тот же, что у `CHECK` базы (`[0-9]{2}-[0-9]{2}`, только ASCII):
+    # `int()` и `date()` принимают `1-5`, ` 12-17`, `+1-+5` и арабо-индийские
+    # цифры, которые база отвергнет, — сервис не должен быть мягче неё.
+    # `fullmatch`, а не `$`: `$` пропускает завершающий перевод строки.
+    if not re.fullmatch(r"[0-9]{2}-[0-9]{2}", value):
+        raise BusinessRuleError(key, f"{value!r} is not a valid MM-DD date")
     month, _, day = value.partition("-")
     try:
         # 2001 — не високосный: 02-29 отвергается, см. `MonthDay`.

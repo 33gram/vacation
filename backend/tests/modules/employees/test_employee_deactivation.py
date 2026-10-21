@@ -43,7 +43,7 @@ async def test_deactivate_employee_succeeds(db_session, api_client) -> None:
     "зафиксировать итоговый остаток неиспользованного отпуска на дату
     увольнения" - is NOT tested here or anywhere: it isn't implemented.
     T-M1-12's own commit message (already done) names T-M1-37 as the
-    task that will add it, blocked on the leave_balances table
+    task that will add it, blocked on the leave_balance_entries table
     (T-M2-02/T-M2-05) not existing until M2 - not a gap this branch
     found."""
     department = await make_department(db_session)

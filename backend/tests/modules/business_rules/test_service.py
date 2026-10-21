@@ -97,6 +97,9 @@ async def test_an_edit_is_visible_to_the_next_read_there_is_no_cache(db_session)
     assert await get_int(db_session, "annual_leave_days") == 30
 
 
+# FR-AUTH-002/15: настраиваемая минимальная длина пароля — от 8 до 72
+# (строки `password_min_length` 7 и 73 ниже); остальные строки —
+# диапазоны реестра, выбранные реализацией.
 @pytest.mark.parametrize(
     ("key", "value"),
     [
@@ -120,6 +123,15 @@ async def test_integer_outside_the_range_is_refused_naming_the_key(
     assert excinfo.value.key == key
     assert key in str(excinfo.value)
     assert "range" in str(excinfo.value)
+
+
+@pytest.mark.parametrize("value", ["8", "72"])
+async def test_password_min_length_accepts_both_bounds_of_fr_auth_002_15(
+    db_session, value: str
+) -> None:
+    await _set(db_session, "password_min_length", value)
+
+    assert await get_int(db_session, "password_min_length") == int(value)
 
 
 @pytest.mark.parametrize("value", ["02-30", "02-29", "04-31"])

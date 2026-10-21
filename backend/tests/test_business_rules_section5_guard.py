@@ -41,8 +41,8 @@ pytestmark = pytest.mark.skipif(
 _BR_KEYS: dict[str, tuple[str, ...]] = {
     "BR-1": ("annual_leave_days",),
     "BR-2": ("first_leave_eligibility_months",),
-    # «за 2 недели до начала года (не позднее 17 декабря)» - один ключ-дата;
-    # расхождение 18/17 декабря в тексте BR-3 не разрешено (см. миграцию).
+    # «за 2 недели до начала года (не позднее 17 декабря)» - один ключ-дата:
+    # «2 недели» и «17 декабря» - одно правило, а не два числа (см. миграцию).
     "BR-3": ("schedule_approval_deadline",),
     "BR-4": ("vacation_start_notice_days",),
     "BR-5": ("min_leave_part_days",),

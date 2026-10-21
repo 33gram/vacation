@@ -95,6 +95,14 @@ def _preset() -> dict[str, str]:
     return {row["key"]: row["description"] for row in module._PRESET}
 
 
+def _names(description: str, identifier: str) -> bool:
+    """`description` называет именно этот идентификатор: после него не
+    идёт символ идентификатора, иначе `BR-1` совпал бы с `BR-12`, а
+    `FR-AUTH-002/2` - с `FR-AUTH-002/20`. Перед ним - не буква, не цифра и
+    не `-`, иначе `XBR-1` сошёлся бы с `BR-1` (PR #176 review, С-7)."""
+    return re.search(rf"(?<![\w-]){re.escape(identifier)}(?!\w)", description) is not None
+
+
 def find_gaps(requirements_text: str, preset: dict[str, str]) -> list[str]:
     numeric = _numeric_rules(requirements_text)
     problems = [
@@ -110,12 +118,12 @@ def find_gaps(requirements_text: str, preset: dict[str, str]) -> list[str]:
         for key in keys:
             if key not in preset:
                 problems.append(f"правило {rule}: ключа {key!r} нет в сидировании")
-            elif rule not in preset[key]:
+            elif not _names(preset[key], rule):
                 problems.append(f"ключ {key!r}: description не называет {rule}")
     for key, source in _FR_KEYS.items():
         if key not in preset:
             problems.append(f"ключа {key!r} ({source}) нет в сидировании")
-        elif source not in preset[key]:
+        elif not _names(preset[key], source):
             problems.append(f"ключ {key!r}: description не называет {source}")
     mapped = {key for keys in _BR_KEYS.values() for key in keys} | set(_FR_KEYS)
     problems += [
@@ -176,3 +184,33 @@ def test_description_that_loses_its_source_is_reported() -> None:
     problems = find_gaps(text, {**_preset(), "annual_leave_days": "Без ссылки."})
 
     assert problems == ["ключ 'annual_leave_days': description не называет BR-1"]
+
+
+def test_description_naming_a_longer_rule_id_does_not_count_as_naming_the_rule() -> None:
+    text = _REQUIREMENTS_PATH.read_text(encoding="utf-8")
+    extended = text.replace(
+        "| BR-8 |", "| BR-12 | Новое правило | Не менее 5 дней. |\n| BR-8 |", 1
+    )
+
+    problems = find_gaps(extended, {**_preset(), "annual_leave_days": "BR-12: другое правило."})
+
+    # Именно BR-12 (правило без ключа) и именно BR-1 (описание его не называет);
+    # подстрочное сравнение промолчало бы про второе.
+    assert problems == [
+        "правило раздела 5 с числом без отображения в ключи: 'BR-12'",
+        "ключ 'annual_leave_days': description не называет BR-1",
+    ]
+
+
+def test_description_naming_a_longer_fr_criterion_does_not_count_as_naming_the_source() -> None:
+    text = _REQUIREMENTS_PATH.read_text(encoding="utf-8")
+
+    problems = find_gaps(text, {**_preset(), "password_min_length": "FR-AUTH-002/20: иное."})
+
+    assert problems == ["ключ 'password_min_length': description не называет FR-AUTH-002/2"]
+
+
+def test_description_naming_the_rule_followed_by_punctuation_counts() -> None:
+    assert _names("BR-1: норма.", "BR-1")
+    assert _names("см. (BR-1)", "BR-1")
+    assert not _names("XBR-1: норма.", "BR-1")

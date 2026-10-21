@@ -36,6 +36,16 @@ deliberately carries no timing assertions, per T-M1-54). Behavioral
 coverage (the comparison actually runs, the message/status stay
 unchanged) is `tests/modules/auth/test_login_timing_equalization.py`,
 not this file.
+
+This file checks STRUCTURE only and does not check TIME at all. The one
+measurement that was taken (PR #176 review, T-M2-09: the branch for an
+existing account with a wrong password pays an extra UPDATE + COMMIT and,
+since T-M2-09, one SELECT of the lockout parameters, which the "no such
+login" branch does not) found a median difference of about 1-2 ms against
+a ~236 ms bcrypt cost; the numbers and the method are in the body of the
+commit that added this paragraph and in the T-M2-09 entry of
+docs/tasks.md. A structural check cannot see that difference, and that is
+the honest limit of this file, not a defect in it.
 """
 
 from __future__ import annotations

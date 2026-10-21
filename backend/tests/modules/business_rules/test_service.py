@@ -19,9 +19,11 @@ from app.modules.auth.password_policy import (
 )
 from app.modules.business_rules import service
 from app.modules.business_rules.service import (
+    RULES,
     BusinessRuleError,
     BusinessRulesConfigError,
     MonthDay,
+    RuleSpec,
     get_int,
     get_month_day,
     get_rules,
@@ -152,6 +154,34 @@ async def test_a_stored_type_that_differs_from_the_registry_is_refused(db_sessio
 
     assert "annual_leave_days" in str(excinfo.value)
     assert "value_type" in str(excinfo.value)
+
+
+# Проверки типа - настоящие исключения, а не `assert`: под `python -O`
+# `assert` исчезает (PR #176 review, С-7).
+async def test_get_int_on_a_month_day_rule_is_refused_naming_the_key(db_session) -> None:
+    with pytest.raises(BusinessRuleError) as excinfo:
+        await get_int(db_session, "schedule_approval_deadline")
+
+    assert excinfo.value.key == "schedule_approval_deadline"
+    assert "integer" in str(excinfo.value)
+
+
+async def test_get_month_day_on_an_integer_rule_is_refused_naming_the_key(db_session) -> None:
+    with pytest.raises(BusinessRuleError) as excinfo:
+        await get_month_day(db_session, "annual_leave_days")
+
+    assert excinfo.value.key == "annual_leave_days"
+    assert "month_day" in str(excinfo.value)
+
+
+def test_an_integer_rule_without_a_range_in_the_registry_is_refused(monkeypatch) -> None:
+    monkeypatch.setitem(RULES, "annual_leave_days", RuleSpec("annual_leave_days", "integer"))
+
+    with pytest.raises(BusinessRuleError) as excinfo:
+        parse_stored_value("annual_leave_days", "28", "integer")
+
+    assert excinfo.value.key == "annual_leave_days"
+    assert "range" in str(excinfo.value)
 
 
 async def test_a_missing_key_is_refused_naming_the_key_and_not_defaulted(db_session) -> None:

@@ -9,7 +9,9 @@ from app.db.base import Base
 
 # `integer` — десятичное целое без знака; `month_day` — дата без года `ММ-ДД`.
 # Новый тип значения — единственный случай, требующий миграции (CHECK ниже).
-BUSINESS_RULE_VALUE_TYPES = ("integer", "month_day")
+INTEGER = "integer"
+MONTH_DAY = "month_day"
+BUSINESS_RULE_VALUE_TYPES = (INTEGER, MONTH_DAY)
 
 
 class BusinessRuleConfig(Base):

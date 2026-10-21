@@ -42,15 +42,13 @@ from __future__ import annotations
 import datetime
 import re
 from dataclasses import dataclass
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import BCRYPT_MAX_INPUT_BYTES
-from app.models.business_rule_config import BusinessRuleConfig
-
-INTEGER = "integer"
-MONTH_DAY = "month_day"
+from app.models.business_rule_config import INTEGER, MONTH_DAY, BusinessRuleConfig
 
 # Имена ключей — константами, чтобы опечатка в строке не превращалась в
 # «ключ отсутствует» только в рантайме.
@@ -156,7 +154,10 @@ def parse_stored_value(key: str, value: str, value_type: str) -> RuleValue:
         if not (value.isascii() and value.isdigit()):
             raise BusinessRuleError(key, f"{value!r} is not a non-negative integer")
         number = int(value)
-        assert spec.minimum is not None and spec.maximum is not None
+        # Не `assert`: под `python -O` он исчезает, и защита существовала бы
+        # только в отладочном режиме.
+        if spec.minimum is None or spec.maximum is None:
+            raise BusinessRuleError(key, "the registry has no range for this integer rule")
         if not spec.minimum <= number <= spec.maximum:
             raise BusinessRuleError(
                 key, f"{number} is outside the allowed range {spec.minimum}..{spec.maximum}"
@@ -177,6 +178,16 @@ def parse_stored_value(key: str, value: str, value_type: str) -> RuleValue:
     return MonthDay(int(month), int(day))
 
 
+def _resolve(key: str, stored: dict[str, Any]) -> RuleValue:
+    """Строка ключа из прочитанных -> значение. Общий разбор для чтения и
+    стартовой проверки: два места не должны расходиться в понимании
+    «отсутствует» и «негоден»."""
+    row = stored.get(key)
+    if row is None:
+        raise BusinessRuleError(key, "missing from business_rules_config")
+    return parse_stored_value(key, row.value, row.value_type)
+
+
 async def get_rules(session: AsyncSession, *keys: str) -> dict[str, RuleValue]:
     """Читает несколько параметров ОДНИМ запросом."""
     result = await session.execute(
@@ -185,24 +196,21 @@ async def get_rules(session: AsyncSession, *keys: str) -> dict[str, RuleValue]:
         ).where(BusinessRuleConfig.key.in_(keys))
     )
     stored = {row.key: row for row in result}
-    values: dict[str, RuleValue] = {}
-    for key in keys:
-        row = stored.get(key)
-        if row is None:
-            raise BusinessRuleError(key, "missing from business_rules_config")
-        values[key] = parse_stored_value(key, row.value, row.value_type)
-    return values
+    return {key: _resolve(key, stored) for key in keys}
 
 
 async def get_int(session: AsyncSession, key: str) -> int:
     value = (await get_rules(session, key))[key]
-    assert isinstance(value, int), f"{key} is not an integer rule"
+    # Не `assert`: под `python -O` он исчезает (см. `parse_stored_value`).
+    if not isinstance(value, int):
+        raise BusinessRuleError(key, "is not an integer rule")
     return value
 
 
 async def get_month_day(session: AsyncSession, key: str) -> MonthDay:
     value = (await get_rules(session, key))[key]
-    assert isinstance(value, MonthDay), f"{key} is not a month_day rule"
+    if not isinstance(value, MonthDay):
+        raise BusinessRuleError(key, "is not a month_day rule")
     return value
 
 
@@ -215,12 +223,8 @@ async def validate_all(session: AsyncSession) -> None:
     stored = {row.key: row for row in result}
     problems: list[BusinessRuleError] = []
     for key in RULES:
-        row = stored.get(key)
-        if row is None:
-            problems.append(BusinessRuleError(key, "missing from business_rules_config"))
-            continue
         try:
-            parse_stored_value(key, row.value, row.value_type)
+            _resolve(key, stored)
         except BusinessRuleError as error:
             problems.append(error)
     if problems:

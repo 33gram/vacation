@@ -24,6 +24,7 @@ from app.modules.auth.exceptions import (
 )
 from app.modules.auth.password_policy import WeakPasswordError
 from app.modules.auth.router import router as auth_router
+from app.modules.business_rules.service import validate_all as validate_business_rules
 from app.modules.employees.department_router import router as department_router
 from app.modules.employees.employee_router import router as employee_router
 from app.modules.employees.import_parsing import ImportFileError
@@ -46,6 +47,10 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     # времени ответа почти вдвое, см. core/security.py.
     warm_dummy_password_hash_cache()
     async with get_session_factory()() as session:
+        # T-M2-09: все обязательные параметры `business_rules_config`
+        # существуют и разбираются — иначе отказ старта с перечнем ВСЕХ
+        # проблем, а не по одному падению на запрос (см. сервис).
+        await validate_business_rules(session)
         await ensure_bootstrap_admin(session)
     yield
 

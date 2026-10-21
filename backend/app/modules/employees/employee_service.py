@@ -25,6 +25,7 @@ from app.models.employee import Employee
 from app.modules.auth.password_policy import validate_password_strength
 from app.modules.auth.rbac import is_in_management_chain, list_subordinate_employee_ids
 from app.modules.auth.repository import get_account_by_employee_id
+from app.modules.business_rules.service import PASSWORD_MIN_LENGTH, get_int
 from app.modules.employees.unique_violations import (
     email_conflict_message,
     personnel_number_conflict_message,
@@ -255,6 +256,7 @@ async def create_employee(session: AsyncSession, payload: EmployeeCreate) -> Emp
         # `auth/router.py`), поэтому `login` контексту не передаётся.
         validate_password_strength(
             payload.initial_password.get_secret_value(),
+            min_length=await get_int(session, PASSWORD_MIN_LENGTH),
             email=payload.email,
             full_name=payload.full_name,
         )
@@ -292,7 +294,9 @@ async def create_employee(session: AsyncSession, payload: EmployeeCreate) -> Emp
     return employee
 
 
-def _apply_auth_type_change(account: Account, payload: EmployeeUpdate) -> None:
+async def _apply_auth_type_change(
+    session: AsyncSession, account: Account, payload: EmployeeUpdate
+) -> None:
     """T-M1-34: смена способа входа сотрудника. Мутирует `account` в
     памяти — коммитится вместе с карточкой одним `session.commit()` в
     `update_employee`, той же гарантией атомарности, что и создание
@@ -309,6 +313,7 @@ def _apply_auth_type_change(account: Account, payload: EmployeeUpdate) -> None:
         assert payload.new_password is not None
         validate_password_strength(
             payload.new_password.get_secret_value(),
+            min_length=await get_int(session, PASSWORD_MIN_LENGTH),
             email=payload.email,
             full_name=payload.full_name,
         )
@@ -361,7 +366,7 @@ async def update_employee(
         session, payload.personnel_number, exclude_employee_id=employee.id
     )
     await _require_email_free(session, payload.email, exclude_employee_id=employee.id)
-    _apply_auth_type_change(account, payload)
+    await _apply_auth_type_change(session, account, payload)
 
     _apply_card_fields(employee, payload)
 

@@ -25,7 +25,26 @@ from pathlib import Path
 
 from app.core.security import BCRYPT_MAX_INPUT_BYTES, exceeds_bcrypt_input_limit, normalize_password
 
-# Переносятся в business_rules_config при реализации T-M2-09.
+# T-M2-09: параметры живут в `business_rules_config` (ключи
+# `password_min_length`, `max_failed_login_attempts`,
+# `lockout_duration_minutes`), читаются `modules/business_rules/service.py`
+# и сюда ПЕРЕДАЮТСЯ вызывающим кодом аргументами — этот модуль остаётся
+# чистым (без ввода-вывода), потому что вызывается там, где сессии БД может
+# не быть, а скрытый запрос внутри проверки пароля недопустим.
+# Эти константы — ТОЛЬКО источник сидированного значения (`tests/modules/
+# business_rules` сверяет их с миграцией `0007`) и значение по умолчанию
+# аргумента для тестов чистых функций; рантайм-фолбэком они НЕ служат:
+# продакшн-вызовы обязаны передавать значение явно, это проверяет
+# `tests/test_business_rules_not_hardcoded.py`.
+#
+# Остальные константы модуля НЕ переносятся — они не параметры раздела 5
+# и не названы в `FR-ADMIN-004`: `MAX_PASSWORD_BYTES` (предел bcrypt —
+# свойство алгоритма; настраиваемость означала бы молчаливое усечение
+# пароля), `MAX_PASSWORD_LENGTH_CHARS` (защитный потолок размера входа),
+# длины токенов ФИО (`_LONG_NAME_TOKEN_LENGTH`, `_SHORT_NAME_TOKEN_MIN_
+# LENGTH` — детали правила `FR-AUTH-002/8`, заданные числами в самом
+# тексте требования), `common_passwords.txt` (состав списка — `T-M7-11`),
+# коды `VIOLATION_*` (идентификаторы контракта с клиентом).
 DEFAULT_MIN_PASSWORD_LENGTH = 8
 DEFAULT_MAX_FAILED_ATTEMPTS = 5
 DEFAULT_LOCKOUT_DURATION = datetime.timedelta(minutes=15)

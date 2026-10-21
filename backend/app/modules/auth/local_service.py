@@ -7,6 +7,8 @@
 
 from __future__ import annotations
 
+import datetime
+
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import (
@@ -19,16 +21,17 @@ from app.models.account import Account
 from app.models.employee import Employee
 from app.modules.auth.access_control import enforce_access
 from app.modules.auth.exceptions import AccessDeniedError, AuthenticationError
-from app.modules.auth.password_policy import (
-    DEFAULT_LOCKOUT_DURATION,
-    DEFAULT_MAX_FAILED_ATTEMPTS,
-)
 from app.modules.auth.repository import (
     get_account_by_employee_id,
     get_account_by_login,
     get_employee_by_email,
 )
 from app.modules.auth.tokens import AuthResult, issue_tokens
+from app.modules.business_rules.service import (
+    LOCKOUT_DURATION_MINUTES,
+    MAX_FAILED_LOGIN_ATTEMPTS,
+    get_rules,
+)
 
 
 async def _resolve_local_account(
@@ -56,8 +59,37 @@ async def uses_local_auth(session: AsyncSession, login: str) -> bool:
 
 async def _register_failed_attempt(session: AsyncSession, account: Account) -> None:
     account.failed_login_attempts += 1
-    if account.failed_login_attempts >= DEFAULT_MAX_FAILED_ATTEMPTS:
-        account.locked_until = utcnow() + DEFAULT_LOCKOUT_DURATION
+    # FR-AUTH-002/2 (T-M2-09): порог и срок блокировки — параметры из
+    # `business_rules_config`, читаются одним запросом на неуспешную
+    # попытку; значения из кода сюда не подставляются.
+    #
+    # ТАЙМИНГ (FR-AUTH-002/14, PR #176 review). Эта ветка (существующая
+    # учётная запись, неверный пароль) платит то, чего не платит ветка
+    # «логина нет»: UPDATE + COMMIT (старше T-M2-09) и этот SELECT.
+    # Замер `POST /api/auth/login/local`, 200 пар на серию, по две серии на
+    # дерево, внутри контейнера, ASGI-транспорт без сети, bcrypt ≈ 236 мс:
+    # разность медиан «существующий − несуществующий» на `main` +1,29 и
+    # +0,90 мс, на ветке +1,59 и +1,90 мс (0,4–0,8 % стоимости bcrypt);
+    # межквартильный разброс одиночного запроса 2,5–8 мс. Вклад SELECT'а
+    # этой разностью НЕ устанавливается (стандартная ошибка разности
+    # медиан при таком разбросе и 200 парах — 0,2–0,7 мс, то есть порядка
+    # самого вклада), поэтому он измерен напрямую: `get_rules` двух ключей
+    # — медиана 0,23–0,24 мс против 0,13–0,14 мс у `SELECT 1` на том же
+    # соединении (три прогона по 3000 вызовов, чередуются). Это 0,1 % от
+    # bcrypt и меньше разброса одного запроса, поэтому чтение параметров
+    # НЕ поднято выше ветвления (оно не вернуло бы разницу к нулю:
+    # UPDATE + COMMIT остаются). Наблюдатель по сети получает не более
+    # `max_failed_login_attempts` замеров существующей записи ЗА ОДНО ОКНО
+    # БЛОКИРОВКИ (по истечении срока замеры доступны снова), и каждое окно
+    # заканчивается ОТДЕЛЬНЫМ сообщением, раскрывающим факт сам по себе
+    # (решение 26 раздела 13 требований); набрать статистику на разницу
+    # в доли процента в таком окне ему не из чего. Числа и метод — T-M2-09
+    # в docs/tasks.md; замер ручной, не CI-проверка.
+    rules = await get_rules(session, MAX_FAILED_LOGIN_ATTEMPTS, LOCKOUT_DURATION_MINUTES)
+    if account.failed_login_attempts >= rules[MAX_FAILED_LOGIN_ATTEMPTS]:
+        account.locked_until = utcnow() + datetime.timedelta(
+            minutes=rules[LOCKOUT_DURATION_MINUTES]
+        )
     await session.commit()
 
 

@@ -13,6 +13,7 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
+from app.models.leave_balance_entry import LEAVE_BALANCE_ENTRY_TYPES
 from tests.modules.balances.helpers import EVENT_DATE, YEAR_END, YEAR_START, Context, make_context
 
 _INSERT = text(
@@ -80,6 +81,34 @@ _ACTOR_TYPES = {"manual_adjustment", "recalculation", "initial_import", "termina
 _REASON_TYPES = {"manual_adjustment", "recalculation"}
 
 
+_SIGN_REJECTED = [
+    ("accrual", 0, "ck_leave_balance_entries_positive_types"),
+    ("accrual", -1, "ck_leave_balance_entries_positive_types"),
+    ("usage_reversal", 0, "ck_leave_balance_entries_positive_types"),
+    ("usage_reversal", -1, "ck_leave_balance_entries_positive_types"),
+    ("initial_import", 0, "ck_leave_balance_entries_positive_types"),
+    ("initial_import", -5, "ck_leave_balance_entries_positive_types"),
+    ("usage", 0, "ck_leave_balance_entries_negative_types"),
+    ("usage", 3, "ck_leave_balance_entries_negative_types"),
+    ("manual_adjustment", 0, "ck_leave_balance_entries_nonzero_types"),
+    ("recalculation", 0, "ck_leave_balance_entries_nonzero_types"),
+    ("termination_closeout", 0, "ck_leave_balance_entries_nonzero_types"),
+]
+
+_SIGN_ACCEPTED = [
+    ("accrual", "28.00"),
+    ("usage_reversal", "5.50"),
+    ("initial_import", "12"),
+    ("usage", "-5.50"),
+    ("manual_adjustment", "2.50"),
+    ("manual_adjustment", "-2.50"),
+    ("recalculation", "1"),
+    ("recalculation", "-1"),
+    ("termination_closeout", "-14"),
+    ("termination_closeout", "3"),
+]
+
+
 def _full_row(ctx: Context, entry_type: str, quantity: object) -> dict[str, object]:
     """Строка типа `entry_type`, у которой выполнено всё, кроме знака."""
     return _row(
@@ -91,22 +120,7 @@ def _full_row(ctx: Context, entry_type: str, quantity: object) -> dict[str, obje
     )
 
 
-@pytest.mark.parametrize(
-    ("entry_type", "quantity", "constraint"),
-    [
-        ("accrual", 0, "ck_leave_balance_entries_positive_types"),
-        ("accrual", -1, "ck_leave_balance_entries_positive_types"),
-        ("usage_reversal", 0, "ck_leave_balance_entries_positive_types"),
-        ("usage_reversal", -1, "ck_leave_balance_entries_positive_types"),
-        ("initial_import", 0, "ck_leave_balance_entries_positive_types"),
-        ("initial_import", -5, "ck_leave_balance_entries_positive_types"),
-        ("usage", 0, "ck_leave_balance_entries_negative_types"),
-        ("usage", 3, "ck_leave_balance_entries_negative_types"),
-        ("manual_adjustment", 0, "ck_leave_balance_entries_nonzero_types"),
-        ("recalculation", 0, "ck_leave_balance_entries_nonzero_types"),
-        ("termination_closeout", 0, "ck_leave_balance_entries_nonzero_types"),
-    ],
-)
+@pytest.mark.parametrize(("entry_type", "quantity", "constraint"), _SIGN_REJECTED)
 async def test_sign_convention_is_enforced_per_entry_type(
     db_session, entry_type: str, quantity: int, constraint: str
 ) -> None:
@@ -117,21 +131,7 @@ async def test_sign_convention_is_enforced_per_entry_type(
     assert constraint in message
 
 
-@pytest.mark.parametrize(
-    ("entry_type", "quantity"),
-    [
-        ("accrual", "28.00"),
-        ("usage_reversal", "5.50"),
-        ("initial_import", "12"),
-        ("usage", "-5.50"),
-        ("manual_adjustment", "2.50"),
-        ("manual_adjustment", "-2.50"),
-        ("recalculation", "1"),
-        ("recalculation", "-1"),
-        ("termination_closeout", "-14"),
-        ("termination_closeout", "3"),
-    ],
-)
+@pytest.mark.parametrize(("entry_type", "quantity"), _SIGN_ACCEPTED)
 async def test_each_entry_type_accepts_the_sign_it_allows(
     db_session, entry_type: str, quantity: str
 ) -> None:
@@ -211,3 +211,13 @@ async def test_references_must_point_at_existing_rows(db_session, column: str) -
     message = await _rejected_by(db_session, {**row, column: 2_000_000_000})
 
     assert "leave_balance_entries_" in message and "fkey" in message
+
+
+def test_every_entry_type_of_the_model_has_a_rejected_and_an_accepted_sign_case() -> None:
+    """Перечень типов берётся из модели: восьмой тип без случаев знака
+    краснит этот тест (PR #177 review, Б1) - иначе соглашение о знаке
+    остаётся непроверенным для нового типа."""
+    expected = set(LEAVE_BALANCE_ENTRY_TYPES)
+
+    assert {case[0] for case in _SIGN_REJECTED} == expected
+    assert {case[0] for case in _SIGN_ACCEPTED} == expected

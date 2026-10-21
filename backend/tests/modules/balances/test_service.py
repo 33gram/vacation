@@ -15,7 +15,12 @@ from decimal import Decimal
 import pytest
 from sqlalchemy import func, select
 
-from app.models.leave_balance_entry import LeaveBalanceEntry
+from app.models.leave_balance_entry import (
+    ACTOR_REQUIRED_ENTRY_TYPES,
+    LEAVE_BALANCE_ENTRY_TYPES,
+    REASON_REQUIRED_ENTRY_TYPES,
+    LeaveBalanceEntry,
+)
 from app.modules.balances.service import (
     BalanceEntryError,
     adjust_balance,
@@ -82,6 +87,47 @@ async def test_balance_is_the_sum_of_signed_events_of_different_types(db_session
     assert new_balance == Decimal("24.00")
     assert await get_balance(db_session, ctx.employee_id, ctx.leave_type_id, YEAR_START) == Decimal(
         "24.00"
+    )
+
+
+# Сценарий суммы: по одному событию КАЖДОГО типа модели. Знак - в самом
+# количестве, итог посчитан здесь явно: 28 - 5 + 2 - 1.5 + 3 + 10 - 4.
+_ALL_TYPES_SCENARIO = [
+    ("accrual", "28.00"),
+    ("usage", "-5.00"),
+    ("usage_reversal", "2.00"),
+    ("manual_adjustment", "-1.50"),
+    ("recalculation", "3.00"),
+    ("initial_import", "10.00"),
+    ("termination_closeout", "-4.00"),
+]
+_ALL_TYPES_EXPECTED = Decimal("32.50")
+
+
+def test_the_sum_scenario_covers_every_entry_type_of_the_model() -> None:
+    """Перечень типов - из модели: восьмой тип без события в сценарии краснит
+    этот тест (PR #177 review, Б1), а не остаётся вне суммы."""
+    assert {entry_type for entry_type, _ in _ALL_TYPES_SCENARIO} == set(LEAVE_BALANCE_ENTRY_TYPES)
+    assert len(_ALL_TYPES_SCENARIO) == len(LEAVE_BALANCE_ENTRY_TYPES)
+
+
+async def test_balance_sums_one_event_of_every_entry_type(db_session) -> None:
+    ctx = await make_context(db_session)
+    for entry_type, quantity in _ALL_TYPES_SCENARIO:
+        db_session.add(
+            _event(
+                ctx,
+                entry_type,
+                quantity,
+                reason="Причина" if entry_type in REASON_REQUIRED_ENTRY_TYPES else None,
+                actor_account_id=ctx.actor_id if entry_type in ACTOR_REQUIRED_ENTRY_TYPES else None,
+            )
+        )
+    await db_session.flush()
+
+    assert (
+        await get_balance(db_session, ctx.employee_id, ctx.leave_type_id, YEAR_START)
+        == _ALL_TYPES_EXPECTED
     )
 
 

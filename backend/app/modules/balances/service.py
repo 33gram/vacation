@@ -45,12 +45,32 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.employee import Employee
 from app.models.leave_balance_entry import ACCRUAL, MANUAL_ADJUSTMENT, LeaveBalanceEntry
+from app.models.leave_type import LeaveType
 from app.modules.balances.accrual import compute_accrual
 from app.modules.business_rules.service import (
     ANNUAL_LEAVE_DAYS,
     MONTH_ROUNDING_THRESHOLD_DAYS,
-    get_rules,
+    get_ints,
 )
+
+# Начисление работает с ОСНОВНЫМ оплачиваемым отпуском: норма `annual_leave_days`
+# (`BR-1`) - его норма. Когда норма станет зависеть от вида (удлинённый и
+# дополнительный отпуск - за границами MVP, `A-3.1`), менять надо это место и
+# выбор нормы в `accrue_leave`.
+MAIN_LEAVE_TYPE_CODE = "annual_paid"
+
+# Типы событий, которые `accrue_leave` считает "уже начисленным". Сегодня -
+# один `accrual`. Расширять набор НАДО осознанно, и вот чем это грозит; решение
+# по каждому пункту НЕ принято:
+#   - `recalculation` (T-M2-07) несёт РАЗНОСТЬ при правке кадровых данных; если
+#     его не считать начисленным, следующий `accrue_leave` запишет эту
+#     разность второй раз;
+#   - правка даты приёма меняет годовщину, значит и `working_year_start`:
+#     "уже начислено" нового года равно нулю, и полное начисление пишется
+#     заново, а события прежнего года остаются (T-M2-07);
+#   - `initial_import` (T-M1-36) несёт начальный остаток за рабочий год; можно
+#     ли по такому году ещё и начислять, нигде не сказано.
+ALREADY_ACCRUED_ENTRY_TYPES = (ACCRUAL,)
 
 
 class BalanceEntryError(Exception):
@@ -205,6 +225,13 @@ async def accrue_leave(
     и возвращает записанное количество; ноль — если писать нечего (событие
     не пишется, исключение не поднимается).
 
+    Работает только с основным видом (`MAIN_LEAVE_TYPE_CODE`): норма
+    `annual_leave_days` - норма основного отпуска, и начислять её на другой
+    вид нельзя; иной вид - `BalanceEntryError`, событий нет.
+
+    «Уже начислено» - сумма событий типов `ALREADY_ACCRUED_ENTRY_TYPES`
+    (сейчас только `accrual`), см. оговорку у константы.
+
     Норма и порог округления — из `business_rules_config`
     (`annual_leave_days`, `month_rounding_threshold_days`), дата приёма — из
     карточки сотрудника. `excluded_days` и `working_year_start` — как в
@@ -219,7 +246,14 @@ async def accrue_leave(
     employee = await session.get(Employee, employee_id, with_for_update=True)
     if employee is None:
         raise BalanceEntryError("Сотрудник не найден.")
-    rules = await get_rules(session, ANNUAL_LEAVE_DAYS, MONTH_ROUNDING_THRESHOLD_DAYS)
+    leave_type_code = await session.scalar(
+        select(LeaveType.code).where(LeaveType.id == leave_type_id)
+    )
+    if leave_type_code != MAIN_LEAVE_TYPE_CODE:
+        raise BalanceEntryError(
+            "Начисление выполняется только по основному оплачиваемому отпуску."
+        )
+    rules = await get_ints(session, ANNUAL_LEAVE_DAYS, MONTH_ROUNDING_THRESHOLD_DAYS)
     try:
         accrual = compute_accrual(
             hire_date=employee.hire_date,
@@ -237,7 +271,7 @@ async def accrue_leave(
             LeaveBalanceEntry.employee_id == employee_id,
             LeaveBalanceEntry.leave_type_id == leave_type_id,
             LeaveBalanceEntry.working_year_start == accrual.working_year_start,
-            LeaveBalanceEntry.entry_type == ACCRUAL,
+            LeaveBalanceEntry.entry_type.in_(ALREADY_ACCRUED_ENTRY_TYPES),
         )
     )
     difference = accrual.accrued - Decimal(already.scalar_one())

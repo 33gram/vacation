@@ -17,6 +17,7 @@ from sqlalchemy import func, select, text
 from app.models.employee import Employee
 from app.models.leave_balance_entry import ACCRUAL, LeaveBalanceEntry
 from app.modules.balances.service import (
+    ALREADY_ACCRUED_ENTRY_TYPES,
     BalanceEntryError,
     accrue_leave,
     adjust_balance,
@@ -183,6 +184,37 @@ async def test_fr_bal_001_an_unknown_employee_is_refused_and_nothing_is_written(
 
     count = await db_session.execute(select(func.count()).select_from(LeaveBalanceEntry))
     assert count.scalar_one() == 0
+
+
+async def test_fr_bal_001_accrual_is_refused_for_a_leave_type_that_is_not_the_main_one(
+    db_session,
+) -> None:
+    ctx = await _hired(db_session)
+
+    with pytest.raises(BalanceEntryError):
+        await accrue_leave(
+            db_session,
+            employee_id=ctx.employee_id,
+            leave_type_id=ctx.other_leave_type_id,  # unpaid
+            as_of=D(2026, 10, 24),
+        )
+
+    assert await _events(db_session, ctx) == []
+
+
+async def test_fr_bal_001_a_manual_adjustment_is_not_counted_as_already_accrued(db_session) -> None:
+    # Набор ALREADY_ACCRUED_ENTRY_TYPES - только `accrual`: корректировка не
+    # уменьшает начисление (поведение зафиксировано, см. оговорку у константы).
+    ctx = await _hired(db_session)
+    await _adjust(db_session, ctx, YEAR_START, "5", D(2026, 5, 1))
+
+    written = await _accrue(db_session, ctx, D(2026, 10, 24))
+
+    assert written == Decimal("18.67")
+
+
+def test_the_already_accrued_event_types_are_the_explicit_set_with_accrual_only() -> None:
+    assert ALREADY_ACCRUED_ENTRY_TYPES == (ACCRUAL,)
 
 
 async def test_fr_bal_001_a_calculation_date_before_the_hire_date_is_refused(db_session) -> None:

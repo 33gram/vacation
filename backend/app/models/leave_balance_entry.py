@@ -120,6 +120,8 @@ class LeaveBalanceEntry(Base):
     # Рабочий год, к которому отнесено событие: `FR-BAL-001` считает
     # накопление в его пределах.
     working_year_start: Mapped[datetime.date] = mapped_column(Date, nullable=False)
+    # ИСКЛЮЧИТЕЛЬНЫЙ конец: первый день СЛЕДУЮЩЕГО рабочего года (сдвинутый
+    # исключаемыми днями, FR-BAL-001/2), как и CHECK `end > start`.
     working_year_end: Mapped[datetime.date] = mapped_column(Date, nullable=False)
     entry_type: Mapped[str] = mapped_column(nullable=False)
     # Со знаком; единица (дни/часы) — по `leave_types.unit`.

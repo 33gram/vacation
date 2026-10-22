@@ -216,6 +216,20 @@ async def get_int(session: AsyncSession, key: str) -> int:
     return value
 
 
+async def get_ints(session: AsyncSession, *keys: str) -> dict[str, int]:
+    """Несколько целочисленных параметров ОДНИМ запросом, с той же проверкой
+    типа, что у `get_int`: `get_rules` отдаёт объединение `RuleValue`, и
+    передавать его в арифметику без проверки нельзя."""
+    values = await get_rules(session, *keys)
+    ints: dict[str, int] = {}
+    for key, value in values.items():
+        # Не `assert`: под `python -O` он исчезает (см. `parse_stored_value`).
+        if not isinstance(value, int):
+            raise BusinessRuleError(key, "is not an integer rule")
+        ints[key] = value
+    return ints
+
+
 async def get_month_day(session: AsyncSession, key: str) -> MonthDay:
     value = (await get_rules(session, key))[key]
     if not isinstance(value, MonthDay):

@@ -36,6 +36,8 @@
 // этой идемпотентности не нуждаются - уникальность `department.name` не
 // требуется вовсе, а `personnel_number` каждый вызов получает новый.
 
+import { WALL_CLOCK_PREFIX } from "./wallClock";
+
 const BASE_URL = "http://localhost";
 
 const ADMIN_LOGIN = requireEnv("BOOTSTRAP_ADMIN_LOGIN");
@@ -192,7 +194,7 @@ async function timed<T>(label: string, fn: () => Promise<T>): Promise<T> {
   try {
     return await fn();
   } finally {
-    console.log(`[T-M1-55 PR#171 timing] ${label}: ${Date.now() - startedAt}ms`);
+    console.log(`${WALL_CLOCK_PREFIX} ${label}: ${Date.now() - startedAt}ms`);
   }
 }
 

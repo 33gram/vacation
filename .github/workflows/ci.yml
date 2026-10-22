@@ -216,6 +216,20 @@ jobs:
           timeout 60 bash -c 'until curl -sf http://localhost/healthz >/dev/null 2>&1; do sleep 1; done'
           timeout 60 bash -c 'until curl -sf http://localhost/login >/dev/null 2>&1; do sleep 1; done'
 
+      # T-M1-61: в трассировках двух падений формы входа на запросах
+      # модулей Vite стоит `net::ERR_NETWORK_CHANGED` (Chromium получил
+      # уведомление о смене сети и оборвал запросы в полёте). Эти два
+      # фоновых журнала с метками времени позволяют сверить момент отказа
+      # с событиями сети раннера и контейнеров. Только наблюдение, поведение
+      # прогона не меняют; печатаются шагом "Print network and container
+      # event logs" ниже при любом исходе, чтобы видеть и успешные прогоны.
+      - name: Start network and container event logs (T-M1-61)
+        run: |
+          nohup ip -timestamp monitor link address route >/tmp/ip-monitor.log 2>&1 &
+          nohup docker events --format '{{.TimeNano}} {{.Type}} {{.Action}} {{.Actor.Attributes.name}}' >/tmp/docker-events.log 2>&1 &
+          sleep 1
+          echo "ip monitor / docker events started at $(date -u +%FT%T.%3NZ)"
+
       # BOOTSTRAP_ADMIN_LOGIN/PASSWORD, LDAP_ADMIN_PASSWORD - секреты
       # окружения (NFR-SEC-004), не хардкод (frontend/e2e/support/
       # ldapScenario.ts) - Playwright запускается на раннере, не в
@@ -228,6 +242,33 @@ jobs:
           source ../.env
           set +a
           npx playwright test
+
+      # T-M1-61: журналы, начатые шагом выше. `docker events` печатает
+      # TimeNano - наносекунды эпохи UTC; метки в строках теста и шагов
+      # E2E - ISO UTC, сверять по ним.
+      - name: Print network and container event logs (T-M1-61)
+        if: always()
+        run: |
+          echo "=== ip monitor ==="; cat /tmp/ip-monitor.log || true
+          echo "=== docker events (TimeNano Type Action name) ==="; cat /tmp/docker-events.log || true
+
+      # T-M1-61: состояние стека в момент после падения. Отвечает на то, чего
+      # не видно в трассировке: отвечал ли стек вообще и что отдаёт /login.
+      # Только чтение; ничего не перезапускает.
+      - name: Diagnose the stack after a failed E2E run (T-M1-61)
+        if: failure()
+        run: |
+          docker compose --env-file .env $COMPOSE_FILES ps -a || true
+          for svc in nginx frontend backend; do
+            echo "=== last 60 log lines: $svc ==="
+            docker compose --env-file .env $COMPOSE_FILES logs --no-color --timestamps --tail 60 "$svc" || true
+          done
+          echo "=== curl -i /healthz ==="; curl -i -sS -m 10 http://localhost/healthz || true
+          echo; echo "=== curl -i /login ==="; curl -i -sS -m 10 http://localhost/login | head -40 || true
+          # Путь бандла - из разметки /login, не угаданный.
+          entry=$(curl -sS -m 10 http://localhost/login | grep -oE 'src="[^"]*main\.[a-z]+"' | head -1 | sed -E 's/^src="//; s/"$//')
+          echo; echo "=== entry module from markup: ${entry:-NOT FOUND} ==="
+          if [ -n "$entry" ]; then curl -i -sS -m 10 "http://localhost${entry}" | head -15 || true; fi
 
       - name: Upload Playwright traces on failure
         if: failure()

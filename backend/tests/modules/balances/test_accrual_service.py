@@ -202,6 +202,50 @@ async def test_fr_bal_001_accrual_is_refused_for_a_leave_type_that_is_not_the_ma
     assert await _events(db_session, ctx) == []
 
 
+async def test_fr_bal_001_a_missing_leave_type_is_reported_as_missing_not_as_non_main(
+    db_session,
+) -> None:
+    ctx = await _hired(db_session)
+
+    with pytest.raises(BalanceEntryError, match="Вид отпуска не найден"):
+        await accrue_leave(
+            db_session,
+            employee_id=ctx.employee_id,
+            leave_type_id=10_000_000,
+            as_of=D(2026, 10, 24),
+        )
+
+    assert await _events(db_session, ctx) == []
+
+
+async def test_fr_bal_001_a_refused_leave_type_takes_no_lock_on_the_employee(db_session) -> None:
+    # Проверка вида идёт до `FOR UPDATE`: отказ по виду не должен читать строку
+    # сотрудника с блокировкой. Фиксируем порядок по запросам.
+    from sqlalchemy import event
+
+    ctx = await _hired(db_session)
+    statements: list[str] = []
+    connection = await db_session.connection()
+
+    def capture(conn, cursor, statement, *args):
+        statements.append(statement)
+
+    sync_engine = connection.sync_engine
+    event.listen(sync_engine, "before_cursor_execute", capture)
+    try:
+        with pytest.raises(BalanceEntryError):
+            await accrue_leave(
+                db_session,
+                employee_id=ctx.employee_id,
+                leave_type_id=ctx.other_leave_type_id,
+                as_of=D(2026, 10, 24),
+            )
+    finally:
+        event.remove(sync_engine, "before_cursor_execute", capture)
+
+    assert not any("FOR UPDATE" in statement.upper() for statement in statements)
+
+
 async def test_fr_bal_001_a_manual_adjustment_is_not_counted_as_already_accrued(db_session) -> None:
     # Набор ALREADY_ACCRUED_ENTRY_TYPES - только `accrual`: корректировка не
     # уменьшает начисление (поведение зафиксировано, см. оговорку у константы).

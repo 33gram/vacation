@@ -243,16 +243,20 @@ async def accrue_leave(
     транзакции не записали одну и ту же разность дважды; это закрыто
     рассуждением, а не проверено тестом на гонку — проверены
     последовательные повторные вызовы."""
-    employee = await session.get(Employee, employee_id, with_for_update=True)
-    if employee is None:
-        raise BalanceEntryError("Сотрудник не найден.")
+    # Вид проверяется ДО блокировки: неверный вызов не должен держать строку
+    # сотрудника до конца транзакции вызывающего.
     leave_type_code = await session.scalar(
         select(LeaveType.code).where(LeaveType.id == leave_type_id)
     )
+    if leave_type_code is None:
+        raise BalanceEntryError("Вид отпуска не найден.")
     if leave_type_code != MAIN_LEAVE_TYPE_CODE:
         raise BalanceEntryError(
             "Начисление выполняется только по основному оплачиваемому отпуску."
         )
+    employee = await session.get(Employee, employee_id, with_for_update=True)
+    if employee is None:
+        raise BalanceEntryError("Сотрудник не найден.")
     rules = await get_ints(session, ANNUAL_LEAVE_DAYS, MONTH_ROUNDING_THRESHOLD_DAYS)
     try:
         accrual = compute_accrual(

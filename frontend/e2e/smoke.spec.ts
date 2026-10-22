@@ -1,11 +1,6 @@
-import { expect, test } from "@playwright/test";
+import { expect } from "@playwright/test";
 
-import { watchPage } from "./support/pageDiagnostics";
-
-// T-M1-61: только печать упавших запросов и ошибок страницы, см. pageDiagnostics.ts.
-test.beforeEach(({ page }) => {
-  watchPage(page);
-});
+import { test } from "./support/pageDiagnostics";
 
 // T-M1-24: единственная цель этого файла — доказать, что стек (nginx ->
 // frontend/backend) поднят и отдаёт страницу входа, ДО того, как на этом

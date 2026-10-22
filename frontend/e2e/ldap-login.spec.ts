@@ -1,8 +1,9 @@
-import { expect, test } from "@playwright/test";
+import { expect } from "@playwright/test";
 
 import { startOpenldapAndWaitReady, stopOpenldap } from "./support/dockerControl";
 import { DIRECTORY_USER, setupLdapScenario } from "./support/ldapScenario";
-import { watchPage } from "./support/pageDiagnostics";
+import { test } from "./support/pageDiagnostics";
+import { WALL_CLOCK_PREFIX } from "./support/wallClock";
 
 // T-M1-24. Три теста в ОДНОМ файле, в этом порядке, намеренно:
 // `ldap_settings` — singleton-таблица (одна строка на всю систему,
@@ -15,11 +16,6 @@ import { watchPage } from "./support/pageDiagnostics";
 // друг от друга, это сознательное решение, а не оплошность.
 
 test.describe.configure({ mode: "serial" });
-
-// T-M1-61: только печать упавших запросов и ошибок страницы, см. pageDiagnostics.ts.
-test.beforeEach(({ page }) => {
-  watchPage(page);
-});
 
 test("logs in via LDAP, and the admin sees the matching employee card", async ({ page }) => {
   const { adminToken, ldapConnectionConfirmed } = await setupLdapScenario();
@@ -110,7 +106,7 @@ test("отрицательный контроль: вход каталожным
     "подключение должно быть подтверждено ДО отключения каталога",
   ).toBe(true);
 
-  stopOpenldap();
+  const stopped = stopOpenldap();
   try {
     await page.goto("/login");
     await page.getByLabel("Логин или e-mail").fill(DIRECTORY_USER.email);
@@ -135,7 +131,7 @@ test("отрицательный контроль: вход каталожным
     // Контейнер возвращается независимо от результата проверки выше -
     // иначе следующий тест (или следующий локальный прогон) получил бы
     // недоступный каталог не из-за собственной причины.
-    startOpenldapAndWaitReady();
+    startOpenldapAndWaitReady(stopped);
   }
 });
 
@@ -168,17 +164,17 @@ test("отрицательный контроль: вход каталожным
   const { ldapConnectionConfirmed } = await setupLdapScenario({
     ldapBindPassword: "definitely-wrong-service-account-password",
   });
-  console.log(`[T-M1-55 PR#171 timing] setupLdapScenario total: ${Date.now() - scenarioStartedAt}ms`);
+  console.log(`${WALL_CLOCK_PREFIX} setupLdapScenario total: ${Date.now() - scenarioStartedAt}ms`);
   expect(ldapConnectionConfirmed, "неверный пароль должен был уронить проверку подключения").toBe(
     false,
   );
 
   const gotoStartedAt = Date.now();
   await page.goto("/login");
-  console.log(`[T-M1-55 PR#171 timing] page.goto: ${Date.now() - gotoStartedAt}ms`);
+  console.log(`${WALL_CLOCK_PREFIX} page.goto: ${Date.now() - gotoStartedAt}ms`);
   const fillStartedAt = Date.now();
   await page.getByLabel("Логин или e-mail").fill(DIRECTORY_USER.email);
-  console.log(`[T-M1-55 PR#171 timing] fill login: ${Date.now() - fillStartedAt}ms`);
+  console.log(`${WALL_CLOCK_PREFIX} fill login: ${Date.now() - fillStartedAt}ms`);
   await page.getByLabel("Пароль").fill(DIRECTORY_USER.password);
   await page.getByRole("button", { name: "Войти" }).click();
 

@@ -12,10 +12,7 @@
 
 import { execFileSync } from "node:child_process";
 
-import { logWithWallClock } from "./pageDiagnostics";
-
-// T-M1-61: часы стенда для сверки с `ip monitor` и `docker events`.
-const WALL_CLOCK_PREFIX = "[T-M1-55 PR#171 timing]";
+import { WALL_CLOCK_PREFIX, logWithWallClock } from "./wallClock";
 
 const COMPOSE_ARGS = [
   "compose",
@@ -27,18 +24,22 @@ const COMPOSE_ARGS = [
   "../infra/docker-compose.e2e.yml",
 ];
 
-// T-M1-61. Доказано серией на раннере (10 перезапусков, 3 падения): через
-// ≈1,0-2,0 с после `docker start` ядро хоста вешает на новый veth
-// IPv6-адрес fe80:: (событие RTM_NEWADDR в `ip monitor`), и если оно
-// приходится на загрузку страницы следующим тестом, Chromium рвёт
-// запросы модулей Vite с `net::ERR_NETWORK_CHANGED`: все три падения
-// имеют это событие за 10-100 мс до первого оборванного запроса, у семи
-// прогонов без падения оборванных запросов нет. `ldapwhoami` изнутри
-// контейнера этого события не ждёт, поэтому после подъёма каталога ждём
-// и его: число готовых (не `tentative`) link-local адресов хоста должно
-// вернуться к тому, что было до остановки. `null` - команды `ip` нет
-// (macOS/Docker Desktop: контейнеры в виртуальной машине, сеть хоста не
-// затрагивается) - тогда ждать нечего и проверка пропускается.
+// T-M1-61. Наиболее вероятная причина флака формы входа, установленная по
+// КОРРЕЛЯЦИИ, а не вмешательством в этом коде: в серии 1 (11 прогонов
+// одного коммита, 3 падения) через ≈1,0-2,0 с после `docker start` ядро
+// хоста вешает на новый veth IPv6-адрес fe80:: (событие RTM_NEWADDR в
+// `ip monitor`), и во всех трёх падениях это событие стоит за 10-100 мс
+// до первого запроса модуля Vite, оборванного с `net::ERR_NETWORK_CHANGED`
+// (Chromium считает событие сменой сети). В восьми прогонах без падения
+// оборванных запросов нет, но событие внутри окна `goto` было и в одном
+// из них (серия 1, перезапуск 1) - «событие в окне => падение» строгим
+// правилом не является. Вмешательство (прогон без перезапуска каталога) -
+// в T-M1-61 (docs/tasks.md). `ldapwhoami` изнутри контейнера этого события
+// не ждёт, поэтому после подъёма каталога ждём и его: число готовых (не
+// `tentative`) link-local адресов хоста должно вернуться к тому, что было
+// до остановки. `null` - команды `ip` нет (macOS/Docker Desktop:
+// контейнеры в виртуальной машине, сеть хоста не затрагивается) - тогда
+// ждать нечего и проверка пропускается.
 function readyLinkLocalAddressCount(): number | null {
   try {
     const out = execFileSync("ip", ["-6", "-o", "addr", "show", "scope", "link"], {
@@ -51,18 +52,24 @@ function readyLinkLocalAddressCount(): number | null {
   }
 }
 
-let linkLocalCountBeforeStop: number | null = null;
+// Дескриптор остановленного каталога: несёт то, что `startOpenldapAndWaitReady`
+// должен знать о состоянии ДО остановки, - порядок вызовов не держится на
+// памяти модуля.
+export interface StoppedOpenldap {
+  linkLocalCountBeforeStop: number | null;
+}
 
-export function stopOpenldap(): void {
-  linkLocalCountBeforeStop = readyLinkLocalAddressCount();
+export function stopOpenldap(): StoppedOpenldap {
+  const stopped = { linkLocalCountBeforeStop: readyLinkLocalAddressCount() };
   execFileSync("docker", [...COMPOSE_ARGS, "stop", "openldap"], { stdio: "pipe" });
   logWithWallClock(WALL_CLOCK_PREFIX, "stopOpenldap returned");
+  return stopped;
 }
 
 // Поднимает контейнер и ждёт, что порт действительно принимает
 // соединения, прежде чем вернуть управление - опрос реального признака
 // готовности, тот же принцип, что в Makefile/CI (не фиксированный sleep).
-export function startOpenldapAndWaitReady(timeoutMs = 30_000): void {
+export function startOpenldapAndWaitReady(stopped: StoppedOpenldap, timeoutMs = 30_000): void {
   // PR #171 review, пункт 2(б)/(в): временная метка - удалить после
   // выбора лечения по итогам измерения (см. тело коммита).
   const startedAt = Date.now();
@@ -93,9 +100,9 @@ export function startOpenldapAndWaitReady(timeoutMs = 30_000): void {
         { stdio: "pipe" },
       );
       console.log(
-        `[T-M1-55 PR#171 timing] startOpenldapAndWaitReady: ${Date.now() - startedAt}ms, ${attempts} attempt(s)`,
+        `${WALL_CLOCK_PREFIX} startOpenldapAndWaitReady: ${Date.now() - startedAt}ms, ${attempts} attempt(s)`,
       );
-      waitForHostNetworkToSettle();
+      waitForHostNetworkToSettle(stopped.linkLocalCountBeforeStop);
       logWithWallClock(WALL_CLOCK_PREFIX, "startOpenldapAndWaitReady returned");
       return;
     } catch {
@@ -109,13 +116,16 @@ export function startOpenldapAndWaitReady(timeoutMs = 30_000): void {
 // Не бросает при истечении срока: расхождение числа адресов может иметь
 // другую причину, и новый вид падения хуже диагностической строки. Срок
 // истёк - это видно в логе, а флак тогда вернётся и будет опознан.
-function waitForHostNetworkToSettle(timeoutMs = 10_000): void {
-  const expected = linkLocalCountBeforeStop;
+function waitForHostNetworkToSettle(expected: number | null, timeoutMs = 10_000): void {
   if (expected === null) return;
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const current = readyLinkLocalAddressCount();
-    if (current === null || current >= expected) return;
+    if (current === null) {
+      logWithWallClock(WALL_CLOCK_PREFIX, "ip command failed while waiting for the host network; wait abandoned");
+      return;
+    }
+    if (current >= expected) return;
     execFileSync("sleep", ["0.1"]);
   }
   logWithWallClock(

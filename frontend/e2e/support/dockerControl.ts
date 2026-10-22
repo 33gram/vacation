@@ -110,7 +110,6 @@ export function startOpenldapAndWaitReady(timeoutMs = 30_000): void {
 // другую причину, и новый вид падения хуже диагностической строки. Срок
 // истёк - это видно в логе, а флак тогда вернётся и будет опознан.
 function waitForHostNetworkToSettle(timeoutMs = 10_000): void {
-  if (timeoutMs > 0) return; // A/B-EXPERIMENT (temporary): code as before the fix
   const expected = linkLocalCountBeforeStop;
   if (expected === null) return;
   const deadline = Date.now() + timeoutMs;

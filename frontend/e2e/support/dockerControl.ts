@@ -31,8 +31,8 @@ const COMPOSE_ARGS = [
 // `ip monitor`), и во всех трёх падениях это событие стоит за 10-100 мс
 // до первого запроса модуля Vite, оборванного с `net::ERR_NETWORK_CHANGED`
 // (Chromium считает событие сменой сети). В восьми прогонах без падения
-// оборванных запросов нет, но событие внутри окна `goto` было и в одном
-// из них (серия 1, перезапуск 1) - «событие в окне => падение» строгим
+// оборванных запросов нет, но событие внутри окна `goto` было и в четырёх
+// из них (серия 1, перезапуски 1, 3, 4, 5) - «событие в окне => падение» строгим
 // правилом не является. Вмешательство (прогон без перезапуска каталога) -
 // в T-M1-61 (docs/tasks.md). `ldapwhoami` изнутри контейнера этого события
 // не ждёт, поэтому после подъёма каталога ждём и его: число готовых (не
@@ -118,14 +118,31 @@ export function startOpenldapAndWaitReady(stopped: StoppedOpenldap, timeoutMs = 
 // истёк - это видно в логе, а флак тогда вернётся и будет опознан.
 function waitForHostNetworkToSettle(expected: number | null, timeoutMs = 10_000): void {
   if (expected === null) return;
-  const deadline = Date.now() + timeoutMs;
+  const startedAt = Date.now();
+  const deadline = startedAt + timeoutMs;
+  let observedAtEntry: number | null | undefined;
   while (Date.now() < deadline) {
     const current = readyLinkLocalAddressCount();
+    if (observedAtEntry === undefined) {
+      // Случай «ждать нечего» (число адресов не упало при остановке) иначе
+      // виден только по разнице меток времени.
+      observedAtEntry = current;
+      logWithWallClock(
+        WALL_CLOCK_PREFIX,
+        `waiting for host link-local addresses: expected ${expected}, observed ${current}`,
+      );
+    }
     if (current === null) {
       logWithWallClock(WALL_CLOCK_PREFIX, "ip command failed while waiting for the host network; wait abandoned");
       return;
     }
-    if (current >= expected) return;
+    if (current >= expected) {
+      logWithWallClock(
+        WALL_CLOCK_PREFIX,
+        `host link-local addresses back to ${current} (expected ${expected}) after ${Date.now() - startedAt}ms`,
+      );
+      return;
+    }
     execFileSync("sleep", ["0.1"]);
   }
   logWithWallClock(

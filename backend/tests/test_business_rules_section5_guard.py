@@ -26,6 +26,11 @@ _REQUIREMENTS_PATH = _REPO_ROOT / "docs" / "requirements.md"
 _MIGRATION = (
     Path(__file__).resolve().parents[1] / "alembic" / "versions" / "0007_business_rules_config.py"
 )
+# T-M2-05: миграция 0009 пополняет набор ключей (FR-BAL-001); сторож читает
+# `_PRESET` обеих.
+_MIGRATION_0009 = (
+    Path(__file__).resolve().parents[1] / "alembic" / "versions" / "0009_accrual_business_rules.py"
+)
 
 pytestmark = pytest.mark.skipif(
     not _REQUIREMENTS_PATH.is_file(),
@@ -57,6 +62,8 @@ _FR_KEYS: dict[str, str] = {
     "password_min_length": "FR-AUTH-002/2",
     "max_failed_login_attempts": "FR-AUTH-002/2",
     "lockout_duration_minutes": "FR-AUTH-002/2",
+    "month_rounding_threshold_days": "FR-BAL-001/1",
+    "unpaid_leave_days_counted_in_service": "FR-BAL-001/2",
 }
 
 # Ссылки на статьи/законы/годы - тоже цифры, но не значения параметров.
@@ -88,11 +95,14 @@ def _numeric_rules(requirements_text: str) -> set[str]:
 
 
 def _preset() -> dict[str, str]:
-    spec = importlib.util.spec_from_file_location("migration_0007", _MIGRATION)
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return {row["key"]: row["description"] for row in module._PRESET}
+    descriptions: dict[str, str] = {}
+    for name, path in (("migration_0007", _MIGRATION), ("migration_0009", _MIGRATION_0009)):
+        spec = importlib.util.spec_from_file_location(name, path)
+        assert spec and spec.loader
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        descriptions.update({row["key"]: row["description"] for row in module._PRESET})
+    return descriptions
 
 
 def _names(description: str, identifier: str) -> bool:

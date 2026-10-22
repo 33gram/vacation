@@ -45,6 +45,8 @@ _EXPECTED_PARSED = {
     "password_min_length": 8,
     "max_failed_login_attempts": 5,
     "lockout_duration_minutes": 15,
+    "month_rounding_threshold_days": 15,
+    "unpaid_leave_days_counted_in_service": 14,
 }
 
 

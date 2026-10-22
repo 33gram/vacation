@@ -63,6 +63,9 @@ APPROVAL_ESCALATION_WORKING_DAYS = "approval_escalation_working_days"
 PASSWORD_MIN_LENGTH = "password_min_length"
 MAX_FAILED_LOGIN_ATTEMPTS = "max_failed_login_attempts"
 LOCKOUT_DURATION_MINUTES = "lockout_duration_minutes"
+# T-M2-05 (миграция 0009), FR-BAL-001.
+MONTH_ROUNDING_THRESHOLD_DAYS = "month_rounding_threshold_days"
+UNPAID_LEAVE_DAYS_COUNTED_IN_SERVICE = "unpaid_leave_days_counted_in_service"
 
 
 class BusinessRuleError(Exception):
@@ -134,6 +137,12 @@ RULES: dict[str, RuleSpec] = {
         RuleSpec(PASSWORD_MIN_LENGTH, INTEGER, 8, BCRYPT_MAX_INPUT_BYTES),
         RuleSpec(MAX_FAILED_LOGIN_ATTEMPTS, INTEGER, 1, 100),
         RuleSpec(LOCKOUT_DURATION_MINUTES, INTEGER, 1, 7 * 24 * 60),
+        # 1..31: остаток неполного месяца не превышает 30 дней, поэтому 31
+        # означает «никогда не округлять вверх»; 0 исключён - при нём
+        # округлялся бы и нулевой остаток. ВЫБРАНО.
+        RuleSpec(MONTH_ROUNDING_THRESHOLD_DAYS, INTEGER, 1, 31),
+        # 0..366: 0 - ни один день отпуска без содержания в стаж не входит.
+        RuleSpec(UNPAID_LEAVE_DAYS_COUNTED_IN_SERVICE, INTEGER, 0, 366),
     )
 }
 

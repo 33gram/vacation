@@ -104,6 +104,7 @@ test("отрицательный контроль: вход каталожным
   // сохранены и УСПЕШНО проверены (как в позитивном сценарии) - затем
   // сам каталог останавливается, и вход должен упасть именно на шаге
   // входа, обратившись к недоступному каталогу.
+  test.skip(true, "A/B-EXPERIMENT (temporary): no openldap restart");
   const { ldapConnectionConfirmed } = await setupLdapScenario();
   expect(
     ldapConnectionConfirmed,

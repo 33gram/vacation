@@ -58,6 +58,7 @@ from app.modules.balances.accrual import (
     MONTHS_IN_YEAR,
     compute_accrual,
     is_working_year_start,
+    working_year_containing,
     working_year_start_on,
     working_year_starts,
 )
@@ -726,3 +727,22 @@ async def accrue_before_read(
     return await accrue_all_working_years(
         session, employee_id=employee_id, leave_type_id=leave_type_id, as_of=as_of
     )
+
+
+async def get_working_year(
+    session: AsyncSession, employee_id: int, on_date: datetime.date
+) -> tuple[datetime.date, datetime.date]:
+    """Рабочий год сотрудника, в который попадает `on_date`: (начало, конец
+    исключительно). ЕДИНСТВЕННОЕ место, которое отвечает на этот вопрос для слоя
+    API (эндпоинт корректировки не вычисляет границы сам, клиент их не присылает).
+    Исключаемые дни не учитываются (`excluded_days` = 0, оговорка `T-M2-19`).
+    Сотрудника нет или дата раньше приёма - `BalanceEntryError`."""
+    hire_date = await session.scalar(select(Employee.hire_date).where(Employee.id == employee_id))
+    if hire_date is None:
+        raise BalanceEntryError("Сотрудник не найден.")
+    try:
+        return working_year_containing(hire_date, on_date)
+    except ValueError as error:
+        raise BalanceEntryError(
+            f"Дата {on_date:%d.%m.%Y} раньше даты приёма сотрудника ({hire_date:%d.%m.%Y})."
+        ) from error

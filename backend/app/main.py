@@ -24,6 +24,7 @@ from app.modules.auth.exceptions import (
 )
 from app.modules.auth.password_policy import WeakPasswordError
 from app.modules.auth.router import router as auth_router
+from app.modules.balances.router import router as balances_router
 from app.modules.business_rules.service import validate_all as validate_business_rules
 from app.modules.employees.department_router import router as department_router
 from app.modules.employees.employee_router import router as employee_router
@@ -67,6 +68,7 @@ app.add_middleware(
 
 app.include_router(health_router)
 app.include_router(auth_router)
+app.include_router(balances_router)
 app.include_router(department_router)
 app.include_router(employee_router)
 app.include_router(ldap_settings_router)

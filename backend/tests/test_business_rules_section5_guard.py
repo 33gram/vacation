@@ -5,8 +5,19 @@
 числовым значением, добавленное в раздел 5 без записи в `_BR_KEYS`,
 краснит сторожа, а не теряется. Явный здесь только словарь «правило ->
 ключи» — правка видна в дифе, по образцу `test_leave_types_section6_guard.py`.
-Ключи берутся из `_PRESET` самой миграции `0007` (а не из БД), чтобы
+Ключи берутся из `_PRESET` ВСЕХ миграций, сидирующих `business_rules_config`
+(обнаруживаются в `alembic/versions`, а не перечислены; не из БД), чтобы
 сторож не зависел от состояния базы.
+
+Граница обнаружения (правило 8): миграция узнаётся по литералу
+`sa.table("business_rules_config", ...)` и по именам `_BUSINESS_RULES`/
+`_PRESET`. Миграция, сидирующая ту же таблицу иначе (имя таблицы собрано из
+частей строки, другие имена переменных при имени таблицы, собранном не
+литералом), пройдёт мимо и обнаружения, и громкого отказа. Прямо назовём две
+формы: `op.execute("INSERT INTO business_rules_config ...")` (нет ни
+`_BUSINESS_RULES`, ни `_PRESET`) и `sa.Table("business_rules_config", ...)`
+с заглавной буквы (регулярное выражение ищет `sa.table(`). Сторож честен
+ровно до той формы записи, которую знает.
 
 Граница (правило 8): сторож подтверждает, что для каждого правила с числом
 ключ СУЩЕСТВУЕТ и его `description` называет правило, а не что значение
@@ -23,9 +34,11 @@ import pytest
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _REQUIREMENTS_PATH = _REPO_ROOT / "docs" / "requirements.md"
-_MIGRATION = (
-    Path(__file__).resolve().parents[1] / "alembic" / "versions" / "0007_business_rules_config.py"
-)
+# Миграции ОБНАРУЖИВАЮТСЯ, а не перечисляются: ключи, добавленные любой будущей
+# миграцией (0010 и далее), попадают под сторожа без правки этого файла.
+_VERSIONS = Path(__file__).resolve().parents[1] / "alembic" / "versions"
+_TABLE = "business_rules_config"
+_DECLARES_TABLE = re.compile(r"sa\.table\(\s*[\"']" + _TABLE + r"[\"']")
 
 pytestmark = pytest.mark.skipif(
     not _REQUIREMENTS_PATH.is_file(),
@@ -57,6 +70,8 @@ _FR_KEYS: dict[str, str] = {
     "password_min_length": "FR-AUTH-002/2",
     "max_failed_login_attempts": "FR-AUTH-002/2",
     "lockout_duration_minutes": "FR-AUTH-002/2",
+    "month_rounding_threshold_days": "FR-BAL-001/1",
+    "unpaid_leave_days_counted_in_service": "FR-BAL-001/2",
 }
 
 # Ссылки на статьи/законы/годы - тоже цифры, но не значения параметров.
@@ -87,12 +102,41 @@ def _numeric_rules(requirements_text: str) -> set[str]:
     }
 
 
-def _preset() -> dict[str, str]:
-    spec = importlib.util.spec_from_file_location("migration_0007", _MIGRATION)
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return {row["key"]: row["description"] for row in module._PRESET}
+def _preset(versions_dir: Path = _VERSIONS) -> dict[str, str]:
+    """Ключ -> description из `_PRESET` каждой миграции, которая сидирует
+    `business_rules_config`. Такая миграция узнаётся по `_BUSINESS_RULES`
+    (таблица с этим именем), а не по номеру: `_PRESET` есть и у `0006`, но
+    там виды отпуска. Пустота и непрочитанная миграция - громкий отказ, а не
+    проход на пустом множестве."""
+    descriptions: dict[str, str] = {}
+    source: dict[str, str] = {}
+    found: list[str] = []
+    for path in sorted(versions_dir.glob("*.py")):
+        spec = importlib.util.spec_from_file_location(f"guard_{path.stem}", path)
+        assert spec and spec.loader
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        table = getattr(module, "_BUSINESS_RULES", None)
+        preset = getattr(module, "_PRESET", None)
+        if table is not None and table.name == _TABLE and preset is not None:
+            found.append(path.name)
+            for row in preset:
+                if row["key"] in source:
+                    # Молчаливая замена описания более поздней миграцией скрыла
+                    # бы, что сторож проверяет не то описание, что было засеяно.
+                    raise AssertionError(
+                        f"ключ {row['key']!r} засеян дважды: {source[row['key']]} и {path.name}"
+                    )
+                source[row["key"]] = path.name
+                descriptions[row["key"]] = row["description"]
+        elif _DECLARES_TABLE.search(path.read_text(encoding="utf-8")):
+            raise AssertionError(
+                f"{path.name} объявляет таблицу {_TABLE}, но сторож не нашёл в ней "
+                "`_BUSINESS_RULES` и `_PRESET` - миграция названа иначе, и её ключи "
+                "остались бы без проверки"
+            )
+    assert found, f"сторож ослеп: ни одной миграции с `_PRESET` для {_TABLE} в {versions_dir}"
+    return descriptions
 
 
 def _names(description: str, identifier: str) -> bool:
@@ -214,3 +258,50 @@ def test_description_naming_the_rule_followed_by_punctuation_counts() -> None:
     assert _names("BR-1: норма.", "BR-1")
     assert _names("см. (BR-1)", "BR-1")
     assert not _names("XBR-1: норма.", "BR-1")
+
+
+def test_discovery_finds_the_keys_of_both_seeding_migrations() -> None:
+    # Отрицательный контроль обнаружения: по ключу из 0007 и из 0009. Без него
+    # "обнаружение работает" проходило бы и на неполном наборе.
+    preset = _preset()
+
+    assert "annual_leave_days" in preset  # 0007
+    assert "month_rounding_threshold_days" in preset  # 0009
+
+
+def test_discovery_does_not_take_the_presets_of_other_tables() -> None:
+    # `0006._PRESET` - виды отпуска (словари без `description`-ключа правил).
+    assert "annual_paid" not in _preset()
+
+
+def test_a_guard_that_finds_no_preset_fails_loudly(tmp_path) -> None:
+    (tmp_path / "0001_nothing.py").write_text("X = 1\n", encoding="utf-8")
+
+    with pytest.raises(AssertionError, match="сторож ослеп"):
+        _preset(tmp_path)
+
+
+def test_a_migration_that_declares_the_table_under_other_names_is_reported(tmp_path) -> None:
+    (tmp_path / "0010_renamed.py").write_text(
+        'import sqlalchemy as sa\nRULES = sa.table("business_rules_config", sa.column("key"))\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(AssertionError, match="0010_renamed.py"):
+        _preset(tmp_path)
+
+
+def test_a_key_seeded_by_two_migrations_is_reported_naming_both_files(tmp_path) -> None:
+    body = (
+        "import sqlalchemy as sa\n"
+        '_BUSINESS_RULES = sa.table("business_rules_config", sa.column("key"))\n'
+        '_PRESET = [{"key": "dup", "description": "BR-1"}]\n'
+    )
+    (tmp_path / "0001_first.py").write_text(body, encoding="utf-8")
+    (tmp_path / "0002_second.py").write_text(body, encoding="utf-8")
+
+    with pytest.raises(AssertionError) as excinfo:
+        _preset(tmp_path)
+
+    assert "0001_first.py" in str(excinfo.value)
+    assert "0002_second.py" in str(excinfo.value)

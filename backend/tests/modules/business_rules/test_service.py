@@ -25,6 +25,7 @@ from app.modules.business_rules.service import (
     MonthDay,
     RuleSpec,
     get_int,
+    get_ints,
     get_month_day,
     get_rules,
     parse_stored_value,
@@ -45,6 +46,8 @@ _EXPECTED_PARSED = {
     "password_min_length": 8,
     "max_failed_login_attempts": 5,
     "lockout_duration_minutes": 15,
+    "month_rounding_threshold_days": 15,
+    "unpaid_leave_days_counted_in_service": 14,
 }
 
 
@@ -158,6 +161,20 @@ async def test_a_stored_type_that_differs_from_the_registry_is_refused(db_sessio
 
 # Проверки типа - настоящие исключения, а не `assert`: под `python -O`
 # `assert` исчезает (PR #176 review, С-7).
+async def test_get_ints_returns_integers_in_one_call(db_session) -> None:
+    assert await get_ints(db_session, "annual_leave_days", "password_min_length") == {
+        "annual_leave_days": 28,
+        "password_min_length": 8,
+    }
+
+
+async def test_get_ints_on_a_month_day_rule_is_refused_naming_the_key(db_session) -> None:
+    with pytest.raises(BusinessRuleError) as excinfo:
+        await get_ints(db_session, "annual_leave_days", "schedule_approval_deadline")
+
+    assert excinfo.value.key == "schedule_approval_deadline"
+
+
 async def test_get_int_on_a_month_day_rule_is_refused_naming_the_key(db_session) -> None:
     with pytest.raises(BusinessRuleError) as excinfo:
         await get_int(db_session, "schedule_approval_deadline")

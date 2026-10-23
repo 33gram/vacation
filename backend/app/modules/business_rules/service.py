@@ -63,6 +63,13 @@ APPROVAL_ESCALATION_WORKING_DAYS = "approval_escalation_working_days"
 PASSWORD_MIN_LENGTH = "password_min_length"
 MAX_FAILED_LOGIN_ATTEMPTS = "max_failed_login_attempts"
 LOCKOUT_DURATION_MINUTES = "lockout_duration_minutes"
+# T-M2-05 (миграция 0009), FR-BAL-001.
+MONTH_ROUNDING_THRESHOLD_DAYS = "month_rounding_threshold_days"
+# Засеян, но приложением пока НЕ читается: читателем будет вызывающий, у которого
+# появятся сами отпуска без содержания (M3), - он вычислит `excluded_days` через
+# `excluded_unpaid_leave_days(..., counted_limit=<этот параметр>)`. `T-M2-19`
+# называет его и оговаривает, что до M3 `excluded_days` передаётся нулём.
+UNPAID_LEAVE_DAYS_COUNTED_IN_SERVICE = "unpaid_leave_days_counted_in_service"
 
 
 class BusinessRuleError(Exception):
@@ -134,6 +141,12 @@ RULES: dict[str, RuleSpec] = {
         RuleSpec(PASSWORD_MIN_LENGTH, INTEGER, 8, BCRYPT_MAX_INPUT_BYTES),
         RuleSpec(MAX_FAILED_LOGIN_ATTEMPTS, INTEGER, 1, 100),
         RuleSpec(LOCKOUT_DURATION_MINUTES, INTEGER, 1, 7 * 24 * 60),
+        # 1..31: остаток неполного месяца не превышает 30 дней, поэтому 31
+        # означает «никогда не округлять вверх»; 0 исключён - при нём
+        # округлялся бы и нулевой остаток. ВЫБРАНО.
+        RuleSpec(MONTH_ROUNDING_THRESHOLD_DAYS, INTEGER, 1, 31),
+        # 0..366: 0 - ни один день отпуска без содержания в стаж не входит.
+        RuleSpec(UNPAID_LEAVE_DAYS_COUNTED_IN_SERVICE, INTEGER, 0, 366),
     )
 }
 
@@ -205,6 +218,20 @@ async def get_int(session: AsyncSession, key: str) -> int:
     if not isinstance(value, int):
         raise BusinessRuleError(key, "is not an integer rule")
     return value
+
+
+async def get_ints(session: AsyncSession, *keys: str) -> dict[str, int]:
+    """Несколько целочисленных параметров ОДНИМ запросом, с той же проверкой
+    типа, что у `get_int`: `get_rules` отдаёт объединение `RuleValue`, и
+    передавать его в арифметику без проверки нельзя."""
+    values = await get_rules(session, *keys)
+    ints: dict[str, int] = {}
+    for key, value in values.items():
+        # Не `assert`: под `python -O` он исчезает (см. `parse_stored_value`).
+        if not isinstance(value, int):
+            raise BusinessRuleError(key, "is not an integer rule")
+        ints[key] = value
+    return ints
 
 
 async def get_month_day(session: AsyncSession, key: str) -> MonthDay:

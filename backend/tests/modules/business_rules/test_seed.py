@@ -33,6 +33,9 @@ _EXPECTED = {
     "password_min_length": ("8", "integer"),
     "max_failed_login_attempts": ("5", "integer"),
     "lockout_duration_minutes": ("15", "integer"),
+    # 0009 (T-M2-05)
+    "month_rounding_threshold_days": ("15", "integer"),
+    "unpaid_leave_days_counted_in_service": ("14", "integer"),
 }
 
 

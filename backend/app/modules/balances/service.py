@@ -58,6 +58,7 @@ from app.modules.balances.accrual import (
     MONTHS_IN_YEAR,
     compute_accrual,
     is_working_year_start,
+    working_year_start_on,
     working_year_starts,
 )
 from app.modules.business_rules.service import (
@@ -267,6 +268,26 @@ async def _require_main_leave_type(session: AsyncSession, leave_type_id: int) ->
         )
 
 
+async def _latest_import_year(
+    session: AsyncSession, employee_id: int, leave_type_id: int
+) -> datetime.date | None:
+    """Начало самого позднего рабочего года с событием `initial_import`."""
+    return await session.scalar(
+        select(func.max(LeaveBalanceEntry.working_year_start)).where(
+            LeaveBalanceEntry.employee_id == employee_id,
+            LeaveBalanceEntry.leave_type_id == leave_type_id,
+            LeaveBalanceEntry.entry_type == INITIAL_IMPORT,
+        )
+    )
+
+
+def _closed_by_import_message(year_start: datetime.date, import_year: datetime.date) -> str:
+    return (
+        f"Начисление за рабочий год с {year_start:%d.%m.%Y} закрыто: "
+        f"начальный остаток занесён за рабочий год с {import_year:%d.%m.%Y}."
+    )
+
+
 async def accrue_leave(
     session: AsyncSession,
     *,
@@ -336,17 +357,10 @@ async def accrue_leave(
     except ValueError as error:
         raise BalanceEntryError(str(error)) from error
 
-    closing_import_year = await session.scalar(
-        select(func.max(LeaveBalanceEntry.working_year_start)).where(
-            LeaveBalanceEntry.employee_id == employee_id,
-            LeaveBalanceEntry.leave_type_id == leave_type_id,
-            LeaveBalanceEntry.entry_type == INITIAL_IMPORT,
-        )
-    )
+    closing_import_year = await _latest_import_year(session, employee_id, leave_type_id)
     if closing_import_year is not None and closing_import_year >= accrual.working_year_start:
         raise AccrualClosedError(
-            f"Начисление за рабочий год с {accrual.working_year_start:%d.%m.%Y} закрыто: "
-            f"начальный остаток занесён за рабочий год с {closing_import_year:%d.%m.%Y}."
+            _closed_by_import_message(accrual.working_year_start, closing_import_year)
         )
 
     already = await session.execute(
@@ -400,21 +414,48 @@ async def accrue_all_working_years(
     нет). Завершённые годы начисляются на их последний день (значит, полной
     нормой), текущий - на `as_of`. Повторный вызов ничего не пишет.
 
-    Годы, закрытые начальным остатком (`AccrualClosedError`), пропускаются и
-    названы в `skipped` с причиной. `excluded_days` = 0 для всех лет - оговорка
-    до появления учёта отпусков без содержания (M3, `T-M2-19`). Сотрудник
-    принят позже `as_of` - пусто. `attribution` пробрасывается в `accrue_leave`. Замок -
+    Годы, которые НЕ начисляются, пропускаются и названы в `skipped` с причиной
+    (это не ошибка читающего кода): (1) закрытые начальным остатком
+    (`AccrualClosedError`); (2) БАРЬЕР против выдуманного остатка (решение
+    заказчика, `T-M2-19`): годы, ЗАКОНЧИВШИЕСЯ до появления карточки сотрудника в
+    Системе (`employees.created_at`, дата в UTC). Смысл: Система ведёт остаток с
+    момента, как узнала о сотруднике, прошлое приходит начальным остатком
+    (`initial_import`, `T-M1-36`), а не вычисляется. Граница: год, закончившийся
+    ПОСЛЕ появления карточки (в том числе карточка заведена внутри первого
+    рабочего года, через неделю после приёма), начисляется целиком; год
+    заканчивается в последний день, и карточка, появившаяся в этот день, год
+    сохраняет. Если год попадает под оба правила, причина называет оба.
+    Остаётся ДЫРА (одна, а не все годы): текущий год сотрудника без импорта
+    начисляется с начала года, хотя до появления карточки история использования
+    Системе неизвестна. `excluded_days` = 0 для всех лет - оговорка до появления
+    учёта отпусков без содержания (M3, `T-M2-19`). Сотрудник принят позже
+    `as_of` - пусто. `attribution` пробрасывается в `accrue_leave`. Замок -
     тот же единственный, что в `accrue_leave`."""
     await _require_main_leave_type(session, leave_type_id)
     employee = await session.get(Employee, employee_id, with_for_update=True)
     if employee is None:
         raise BalanceEntryError("Сотрудник не найден.")
+    card_date = employee.created_at.astimezone(datetime.UTC).date()
+    import_year = await _latest_import_year(session, employee_id, leave_type_id)
     starts = working_year_starts(employee.hire_date, as_of)
     accrued: dict[datetime.date, Decimal] = {}
     skipped: dict[datetime.date, str] = {}
     for index, start in enumerate(starts):
         is_last = index == len(starts) - 1
-        year_as_of = as_of if is_last else starts[index + 1] - datetime.timedelta(days=1)
+        next_start = working_year_start_on(employee.hire_date, index + 1)
+        year_as_of = as_of if is_last else next_start - datetime.timedelta(days=1)
+        reasons: list[str] = []
+        if next_start <= card_date:
+            reasons.append(
+                f"Рабочий год {start:%d.%m.%Y}-{next_start - datetime.timedelta(days=1):%d.%m.%Y} "
+                f"закончился до появления карточки сотрудника в Системе ({card_date:%d.%m.%Y}): "
+                "прошлое приходит начальным остатком (initial_import, T-M1-36), а не вычисляется."
+            )
+        if import_year is not None and import_year >= start:
+            reasons.append(_closed_by_import_message(start, import_year))
+        if reasons:
+            skipped[start] = " ".join(reasons)
+            continue
         try:
             written = await accrue_leave(
                 session,
@@ -424,7 +465,7 @@ async def accrue_all_working_years(
                 working_year_start=start,
                 attribution=attribution,
             )
-        except AccrualClosedError as error:
+        except AccrualClosedError as error:  # защитно: между проверкой и записью
             skipped[start] = str(error)
             continue
         if written > 0:
@@ -653,3 +694,35 @@ async def _write_recalculation(
         )
     )
     await session.flush()
+
+
+async def accrue_before_read(
+    session: AsyncSession, *, employee_id: int, as_of: datetime.date
+) -> CatchUpResult:
+    """Ленивое начисление при чтении (`T-M2-19`, решение заказчика): догоняет
+    начисление по основному виду на дату `as_of` через `accrue_all_working_years`
+    (своего цикла по годам и своей арифметики нет); остаток после этого читает
+    вызывающий через `get_balance`. Звать ПЕРЕД каждым чтением, по которому
+    принимается решение, а не только перед показом.
+
+    ЧТЕНИЕ СТАНОВИТСЯ ПИШУЩЕЙ ОПЕРАЦИЕЙ. Эндпоинт идёт в транзакции и сам делает
+    `commit`; одновременные чтения по одному сотруднику сериализуются на замке
+    строки сотрудника (`FOR UPDATE` в `accrue_all_working_years`). Пишущий `GET`
+    выглядит странно, но безопасен и чинить его не надо: повторный вызов на ту же
+    дату ничего не пишет (свойство `accrue_leave`, проверено тестом), поэтому
+    повтор запроса безопасен.
+
+    Годы, закрытые импортом или барьером, - не ошибка: они приходят в
+    `skipped`. Отказ самого начисления (не закрытый год: `BalanceEntryError`,
+    `LeaveTypeNotSeededError`) НЕ перехватывается - устаревшее число молча не
+    отдаётся. `excluded_days` = 0 - оговорка до периодов без содержания (M3)."""
+    leave_type_id = await session.scalar(
+        select(LeaveType.id).where(LeaveType.code == MAIN_LEAVE_TYPE_CODE)
+    )
+    if leave_type_id is None:
+        raise LeaveTypeNotSeededError(
+            f"В справочнике нет основного вида отпуска {MAIN_LEAVE_TYPE_CODE!r}."
+        )
+    return await accrue_all_working_years(
+        session, employee_id=employee_id, leave_type_id=leave_type_id, as_of=as_of
+    )

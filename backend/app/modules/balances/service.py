@@ -46,7 +46,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.employee import Employee
 from app.models.leave_balance_entry import ACCRUAL, MANUAL_ADJUSTMENT, LeaveBalanceEntry
 from app.models.leave_type import LeaveType
-from app.modules.balances.accrual import compute_accrual
+from app.modules.balances.accrual import MONTHS_IN_YEAR, compute_accrual
 from app.modules.business_rules.service import (
     ANNUAL_LEAVE_DAYS,
     MONTH_ROUNDING_THRESHOLD_DAYS,
@@ -242,7 +242,14 @@ async def accrue_leave(
     блокируется (`FOR UPDATE`) до конца транзакции, чтобы две параллельные
     транзакции не записали одну и ту же разность дважды; это закрыто
     рассуждением, а не проверено тестом на гонку — проверены
-    последовательные повторные вызовы."""
+    последовательные повторные вызовы. Две границы замка: (1) он защищает
+    только от ДРУГОГО `accrue_leave` — `adjust_balance` и будущие
+    `recalculation` (`T-M2-07`) и `initial_import` (`T-M1-36`) его не берут;
+    сегодня этого достаточно, потому что «уже начислено» считается только по
+    событиям `accrual`; (2) рассуждение опирается на уровень изоляции READ
+    COMMITTED (после ожидания замка читается уже зафиксированное другой
+    транзакцией); при более строгом уровне повторное чтение вело бы себя
+    иначе."""
     # Вид проверяется ДО блокировки: неверный вызов не должен держать строку
     # сотрудника до конца транзакции вызывающего.
     leave_type_code = await session.scalar(
@@ -292,7 +299,7 @@ async def accrue_leave(
             entry_date=as_of,
             reason=(
                 f"Начисление на {as_of.strftime('%d.%m.%Y')}: "
-                f"{accrual.counted_months} из 12 месяцев рабочего года"
+                f"{accrual.counted_months} из {MONTHS_IN_YEAR} месяцев рабочего года"
             ),
             actor_account_id=None,
         )

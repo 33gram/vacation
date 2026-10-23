@@ -12,9 +12,12 @@
 Граница обнаружения (правило 8): миграция узнаётся по литералу
 `sa.table("business_rules_config", ...)` и по именам `_BUSINESS_RULES`/
 `_PRESET`. Миграция, сидирующая ту же таблицу иначе (имя таблицы собрано из
-частей строки, вставка другой конструкцией, другие имена переменных при
-имени таблицы, собранном не литералом), пройдёт мимо и обнаружения, и
-громкого отказа: сторож честен ровно до этой формы записи.
+частей строки, другие имена переменных при имени таблицы, собранном не
+литералом), пройдёт мимо и обнаружения, и громкого отказа. Прямо назовём две
+формы: `op.execute("INSERT INTO business_rules_config ...")` (нет ни
+`_BUSINESS_RULES`, ни `_PRESET`) и `sa.Table("business_rules_config", ...)`
+с заглавной буквы (регулярное выражение ищет `sa.table(`). Сторож честен
+ровно до той формы записи, которую знает.
 
 Граница (правило 8): сторож подтверждает, что для каждого правила с числом
 ключ СУЩЕСТВУЕТ и его `description` называет правило, а не что значение
@@ -106,6 +109,7 @@ def _preset(versions_dir: Path = _VERSIONS) -> dict[str, str]:
     там виды отпуска. Пустота и непрочитанная миграция - громкий отказ, а не
     проход на пустом множестве."""
     descriptions: dict[str, str] = {}
+    source: dict[str, str] = {}
     found: list[str] = []
     for path in sorted(versions_dir.glob("*.py")):
         spec = importlib.util.spec_from_file_location(f"guard_{path.stem}", path)
@@ -116,7 +120,15 @@ def _preset(versions_dir: Path = _VERSIONS) -> dict[str, str]:
         preset = getattr(module, "_PRESET", None)
         if table is not None and table.name == _TABLE and preset is not None:
             found.append(path.name)
-            descriptions.update({row["key"]: row["description"] for row in preset})
+            for row in preset:
+                if row["key"] in source:
+                    # Молчаливая замена описания более поздней миграцией скрыла
+                    # бы, что сторож проверяет не то описание, что было засеяно.
+                    raise AssertionError(
+                        f"ключ {row['key']!r} засеян дважды: {source[row['key']]} и {path.name}"
+                    )
+                source[row["key"]] = path.name
+                descriptions[row["key"]] = row["description"]
         elif _DECLARES_TABLE.search(path.read_text(encoding="utf-8")):
             raise AssertionError(
                 f"{path.name} объявляет таблицу {_TABLE}, но сторож не нашёл в ней "
@@ -277,3 +289,19 @@ def test_a_migration_that_declares_the_table_under_other_names_is_reported(tmp_p
 
     with pytest.raises(AssertionError, match="0010_renamed.py"):
         _preset(tmp_path)
+
+
+def test_a_key_seeded_by_two_migrations_is_reported_naming_both_files(tmp_path) -> None:
+    body = (
+        "import sqlalchemy as sa\n"
+        '_BUSINESS_RULES = sa.table("business_rules_config", sa.column("key"))\n'
+        '_PRESET = [{"key": "dup", "description": "BR-1"}]\n'
+    )
+    (tmp_path / "0001_first.py").write_text(body, encoding="utf-8")
+    (tmp_path / "0002_second.py").write_text(body, encoding="utf-8")
+
+    with pytest.raises(AssertionError) as excinfo:
+        _preset(tmp_path)
+
+    assert "0001_first.py" in str(excinfo.value)
+    assert "0002_second.py" in str(excinfo.value)

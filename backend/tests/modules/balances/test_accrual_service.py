@@ -18,6 +18,7 @@ from app.models.employee import Employee
 from app.models.leave_balance_entry import ACCRUAL, LeaveBalanceEntry
 from app.modules.balances.service import (
     ALREADY_ACCRUED_ENTRY_TYPES,
+    MAIN_LEAVE_TYPE_CODE,
     BalanceEntryError,
     accrue_leave,
     adjust_balance,
@@ -244,6 +245,53 @@ async def test_fr_bal_001_a_refused_leave_type_takes_no_lock_on_the_employee(db_
         event.remove(sync_engine, "before_cursor_execute", capture)
 
     assert not any("FOR UPDATE" in statement.upper() for statement in statements)
+
+
+async def test_the_statement_capture_does_see_the_lock_on_the_happy_path(db_session) -> None:
+    # Положительный контроль к тесту выше: тот же перехват на успешном вызове
+    # ВИДИТ `FOR UPDATE`, значит отсутствие блокировки при отказе - не пустой
+    # перехват.
+    from sqlalchemy import event
+
+    ctx = await _hired(db_session)
+    statements: list[str] = []
+    connection = await db_session.connection()
+
+    def capture(conn, cursor, statement, *args):
+        statements.append(statement)
+
+    sync_engine = connection.sync_engine
+    event.listen(sync_engine, "before_cursor_execute", capture)
+    try:
+        await _accrue(db_session, ctx, D(2026, 10, 24))
+    finally:
+        event.remove(sync_engine, "before_cursor_execute", capture)
+
+    assert any("FOR UPDATE" in statement.upper() for statement in statements)
+
+
+def test_the_main_leave_type_code_is_one_of_the_codes_seeded_by_the_migrations() -> None:
+    # `MAIN_LEAVE_TYPE_CODE` - второй набранный руками экземпляр кода из
+    # миграции видов отпуска; импортировать миграцию в приложение нельзя, поэтому
+    # переименование в справочнике ловит этот тест. Миграции ОБНАРУЖИВАЮТСЯ:
+    # берутся все, у кого есть таблица `_LEAVE_TYPES` и `_PRESET`.
+    import importlib.util
+    from pathlib import Path
+
+    versions = Path(__file__).resolve().parents[3] / "alembic" / "versions"
+    codes: set[str] = set()
+    for path in sorted(versions.glob("*.py")):
+        spec = importlib.util.spec_from_file_location(f"codes_{path.stem}", path)
+        assert spec and spec.loader
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        table = getattr(module, "_LEAVE_TYPES", None)
+        preset = getattr(module, "_PRESET", None)
+        if table is not None and table.name == "leave_types" and preset is not None:
+            codes |= {row["code"] for row in preset}
+
+    assert codes, "ни одна миграция с видами отпуска не найдена - сторож ослеп"
+    assert MAIN_LEAVE_TYPE_CODE in codes
 
 
 async def test_fr_bal_001_a_manual_adjustment_is_not_counted_as_already_accrued(db_session) -> None:

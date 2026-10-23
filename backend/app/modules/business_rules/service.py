@@ -65,6 +65,10 @@ MAX_FAILED_LOGIN_ATTEMPTS = "max_failed_login_attempts"
 LOCKOUT_DURATION_MINUTES = "lockout_duration_minutes"
 # T-M2-05 (миграция 0009), FR-BAL-001.
 MONTH_ROUNDING_THRESHOLD_DAYS = "month_rounding_threshold_days"
+# Засеян, но приложением пока НЕ читается: читателем будет вызывающий, у которого
+# появятся сами отпуска без содержания (M3), - он вычислит `excluded_days` через
+# `excluded_unpaid_leave_days(..., counted_limit=<этот параметр>)`. `T-M2-19`
+# называет его и оговаривает, что до M3 `excluded_days` передаётся нулём.
 UNPAID_LEAVE_DAYS_COUNTED_IN_SERVICE = "unpaid_leave_days_counted_in_service"
 
 

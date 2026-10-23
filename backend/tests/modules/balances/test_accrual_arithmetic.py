@@ -13,7 +13,11 @@ from decimal import Decimal
 
 import pytest
 
-from app.modules.balances.accrual import compute_accrual, excluded_unpaid_leave_days
+from app.modules.balances.accrual import (
+    completed_months,
+    compute_accrual,
+    excluded_unpaid_leave_days,
+)
 
 HIRE = datetime.date(2026, 3, 10)
 NORM = 28
@@ -207,3 +211,64 @@ def test_fr_bal_001_hire_on_the_31st_clamps_month_boundaries_to_the_month_end() 
 
     assert accrue(D(2026, 2, 26)).full_months == 0
     assert accrue(D(2026, 2, 27)).full_months == 1
+
+
+# --- Границы месяцев и годовщины на датах, где верное и мутированное поведение
+# расходятся (PR #179 review, п. 1б). Каждый тест проверен красным прогоном на
+# своей мутации (тело коммита).
+
+
+def test_fr_bal_001_february_of_a_leap_year_ends_the_first_month_on_the_29th() -> None:
+    # Приём 31.01.2024: граница первого месяца - 29.02.2024. На 27.02 отработано
+    # до 28.02 включительно - полных месяцев 0 (при зажатии февраля до 28 было бы 1).
+    hire = D(2024, 1, 31)
+
+    assert completed_months(hire, D(2024, 2, 27)) == 0
+    assert completed_months(hire, D(2024, 2, 28)) == 1  # 29.02 - граница, месяц полон
+
+
+def test_fr_bal_001_month_boundaries_are_counted_from_the_hire_date_not_chained() -> None:
+    # Приём 31.01.2026: границы 28.02 и 31.03. На 28.03 полный месяц один (у
+    # цепочки 28.02 + 1 месяц = 28.03 было бы два).
+    hire = D(2026, 1, 31)
+
+    assert completed_months(hire, D(2026, 3, 28)) == 1
+    assert completed_months(hire, D(2026, 3, 30)) == 2  # 31.03 - граница второго месяца
+
+
+def test_fr_bal_001_the_anniversary_of_a_29_february_hire_is_the_28th_not_1_march() -> None:
+    # Приём 29.02.2024: годовщина 2025 года - 28.02.2025. На 28.02.2025
+    # начинается второй рабочий год: накоплено 0,00 (при годовщине 01.03 год
+    # остался бы первым и накопление вышло бы около 28,00).
+    result = compute_accrual(
+        hire_date=D(2024, 2, 29),
+        as_of=D(2025, 2, 28),
+        annual_norm=NORM,
+        rounding_threshold_days=THRESHOLD,
+        excluded_days=0,
+    )
+
+    assert result.working_year_start == D(2025, 2, 28)
+    assert result.accrued == Decimal("0.00")
+
+
+def test_fr_bal_001_accrual_and_tenure_use_the_same_month_boundaries() -> None:
+    # Единый примитив: полные месяцы накопления внутри первого года равны
+    # стажу на тот же день (приём 31.01.2026, каждый день первых четырёх месяцев).
+    hire = D(2026, 1, 31)
+    day = hire
+    while day < D(2026, 5, 31):
+        accrual = compute_accrual(
+            hire_date=hire,
+            as_of=day,
+            annual_norm=NORM,
+            rounding_threshold_days=THRESHOLD,
+            excluded_days=0,
+        )
+        assert accrual.full_months == completed_months(hire, day), day
+        day += datetime.timedelta(days=1)
+
+
+def test_fr_bal_001_a_rounding_threshold_below_one_day_is_refused() -> None:
+    with pytest.raises(ValueError):
+        _accrue(D(2026, 10, 24), threshold=0)

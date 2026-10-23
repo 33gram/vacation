@@ -45,7 +45,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from decimal import ROUND_HALF_UP, Decimal
 
-_MONTHS_IN_YEAR = 12
+MONTHS_IN_YEAR = 12
 _CENT = Decimal("0.01")
 
 
@@ -64,32 +64,55 @@ class Accrual:
 def _add_months(date: datetime.date, months: int) -> datetime.date:
     """`date` + `months` месяцев; если дня нет в целевом месяце — последний
     день месяца (31.01 + 1 мес = 28.02)."""
-    index = date.year * _MONTHS_IN_YEAR + (date.month - 1) + months
-    year, month = divmod(index, _MONTHS_IN_YEAR)
+    index = date.year * MONTHS_IN_YEAR + (date.month - 1) + months
+    year, month = divmod(index, MONTHS_IN_YEAR)
     day = min(date.day, calendar.monthrange(year, month + 1)[1])
     return datetime.date(year, month + 1, day)
 
 
 def _anniversary(hire_date: datetime.date, years: int) -> datetime.date:
-    return _add_months(hire_date, years * _MONTHS_IN_YEAR)
+    return _add_months(hire_date, years * MONTHS_IN_YEAR)
+
+
+def _boundary(hire_date: datetime.date, months: int) -> datetime.date:
+    """Граница `months`-го месяца: `hire_date + months` месяцев, ВСЕГДА от
+    даты приёма, а не цепочкой от предыдущей границы (приём 31.01: вторая
+    граница 31.03, а не 28.02 + 1 месяц = 28.03)."""
+    return _add_months(hire_date, months)
+
+
+def _months_reached(hire_date: datetime.date, reached: datetime.date) -> int:
+    """ЕДИНСТВЕННАЯ реализация границ месяцев: наибольшее `m >= 0`, при котором
+    граница `m`-го месяца не позже `reached` (первый день, до которого время
+    отработано, то есть последний отработанный день + 1). И `completed_months`,
+    и `compute_accrual` считают месяцы только через неё."""
+    calendar_months = (reached.year - hire_date.year) * MONTHS_IN_YEAR
+    months = max(0, calendar_months + reached.month - hire_date.month)
+    while months > 0 and _boundary(hire_date, months) > reached:
+        months -= 1
+    while _boundary(hire_date, months + 1) <= reached:
+        months += 1
+    return months
 
 
 def completed_months(hire_date: datetime.date, as_of: datetime.date) -> int:
     """Полных рабочих месяцев от даты приёма на дату `as_of` включительно
     (стаж; не ограничено рабочим годом, в отличие от накопления). Месяц
     приёма 10.03 кончается 09.04 включительно: на 09.04 стаж 1 месяц.
-    Используется предикатом «отпуск авансом» (`T-M2-06`) и тем же счётом,
-    что накопление, чтобы два места не расходились в границе месяца."""
+    Используется предикатом «отпуск авансом» (`T-M2-06`). Границы месяцев
+    даёт тот же примитив `_months_reached`, что и накопление, - второго
+    счёта нет.
+
+    ОТКРЫТЫЙ ВОПРОС (не решён): считается КАЛЕНДАРНАЯ выслуга от даты приёма;
+    исключаемые периоды (отпуска без содержания сверх лимита, ст. 121) стаж
+    не сдвигают. Шесть месяцев по ст. 122 - «стаж непрерывной работы»,
+    поэтому, возможно, момент права на первый отпуск тоже должен сдвигаться
+    ими. Считать ли по стажу с исключениями или по календарной выслуге, НЕ
+    решено; сегодня календарная; решить вместе с появлением периодов без
+    содержания (M3)."""
     if as_of < hire_date:
         raise ValueError("Дата расчёта раньше даты приёма.")
-    reached = as_of + datetime.timedelta(days=1)
-    months = (as_of.year - hire_date.year) * _MONTHS_IN_YEAR + (as_of.month - hire_date.month)
-    months = max(0, months)
-    while months > 0 and _add_months(hire_date, months) > reached:
-        months -= 1
-    while _add_months(hire_date, months + 1) <= reached:
-        months += 1
-    return months
+    return _months_reached(hire_date, as_of + datetime.timedelta(days=1))
 
 
 def excluded_unpaid_leave_days(leave_lengths: Sequence[int], counted_limit: int) -> int:
@@ -115,6 +138,8 @@ def compute_accrual(
         raise ValueError("Число исключаемых дней не может быть отрицательным.")
     if annual_norm < 0:
         raise ValueError("Норма отпуска не может быть отрицательной.")
+    if rounding_threshold_days < 1:
+        raise ValueError("Порог округления месяца должен быть не меньше 1 дня.")
 
     if working_year_start is None:
         year_index = as_of.year - hire_date.year
@@ -133,16 +158,14 @@ def compute_accrual(
 
     # Прошедшее время без исключённых дней; `+ 1` - день расчёта отработан.
     reached = as_of - datetime.timedelta(days=excluded_days) + datetime.timedelta(days=1)
-    base = year_index * _MONTHS_IN_YEAR  # границы - от даты приёма, не от `start`
-    months = 0
-    while months < _MONTHS_IN_YEAR and _add_months(hire_date, base + months + 1) <= reached:
-        months += 1
-    remainder = max(0, (reached - _add_months(hire_date, base + months)).days)
-    if months == _MONTHS_IN_YEAR:
-        remainder = 0
-    counted = min(_MONTHS_IN_YEAR, months + (1 if remainder >= rounding_threshold_days else 0))
+    base = year_index * MONTHS_IN_YEAR  # границы - от даты приёма, не от `start`
+    months = min(MONTHS_IN_YEAR, max(0, _months_reached(hire_date, reached) - base))
+    remainder = 0
+    if months < MONTHS_IN_YEAR:
+        remainder = max(0, (reached - _boundary(hire_date, base + months)).days)
+    counted = min(MONTHS_IN_YEAR, months + (1 if remainder >= rounding_threshold_days else 0))
 
-    accrued = (Decimal(annual_norm) * counted / _MONTHS_IN_YEAR).quantize(
+    accrued = (Decimal(annual_norm) * counted / MONTHS_IN_YEAR).quantize(
         _CENT, rounding=ROUND_HALF_UP
     )
     return Accrual(

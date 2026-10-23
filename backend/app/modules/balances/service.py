@@ -196,18 +196,34 @@ async def list_entries(
     session: AsyncSession,
     employee_id: int,
     leave_type_id: int | None = None,
+    *,
+    as_of: datetime.date | None = None,
 ) -> list[LeaveBalanceEntry]:
     """История событий сотрудника (`FR-BAL-002`): по дате события, при
     равных датах — в порядке записи. У события есть тип, количество со
     знаком, причина и автор (`actor_account_id`; имя автора по аккаунту
-    подставляет слой эндпоинта)."""
+    подставляет слой эндпоинта). `as_of` - только события с `entry_date` не позже
+    этой даты (то же отсечение, что у `get_balance(as_of=)`, делается в SQL)."""
     query = select(LeaveBalanceEntry).where(LeaveBalanceEntry.employee_id == employee_id)
     if leave_type_id is not None:
         query = query.where(LeaveBalanceEntry.leave_type_id == leave_type_id)
+    if as_of is not None:
+        query = query.where(LeaveBalanceEntry.entry_date <= as_of)
     result = await session.execute(
         query.order_by(LeaveBalanceEntry.entry_date, LeaveBalanceEntry.id)
     )
     return list(result.scalars())
+
+
+async def list_leave_type_ids_with_events(session: AsyncSession, employee_id: int) -> set[int]:
+    """Виды отпуска, по которым у сотрудника есть хотя бы одно событие журнала
+    (для набора видов в ответе `GET .../balances`, `T-M2-11`)."""
+    result = await session.execute(
+        select(LeaveBalanceEntry.leave_type_id)
+        .where(LeaveBalanceEntry.employee_id == employee_id)
+        .distinct()
+    )
+    return set(result.scalars())
 
 
 async def adjust_balance(

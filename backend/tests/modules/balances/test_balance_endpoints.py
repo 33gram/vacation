@@ -74,8 +74,9 @@ async def test_fr_bal_002_opening_my_balance_gives_every_applicable_type_and_the
     assert response.status_code == 200
     body = response.json()
     by_code = {item["code"]: item for item in body["balances"]}
-    # Применимый вид: активный и полностью оплачиваемый (ВЫБРАНО, T-M2-11).
-    assert set(by_code) == {"annual_paid", "study", "time_off", "business_trip"}
+    # Набор видов (ВЫБРАНО, T-M2-11): основной ВСЕГДА + виды, по которым есть события.
+    # «Командировка» и прочие отсутствия нулевой строкой в «Моём отпуске» не показываются.
+    assert set(by_code) == {"annual_paid"}
     main = by_code["annual_paid"]
     assert Decimal(main["balance"]) > 0
     assert Decimal(main["total_balance"]) == Decimal(main["balance"])
@@ -83,10 +84,55 @@ async def test_fr_bal_002_opening_my_balance_gives_every_applicable_type_and_the
     assert main["working_year_start"] == HIRED.isoformat()
     assert [e["entry_type"] for e in main["history"]] == [ACCRUAL]
     assert main["history"][0]["actor_name"] is None  # начисляет система
-    # Вид без событий показывается нулём; единица берётся из справочника.
-    assert Decimal(by_code["study"]["balance"]) == 0 and by_code["study"]["history"] == []
-    assert by_code["time_off"]["unit"] == "working_days"
     assert body["as_of"] == TODAY.isoformat()
+
+
+async def test_fr_bal_002_a_type_with_events_appears_with_its_unit_and_others_do_not(
+    db_session, api_client
+) -> None:
+    ctx, employee, own = await _setup(db_session)
+    hr = await _account(db_session, "hr_admin", "hr-types@company.local")
+    time_off_id = (
+        await db_session.execute(text("SELECT id FROM leave_types WHERE code = 'time_off'"))
+    ).scalar_one()
+    adjust = await api_client.post(
+        _url(employee.id, "/adjust"),
+        json={"leave_type_id": time_off_id, "quantity": "8", "reason": "Переработка"},
+        headers=bearer_header(hr),
+    )
+    assert adjust.status_code == 200
+
+    response = await api_client.get(_url(employee.id), headers=bearer_header(own))
+
+    by_code = {item["code"]: item for item in response.json()["balances"]}
+    assert set(by_code) == {"annual_paid", "time_off"}  # study, business_trip - без событий
+    assert by_code["time_off"]["unit"] == "working_days"  # единица из справочника
+    assert Decimal(by_code["time_off"]["balance"]) == Decimal("8")
+
+
+async def test_fr_bal_002_the_history_is_cut_at_the_requested_date(db_session, api_client) -> None:
+    ctx, employee, own = await _setup(db_session)
+    hr = await _account(db_session, "hr_admin", "hr-cut@company.local")
+    adjust_date = HIRED + datetime.timedelta(days=100)
+    await api_client.post(
+        _url(employee.id, "/adjust"),
+        json={
+            "leave_type_id": ctx.leave_type_id,
+            "quantity": "3",
+            "reason": "Позже",
+            "entry_date": adjust_date.isoformat(),
+        },
+        headers=bearer_header(hr),
+    )
+
+    earlier = await api_client.get(
+        _url(employee.id),
+        params={"as_of": (adjust_date - datetime.timedelta(days=1)).isoformat()},
+        headers=bearer_header(own),
+    )
+
+    main = earlier.json()["balances"][0]
+    assert MANUAL_ADJUSTMENT not in [e["entry_type"] for e in main["history"]]
 
 
 async def test_fr_bal_002_the_history_shows_the_name_of_the_author(db_session, api_client) -> None:

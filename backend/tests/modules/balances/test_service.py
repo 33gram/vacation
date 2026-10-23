@@ -324,3 +324,17 @@ async def test_history_can_be_limited_to_one_leave_type_and_never_shows_other_em
 
     assert sorted(e.quantity for e in everything) == [Decimal("10.00"), Decimal("28.00")]
     assert [e.quantity for e in one_type] == [Decimal("28.00")]
+
+
+async def test_fr_bal_002_list_entries_cuts_the_history_at_the_date_in_sql(db_session) -> None:
+    ctx = await make_context(db_session, "cut")
+    for day, quantity in ((datetime.date(2026, 3, 1), "1"), (datetime.date(2026, 6, 1), "2")):
+        await _adjust(db_session, ctx, quantity, "Причина", ctx.actor_id, entry_date=day)
+
+    cut = await list_entries(
+        db_session, ctx.employee_id, ctx.leave_type_id, as_of=datetime.date(2026, 3, 1)
+    )
+    everything = await list_entries(db_session, ctx.employee_id, ctx.leave_type_id)
+
+    assert [e.quantity for e in cut] == [Decimal("1")]  # день события включается
+    assert len(everything) == 2

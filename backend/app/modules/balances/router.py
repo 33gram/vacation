@@ -22,7 +22,7 @@ from __future__ import annotations
 import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.time_utils import utcnow
@@ -33,6 +33,7 @@ from app.models.leave_type import LeaveType
 from app.modules.auth.rbac import get_current_account, require_roles
 from app.modules.balances.accrual import working_year_containing
 from app.modules.balances.service import (
+    MAIN_LEAVE_TYPE_CODE,
     BalanceEntryError,
     accrue_before_read,
     adjust_balance,
@@ -40,6 +41,7 @@ from app.modules.balances.service import (
     get_total_balance,
     get_working_year,
     list_entries,
+    list_leave_type_ids_with_events,
 )
 from app.modules.employees import employee_service
 from app.schemas.balance import (
@@ -55,12 +57,13 @@ router = APIRouter(prefix="/api/employees/{employee_id}/balances", tags=["balanc
 
 _require_balance_editor = require_roles("hr_admin")
 
-# Применимый вид (`FR-BAL-002`: «по каждому применимому виду оплачиваемого отпуска») -
-# ВЫБРАНО: активный и полностью оплачиваемый (`is_active`, `is_paid = full`); вид без
-# событий показывается нулём. Применимость по категориям сотрудников не определяется
-# (`A-3.1`). Следствие, которое данные справочника не позволяют отсечь: «командировка»
-# (`business_trip`) тоже полностью оплачивается и показывается нулевой строкой.
-_APPLICABLE_PAID = "full"
+# Набор видов в ответе (`FR-BAL-002`: «по каждому применимому виду оплачиваемого
+# отпуска») - ВЫБРАНО: основной вид ВСЕГДА (нулевая строка у него осмысленна: «у вас пока
+# ноль») плюс любой вид, по которому у сотрудника есть события журнала. Причина: в
+# справочнике нет признака «по виду ведётся остаток» (`annual_limit` пуст у всех видов,
+# `reduces_main_balance` означает другое), фильтр по `is_active`/`is_paid` пропускал бы
+# «командировку» нулевой строкой в «Моём отпуске». Остальные виды появятся сами, когда
+# M3 начнёт писать по ним использование. Настоящий пробел - `T-M2-20`.
 
 
 async def _author_names(session: AsyncSession, account_ids: set[int]) -> dict[int, str]:
@@ -97,10 +100,11 @@ async def get_employee_balances(
     await accrue_before_read(session, employee_id=employee_id, as_of=min(on_date, today))
     await session.commit()
 
+    with_events = await list_leave_type_ids_with_events(session, employee_id)
     leave_types = (
         await session.execute(
             select(LeaveType)
-            .where(LeaveType.is_active.is_(True), LeaveType.is_paid == _APPLICABLE_PAID)
+            .where(or_(LeaveType.code == MAIN_LEAVE_TYPE_CODE, LeaveType.id.in_(with_events)))
             .order_by(LeaveType.id)
         )
     ).scalars().all()
@@ -109,17 +113,16 @@ async def get_employee_balances(
     histories = {}
     author_ids: set[int] = set()
     for leave_type in leave_types:
-        entries = [
-            entry
-            for entry in await list_entries(session, employee_id, leave_type.id)
-            if entry.entry_date <= on_date
-        ]
+        entries = await list_entries(session, employee_id, leave_type.id, as_of=on_date)
         histories[leave_type.id] = entries
         author_ids |= {e.actor_account_id for e in entries if e.actor_account_id is not None}
     names = await _author_names(session, author_ids)
 
     for leave_type in leave_types:
         if employee.hire_date <= on_date:
+            # Чистая функция, а не `get_working_year`: сотрудник уже загружен выше,
+            # лишний запрос за датой приёма не нужен (в `POST` её нет - там берётся
+            # `get_working_year`, она оборачивает эту же функцию).
             year_start, year_end = working_year_containing(employee.hire_date, on_date)
             balance = await get_balance(
                 session, employee_id, leave_type.id, year_start, as_of=on_date

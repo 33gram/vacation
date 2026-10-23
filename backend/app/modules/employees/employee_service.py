@@ -19,12 +19,14 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import hash_password
+from app.core.time_utils import utcnow
 from app.models.account import Account
 from app.models.department import Department
 from app.models.employee import Employee
 from app.modules.auth.password_policy import validate_password_strength
 from app.modules.auth.rbac import is_in_management_chain, list_subordinate_employee_ids
 from app.modules.auth.repository import get_account_by_employee_id
+from app.modules.balances.service import recalculate_balance
 from app.modules.business_rules.service import PASSWORD_MIN_LENGTH, get_int
 from app.modules.employees.unique_violations import (
     email_conflict_message,
@@ -44,6 +46,17 @@ from app.schemas.employee import (
 # четырежды (в `EmployeeCreate`, `EmployeeUpdate`, конструкторе
 # `create_employee` и блоке присваиваний `update_employee`).
 _CARD_FIELD_NAMES = tuple(EmployeeCardFields.model_fields)
+
+# Поля карточки, смена которых наступает как `WHEN` критерия `FR-BAL-003` и
+# вызывает пересчёт остатка (`recalculate_balance`): изменилось ЛЮБОЕ поле из
+# набора - пересчёт вызывается (набор управляет условием в `update_employee`).
+# Критерий называет ещё и категорию (`leave_category`), но СЕГОДНЯ норма
+# отпуска от неё не зависит (удлинённый и дополнительный отпуск - за границами
+# MVP, `A-3.1`), поэтому её здесь нет; когда норма начнёт зависеть от
+# категории, её надо добавить сюда И научить `recalculate_balance` её учитывать
+# (поле, добавленное только сюда, вызовет пересчёт, который ничего не запишет). Ставка
+# занятости норму не меняет вовсе (ст. 93 ТК РФ, `requirements.md` v1.24).
+BALANCE_RECALCULATION_FIELDS = ("hire_date",)
 
 # Роли, видящие ЛЮБУЮ карточку (`plan.md` §5.1); `accountant` — только
 # чтение, ограничение на запись обеспечивает `require_roles` в роутере,
@@ -337,8 +350,20 @@ async def _apply_auth_type_change(
 
 
 async def update_employee(
-    session: AsyncSession, employee_id: int, payload: EmployeeUpdate
+    session: AsyncSession,
+    employee_id: int,
+    payload: EmployeeUpdate,
+    *,
+    actor_account_id: int,
 ) -> Employee:
+    """Правка карточки. Если изменилось поле из `BALANCE_RECALCULATION_FIELDS`
+    (дата приёма), в ТОЙ ЖЕ транзакции выполняется пересчёт остатка
+    (`FR-BAL-003`, `T-M2-07`) от имени `actor_account_id`; отказ пересчёта
+    (`BalanceEntryError`) уходит вызывающему, и `commit` не вызывается (проверено
+    тестом); что правка карточки при этом не сохраняется, обеспечивает закрытие
+    сессии без фиксации в `get_db_session` - в тестах сессия общая, там это не
+    проверяется. К журналу
+    остатка модуль обращается только через функции `balances`."""
     employee = await session.get(Employee, employee_id)
     if employee is None:
         raise EmployeeNotFoundError(f"Сотрудник {employee_id} не найден")
@@ -368,7 +393,35 @@ async def update_employee(
     await _require_email_free(session, payload.email, exclude_employee_id=employee.id)
     await _apply_auth_type_change(session, account, payload)
 
+    # Строка сотрудника берётся под замок ЗДЕСЬ - после цепочки подчинения (если
+    # она была нужна), перед чтением "было". Порядок "цепочка -> строка" тот же,
+    # что у `deactivate_employee`, `import_employees` и `update_department`
+    # (они берут цепочку до записи строк); замок строки в начале функции дал бы
+    # обратный порядок и взаимную блокировку. До этого места объект `employee`
+    # не изменялся (меняются `account` и, ниже, поля карточки), поэтому
+    # `refresh` не затирает несохранённых правок и даёт последнее зафиксированное
+    # значение. Нужен именно `refresh`: `session.get(..., with_for_update=True)`
+    # для уже загруженного объекта атрибуты не обновляет.
+    await session.refresh(employee, with_for_update=True)
+    previous = {name: getattr(employee, name) for name in BALANCE_RECALCULATION_FIELDS}
     _apply_card_fields(employee, payload)
+
+    changes = {
+        name: (previous[name], getattr(employee, name))
+        for name in BALANCE_RECALCULATION_FIELDS
+        if getattr(employee, name) != previous[name]
+    }
+    if changes:
+        await recalculate_balance(
+            session,
+            employee_id=employee.id,
+            actor_account_id=actor_account_id,
+            # Дата расчёта - из единого источника времени проекта (UTC), как и
+            # остальные метки системы; бизнес-дата в местном поясе - отдельное
+            # решение, не принятое здесь.
+            as_of=utcnow().date(),
+            changes=changes,
+        )
 
     try:
         await session.commit()

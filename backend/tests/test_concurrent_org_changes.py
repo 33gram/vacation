@@ -35,16 +35,21 @@ import uuid
 from collections.abc import Awaitable
 from contextlib import AsyncExitStack, asynccontextmanager
 
-from sqlalchemy import delete, or_, update
+from sqlalchemy import delete, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
 from app.db.session import get_engine
 from app.models.account import Account
 from app.models.department import Department
 from app.models.employee import Employee
+from app.models.leave_balance_entry import ACCRUAL, RECALCULATION, LeaveBalanceEntry
 from app.modules.employees import department_service, employee_service
 from app.schemas.department import DepartmentUpdate
 from app.schemas.employee import EmployeeDeactivate, EmployeeUpdate
+
+# `update_employee` требует автора только для пересчёта остатка при смене даты
+# приёма (T-M2-07); эти тесты дату не меняют, автор не используется.
+_UNUSED_ACTOR = 0
 
 
 @asynccontextmanager
@@ -195,8 +200,12 @@ async def test_concurrent_employee_manager_swap_rejects_one_and_avoids_cycle() -
             )
 
             results = await _run_racing_pair(
-                employee_service.update_employee(session_1, employee_a_id, payload_1),
-                employee_service.update_employee(session_2, employee_b_id, payload_2),
+                employee_service.update_employee(
+                    session_1, employee_a_id, payload_1, actor_account_id=_UNUSED_ACTOR
+                ),
+                employee_service.update_employee(
+                    session_2, employee_b_id, payload_2, actor_account_id=_UNUSED_ACTOR
+                ),
             )
 
         successes = [r for r in results if not isinstance(r, Exception)]
@@ -301,7 +310,9 @@ async def test_concurrent_deactivate_and_assign_subordinate_never_leaves_bad_sta
 
             results = await _run_racing_pair(
                 employee_service.deactivate_employee(session_1, employee_a_id, deactivate_payload),
-                employee_service.update_employee(session_2, employee_b_id, assign_payload),
+                employee_service.update_employee(
+                    session_2, employee_b_id, assign_payload, actor_account_id=_UNUSED_ACTOR
+                ),
             )
 
         successes = [r for r in results if not isinstance(r, Exception)]
@@ -458,6 +469,136 @@ async def test_concurrent_deactivate_and_assign_department_head_never_leaves_bad
             )
             await cleanup.execute(
                 delete(Employee).where(Employee.personnel_number == personnel_number_a)
+            )
+            await cleanup.execute(delete(Department).where(Department.name == department_name))
+            await cleanup.commit()
+
+
+async def test_concurrent_hire_date_edits_recalculate_from_the_committed_previous_date() -> None:
+    """Две одновременные правки даты приёма одного сотрудника (T-M2-07): «было»
+    читается под замком строки, поэтому вторая правка пересчитывает от даты,
+    зафиксированной первой, а не от устаревшей. Без `refresh` под замком причина
+    второго пересчёта назвала бы исходную дату вместо зафиксированной первой.
+
+    Что НЕ доказано: отсутствие взаимной блокировки - вывод из порядка замков
+    (цепочка -> строка) по чтению кода и правилам блокировок PostgreSQL, этот
+    тест путь с цепочкой подчинения не гоняет."""
+    engine = get_engine()
+    marker = uuid.uuid4().hex[:12]
+    today = datetime.datetime.now(datetime.UTC).date()
+    original = today - datetime.timedelta(days=200)
+    date_a = original + datetime.timedelta(days=10)
+    date_b = original + datetime.timedelta(days=20)
+    department_name = f"Race Hire Dept {marker}"
+    personnel_number = f"RACE-H-{marker}"
+    email = f"race-hire-{marker}@company.local"
+
+    def payload(hire_date: datetime.date, department_id: int) -> EmployeeUpdate:
+        return EmployeeUpdate(
+            full_name="Race Hire",
+            personnel_number=personnel_number,
+            department_id=department_id,
+            position="Engineer",
+            hire_date=hire_date,
+            email=email,
+            work_schedule_type="standard",
+            auth_type="ldap",
+        )
+
+    async with _fresh_session(engine) as setup:
+        department = Department(name=department_name)
+        setup.add(department)
+        await setup.flush()
+        employee = Employee(
+            full_name="Race Hire",
+            personnel_number=personnel_number,
+            department_id=department.id,
+            position="Engineer",
+            hire_date=original,
+            email=email,
+            work_schedule_type="standard",
+        )
+        setup.add(employee)
+        await setup.flush()
+        account = Account(employee_id=employee.id, auth_type="ldap", role="employee")
+        setup.add(account)
+        await setup.flush()
+        leave_type_id = (
+            await setup.execute(text("SELECT id FROM leave_types WHERE code = 'annual_paid'"))
+        ).scalar_one()
+        setup.add(
+            LeaveBalanceEntry(
+                employee_id=employee.id,
+                leave_type_id=leave_type_id,
+                working_year_start=original,
+                working_year_end=original.replace(year=original.year + 1),
+                entry_type=ACCRUAL,
+                quantity=15,
+                entry_date=today,
+            )
+        )
+        await setup.commit()
+        employee_id, account_id, department_id = employee.id, account.id, department.id
+    try:
+        async with AsyncExitStack() as stack:
+            session_1 = await stack.enter_async_context(_fresh_session(engine))
+            session_2 = await stack.enter_async_context(_fresh_session(engine))
+            results = await _run_racing_pair(
+                employee_service.update_employee(
+                    session_1,
+                    employee_id,
+                    payload(date_a, department_id),
+                    actor_account_id=account_id,
+                ),
+                employee_service.update_employee(
+                    session_2,
+                    employee_id,
+                    payload(date_b, department_id),
+                    actor_account_id=account_id,
+                ),
+            )
+        assert all(not isinstance(r, Exception) for r in results), results
+
+        async with _fresh_session(engine) as verify:
+            final = (await verify.get(Employee, employee_id)).hire_date
+            reasons = [
+                e.reason
+                for e in (
+                    await verify.execute(
+                        select(LeaveBalanceEntry).where(
+                            LeaveBalanceEntry.employee_id == employee_id,
+                            LeaveBalanceEntry.entry_type == RECALCULATION,
+                        )
+                    )
+                ).scalars()
+            ]
+        first = date_a if final == date_b else date_b
+        assert final in (date_a, date_b)
+        # Изменения сериализованы: второй пересчёт называет «было» = дату первой
+        # правки, и НИ ОДИН пересчёт не называет переход с исходной даты на
+        # итоговую (так выглядела бы устаревшая «было»).
+        stale = f"с {original:%d.%m.%Y} на {final:%d.%m.%Y}"
+        assert not any(stale in reason for reason in reasons), reasons
+        expected = f"с {first:%d.%m.%Y} на {final:%d.%m.%Y}"
+        assert any(expected in reason for reason in reasons), reasons
+    finally:
+        async with _fresh_session(engine) as cleanup:
+            await cleanup.execute(
+                text(
+                    "DELETE FROM leave_balance_entries WHERE employee_id IN "
+                    "(SELECT id FROM employees WHERE personnel_number = :pn)"
+                ),
+                {"pn": personnel_number},
+            )
+            await cleanup.execute(
+                text(
+                    "DELETE FROM accounts WHERE employee_id IN "
+                    "(SELECT id FROM employees WHERE personnel_number = :pn)"
+                ),
+                {"pn": personnel_number},
+            )
+            await cleanup.execute(
+                delete(Employee).where(Employee.personnel_number == personnel_number)
             )
             await cleanup.execute(delete(Department).where(Department.name == department_name))
             await cleanup.commit()

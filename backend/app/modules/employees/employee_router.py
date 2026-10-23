@@ -29,6 +29,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.session import get_db_session
 from app.models.account import Account
 from app.modules.auth.rbac import get_current_account, require_roles
+from app.modules.balances.service import BalanceEntryError
 from app.modules.employees import employee_service
 from app.modules.employees.import_parsing import ImportFileError, parse_import_file
 from app.modules.employees.import_service import import_employees
@@ -143,7 +144,7 @@ async def update_employee(
     employee_id: int,
     payload: EmployeeUpdate,
     session: AsyncSession = Depends(get_db_session),
-    _: Account = Depends(_require_employee_admin),
+    account: Account = Depends(_require_employee_admin),
 ) -> EmployeeOut:
     # PR #143 review, коммит 1: WeakPasswordError из update_employee
     # (путь `_apply_auth_type_change`, T-M1-34/T-M1-38) ловится сеткой
@@ -151,10 +152,14 @@ async def update_employee(
     # (`test_main_exception_handlers.py`), что это не оставляет
     # частично применённых изменений в БД, см. тело коммита.
     try:
-        employee = await employee_service.update_employee(session, employee_id, payload)
+        employee = await employee_service.update_employee(
+            session, employee_id, payload, actor_account_id=account.id
+        )
     except employee_service.EmployeeNotFoundError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
-    except ValueError as exc:
+    except (ValueError, BalanceEntryError) as exc:
+        # 400, как у остальных отказов этого эндпоинта (бизнес-правило не
+        # допускает правку); 409 в проекте занят нарушением уникальности.
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
     return await employee_service.to_employee_out(session, employee)
 

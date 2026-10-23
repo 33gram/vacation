@@ -11,9 +11,11 @@ import datetime
 
 from sqlalchemy import select
 
+from app.core.time_utils import utcnow
 from app.models.employee import Employee
 from app.models.leave_balance_entry import RECALCULATION, LeaveBalanceEntry
 from app.modules.balances.service import accrue_leave, adjust_balance
+from app.modules.employees import employee_service
 from app.modules.employees.employee_service import BALANCE_RECALCULATION_FIELDS
 from tests.modules.auth.factories import (
     bearer_header,
@@ -23,7 +25,7 @@ from tests.modules.auth.factories import (
 )
 from tests.modules.balances.helpers import make_context
 
-TODAY = datetime.date.today()
+TODAY = utcnow().date()  # тот же источник, что в update_employee
 HIRED = TODAY - datetime.timedelta(days=200)
 
 
@@ -185,3 +187,50 @@ async def test_fr_bal_003_a_refusal_of_the_recalculation_is_a_400_and_writes_no_
     assert response.status_code == 400
     assert "manual_adjustment" in response.json()["detail"]
     assert len(await _events(db_session, employee.id)) == before
+
+
+async def test_fr_bal_003_a_field_added_to_the_set_triggers_the_recalculation(
+    db_session, api_client, monkeypatch
+) -> None:
+    # Набор BALANCE_RECALCULATION_FIELDS УПРАВЛЯЕТ условием: добавленное в него поле
+    # вызывает пересчёт. Без этого теста перечень выглядел бы управляющим и не был им.
+    ctx, employee, admin, department = await _setup(db_session)
+    calls: list[dict] = []
+
+    async def spy(session, **kwargs):
+        calls.append(kwargs["changes"])
+
+    monkeypatch.setattr(employee_service, "recalculate_balance", spy)
+    monkeypatch.setattr(
+        employee_service, "BALANCE_RECALCULATION_FIELDS", ("hire_date", "leave_category")
+    )
+
+    response = await api_client.put(
+        f"/api/employees/{employee.id}",
+        json=_payload(employee, department.id, leave_category="extended"),
+        headers=bearer_header(admin),
+    )
+
+    assert response.status_code == 200
+    assert calls == [{"leave_category": (None, "extended")}]
+
+
+async def test_fr_bal_003_a_field_outside_the_set_does_not_call_the_recalculation(
+    db_session, api_client, monkeypatch
+) -> None:
+    ctx, employee, admin, department = await _setup(db_session)
+    calls: list[dict] = []
+
+    async def spy(session, **kwargs):
+        calls.append(kwargs["changes"])
+
+    monkeypatch.setattr(employee_service, "recalculate_balance", spy)
+
+    response = await api_client.put(
+        f"/api/employees/{employee.id}",
+        json=_payload(employee, department.id, leave_category="extended"),
+        headers=bearer_header(admin),
+    )
+
+    assert response.status_code == 200
+    assert calls == []

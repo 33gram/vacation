@@ -38,6 +38,7 @@ T-M2-08, `FR-BAL-001`, `FR-BAL-002`, `FR-BAL-004`).
 from __future__ import annotations
 
 import datetime
+from collections.abc import Mapping
 from dataclasses import dataclass
 from decimal import Decimal
 
@@ -93,9 +94,15 @@ class BalanceEntryError(Exception):
 
 class AccrualClosedError(BalanceEntryError):
     """Начисление по рабочему году закрыто начальным остатком: в этом или
-    более позднем году есть событие `initial_import`. Начальный остаток
-    уже включает прошлое использование, прибавлять к нему вычисленное право -
-    двойной счёт, а годы ДО него им же и покрыты. Ничего не записано."""
+    более позднем году есть событие `initial_import`. Ничего не записано.
+
+    ПРЕДПОЛОЖЕНИЕ (не факт): начальный остаток уже включает прошлое
+    использование (прибавлять к нему вычисленное право - двойной счёт) и
+    покрывает все годы ДО года импорта. Что означает начальный остаток, решает
+    `T-M1-36`, и она ещё не решила. ИЗВЕСТНАЯ ДЫРА этого предположения: год
+    импорта закрыт ЦЕЛИКОМ, поэтому его часть после даты импорта не
+    начисляется никогда (следующий год стартует с нуля); кандидаты на
+    решение - в тексте `T-M1-36`."""
 
 
 async def get_balance(
@@ -415,8 +422,7 @@ async def recalculate_balance(
     employee_id: int,
     actor_account_id: int | None,
     as_of: datetime.date,
-    old_hire_date: datetime.date,
-    new_hire_date: datetime.date,
+    changes: Mapping[str, tuple[object, object]],
 ) -> RecalculationResult:
     """Пересчёт остатка при смене даты приёма (`FR-BAL-003`, `T-M2-07`).
 
@@ -439,13 +445,19 @@ async def recalculate_balance(
 
     Сотрудник без событий основного вида - пусто: начислять по нему будет
     ленивое начисление при чтении (`T-M2-19`). Дата приёма не менялась - пусто.
-    Смена категории сюда не приходит: норма от неё сегодня не зависит (`A-3.1`).
+    `changes` - изменённые поля карточки: имя -> (было, стало). Пересчёт идёт
+    только по `hire_date`; любое другое имя (например, `leave_category`) принимается,
+    но событий не пишет: норма от него сегодня не зависит (`A-3.1`), и это
+    намеренно, а не обработано.
     Годы, оставшиеся прежними, пересчёту не подвергаются (уменьшать там нечего:
     границы и норма те же); уменьшение в сохранившемся году эта функция не
     производит.
 
     Автор обязателен; `recalculation` пишется только функцией
-    `_write_recalculation` с проверкой причины (`strip()`) и автора. Закрывается
+    `_write_recalculation` с проверкой причины (`strip()`) и автора. Проверка
+    автора стоит и здесь, и там НАМЕРЕННО: здесь она отказывает до блокировки и
+    чтения журнала, там - последний рубеж для любого другого вызывающего
+    `_write_recalculation`; второй слой не лишний. Закрывается
     именно НАЧИСЛЕННОЕ (сумма событий `ALREADY_ACCRUED_ENTRY_TYPES`), а не остаток
     `get_balance`: остаток включал бы списания и корректировки, которых в
     исчезающем году быть не должно (иначе отказ выше), и закрытие по остатку
@@ -453,6 +465,9 @@ async def recalculate_balance(
     Замок - как в `accrue_leave`, порядок тот же: вид отпуска, затем строка
     сотрудника (`accrue_all_working_years` берёт её повторно в той же
     транзакции)."""
+    if "hire_date" not in changes:
+        # Других полей, влияющих на норму, нет: ни замка, ни чтения журнала.
+        return RecalculationResult(closed_years={}, catch_up=CatchUpResult({}, {}))
     if actor_account_id is None:
         raise BalanceEntryError("Не указан автор пересчёта.")
     leave_type_id = await session.scalar(
@@ -463,6 +478,9 @@ async def recalculate_balance(
     employee = await session.get(Employee, employee_id, with_for_update=True)
     if employee is None:
         raise BalanceEntryError("Сотрудник не найден.")
+    old_hire_date, new_hire_date = changes["hire_date"]
+    if not isinstance(old_hire_date, datetime.date) or not isinstance(new_hire_date, datetime.date):
+        raise BalanceEntryError("Дата приёма в изменениях должна быть датой.")
     if employee.hire_date != new_hire_date:
         raise BalanceEntryError("Дата приёма в карточке не совпадает с новой датой пересчёта.")
     empty = RecalculationResult(closed_years={}, catch_up=CatchUpResult({}, {}))
@@ -518,6 +536,8 @@ async def recalculate_balance(
         )
         if accrued == 0:
             continue
+        # События одного года могут нести разный конец (сдвиг исключаемыми
+        # днями, FR-BAL-001/2): берём самый поздний - итоговую границу года.
         end = max(event.working_year_end for event in year_events)
         await _write_recalculation(
             session,

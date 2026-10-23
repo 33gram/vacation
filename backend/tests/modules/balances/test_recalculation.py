@@ -78,8 +78,7 @@ async def _recalculate(db_session, ctx: Context, old: datetime.date, new: dateti
         employee_id=ctx.employee_id,
         actor_account_id=kw.pop("actor_account_id", ctx.actor_id),
         as_of=kw.pop("as_of", AS_OF),
-        old_hire_date=old,
-        new_hire_date=new,
+        changes={"hire_date": (old, new)},
     )
 
 
@@ -422,3 +421,49 @@ async def test_br_8_catch_up_refuses_a_leave_type_that_is_not_the_main_one(db_se
 
     count = await db_session.execute(select(func.count()).select_from(LeaveBalanceEntry))
     assert count.scalar_one() == 0
+
+
+async def test_fr_bal_003_a_field_without_an_effect_on_the_norm_writes_nothing(db_session) -> None:
+    # Поле, переданное в `changes`, но не влияющее на норму (категория, A-3.1):
+    # пересчёт принимает его и событий не пишет.
+    ctx = await _hired(db_session, D(2026, 3, 10))
+    await _accrue(db_session, ctx, AS_OF)
+    before = len(await _events(db_session, ctx))
+
+    result = await recalculate_balance(
+        db_session,
+        employee_id=ctx.employee_id,
+        actor_account_id=ctx.actor_id,
+        as_of=AS_OF,
+        changes={"leave_category": (None, "extended")},
+    )
+
+    assert result.closed_years == {} and result.catch_up.accrued == {}
+    assert len(await _events(db_session, ctx)) == before
+
+
+# --- ИЗВЕСТНАЯ ДЫРА (T-M1-36), зафиксированная как есть, а не как верное поведение --
+
+
+async def test_known_gap_t_m1_36_the_part_of_the_import_year_after_the_import_is_never_accrued(
+    db_session,
+) -> None:
+    # НЕ ожидаемое правильное поведение. Год импорта закрыт для начисления ЦЕЛИКОМ,
+    # поэтому часть года после даты импорта не начисляется никогда: следующий год
+    # стартует с нуля. Что делать (импорт с раздельными начислено/использовано;
+    # импорт только на границу года; ручная корректировка HR) - решает T-M1-36;
+    # когда она решит, этот тест надо заменить.
+    ctx = await _hired(db_session, D(2015, 3, 10))
+    db_session.add(_import_event(ctx, D(2026, 3, 10), Decimal("5")))
+    await db_session.flush()
+
+    result = await accrue_all_working_years(
+        db_session,
+        employee_id=ctx.employee_id,
+        leave_type_id=ctx.leave_type_id,
+        as_of=D(2027, 3, 9),  # последний день года импорта
+    )
+
+    assert D(2026, 3, 10) in result.skipped  # год пропущен
+    assert result.accrued == {}
+    assert await _balance(db_session, ctx, D(2026, 3, 10)) == Decimal("5")  # осталось 5, не 28

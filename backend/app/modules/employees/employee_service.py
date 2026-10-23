@@ -14,13 +14,12 @@ e-mail уже заняты первой, оборванной попыткой).
 
 from __future__ import annotations
 
-import datetime
-
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import hash_password
+from app.core.time_utils import utcnow
 from app.models.account import Account
 from app.models.department import Department
 from app.models.employee import Employee
@@ -49,11 +48,13 @@ from app.schemas.employee import (
 _CARD_FIELD_NAMES = tuple(EmployeeCardFields.model_fields)
 
 # Поля карточки, смена которых наступает как `WHEN` критерия `FR-BAL-003` и
-# вызывает пересчёт остатка (`recalculate_balance`). Критерий называет ещё и
-# категорию (`leave_category`), но СЕГОДНЯ норма отпуска от неё не зависит
-# (удлинённый и дополнительный отпуск - за границами MVP, `A-3.1`), поэтому
-# смена категории пересчёта не вызывает; когда норма начнёт зависеть от
-# категории, её надо добавить сюда И научить пересчёт её учитывать. Ставка
+# вызывает пересчёт остатка (`recalculate_balance`): изменилось ЛЮБОЕ поле из
+# набора - пересчёт вызывается (набор управляет условием в `update_employee`).
+# Критерий называет ещё и категорию (`leave_category`), но СЕГОДНЯ норма
+# отпуска от неё не зависит (удлинённый и дополнительный отпуск - за границами
+# MVP, `A-3.1`), поэтому её здесь нет; когда норма начнёт зависеть от
+# категории, её надо добавить сюда И научить `recalculate_balance` её учитывать
+# (поле, добавленное только сюда, вызовет пересчёт, который ничего не запишет). Ставка
 # занятости норму не меняет вовсе (ст. 93 ТК РФ, `requirements.md` v1.24).
 BALANCE_RECALCULATION_FIELDS = ("hire_date",)
 
@@ -393,14 +394,21 @@ async def update_employee(
     previous = {name: getattr(employee, name) for name in BALANCE_RECALCULATION_FIELDS}
     _apply_card_fields(employee, payload)
 
-    if employee.hire_date != previous["hire_date"]:
+    changes = {
+        name: (previous[name], getattr(employee, name))
+        for name in BALANCE_RECALCULATION_FIELDS
+        if getattr(employee, name) != previous[name]
+    }
+    if changes:
         await recalculate_balance(
             session,
             employee_id=employee.id,
             actor_account_id=actor_account_id,
-            as_of=datetime.date.today(),
-            old_hire_date=previous["hire_date"],
-            new_hire_date=employee.hire_date,
+            # Дата расчёта - из единого источника времени проекта (UTC), как и
+            # остальные метки системы; бизнес-дата в местном поясе - отдельное
+            # решение, не принятое здесь.
+            as_of=utcnow().date(),
+            changes=changes,
         )
 
     try:

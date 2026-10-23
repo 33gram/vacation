@@ -46,6 +46,10 @@ from app.modules.employees import department_service, employee_service
 from app.schemas.department import DepartmentUpdate
 from app.schemas.employee import EmployeeDeactivate, EmployeeUpdate
 
+# `update_employee` требует автора только для пересчёта остатка при смене даты
+# приёма (T-M2-07); эти тесты дату не меняют, автор не используется.
+_UNUSED_ACTOR = 0
+
 
 @asynccontextmanager
 async def _fresh_session(engine: AsyncEngine):
@@ -195,8 +199,12 @@ async def test_concurrent_employee_manager_swap_rejects_one_and_avoids_cycle() -
             )
 
             results = await _run_racing_pair(
-                employee_service.update_employee(session_1, employee_a_id, payload_1),
-                employee_service.update_employee(session_2, employee_b_id, payload_2),
+                employee_service.update_employee(
+                    session_1, employee_a_id, payload_1, actor_account_id=_UNUSED_ACTOR
+                ),
+                employee_service.update_employee(
+                    session_2, employee_b_id, payload_2, actor_account_id=_UNUSED_ACTOR
+                ),
             )
 
         successes = [r for r in results if not isinstance(r, Exception)]
@@ -301,7 +309,9 @@ async def test_concurrent_deactivate_and_assign_subordinate_never_leaves_bad_sta
 
             results = await _run_racing_pair(
                 employee_service.deactivate_employee(session_1, employee_a_id, deactivate_payload),
-                employee_service.update_employee(session_2, employee_b_id, assign_payload),
+                employee_service.update_employee(
+                    session_2, employee_b_id, assign_payload, actor_account_id=_UNUSED_ACTOR
+                ),
             )
 
         successes = [r for r in results if not isinstance(r, Exception)]

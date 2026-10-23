@@ -13,13 +13,14 @@ import datetime
 from decimal import Decimal
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 
 from app.models.employee import Employee
 from app.models.leave_balance_entry import (
     ACCRUAL,
     INITIAL_IMPORT,
     RECALCULATION,
+    USAGE,
     LeaveBalanceEntry,
 )
 from app.modules.balances import service
@@ -27,6 +28,7 @@ from app.modules.balances.service import (
     ALREADY_ACCRUED_ENTRY_TYPES,
     AccrualClosedError,
     BalanceEntryError,
+    LeaveTypeNotSeededError,
     accrue_all_working_years,
     accrue_leave,
     adjust_balance,
@@ -467,3 +469,170 @@ async def test_known_gap_t_m1_36_the_part_of_the_import_year_after_the_import_is
     assert D(2026, 3, 10) in result.skipped  # год пропущен
     assert result.accrued == {}
     assert await _balance(db_session, ctx, D(2026, 3, 10)) == Decimal("5")  # осталось 5, не 28
+
+
+# --- автор и причина у КАЖДОЙ записи, порождённой пересчётом (FR-BAL-003) -----
+
+
+async def test_fr_bal_003_a_shift_by_whole_years_leaves_a_record_with_author_and_reason(
+    db_session,
+) -> None:
+    # Ни один год не исчезает (прежний год остаётся годовщиной), закрывающих строк
+    # нет; запись с автором и причиной, названной сменой даты, - начисление по
+    # новому раннему году.
+    ctx = await _hired(db_session, D(2026, 3, 10))
+    await _accrue(db_session, ctx, AS_OF)
+    await _set_hire(db_session, ctx, D(2025, 3, 10))
+
+    await _recalculate(db_session, ctx, D(2026, 3, 10), D(2025, 3, 10))
+
+    new_year = [e for e in await _events(db_session, ctx) if e.working_year_start == D(2025, 3, 10)]
+    assert len(new_year) == 1
+    (event,) = new_year
+    assert event.entry_type == ACCRUAL  # тип прежний: заработанное право
+    assert event.actor_account_id == ctx.actor_id
+    assert "10.03.2026" in event.reason and "10.03.2025" in event.reason
+
+
+async def test_fr_bal_001_an_ordinary_accrual_is_still_written_without_an_author(
+    db_session,
+) -> None:
+    ctx = await _hired(db_session, D(2026, 3, 10))
+
+    await _accrue(db_session, ctx, AS_OF)
+
+    (event,) = await _events(db_session, ctx)
+    assert event.actor_account_id is None
+    assert "Пересчёт" not in event.reason
+
+
+async def test_fr_bal_003_every_event_born_of_a_recalculation_has_author_and_reason(
+    db_session,
+) -> None:
+    ctx = await _hired(db_session, D(2026, 3, 10))
+    await _accrue(db_session, ctx, AS_OF)
+    before = {e.id for e in await _events(db_session, ctx)}
+    await _set_hire(db_session, ctx, D(2026, 3, 20))
+
+    await _recalculate(db_session, ctx, D(2026, 3, 10), D(2026, 3, 20))
+
+    born = [e for e in await _events(db_session, ctx) if e.id not in before]
+    assert len(born) == 2  # закрытие и начисление
+    assert all(e.actor_account_id == ctx.actor_id and e.reason for e in born)
+
+
+# --- состав событий и сдвиги --------------------------------------------------
+
+
+async def test_fr_bal_003_a_vanishing_year_with_a_usage_event_is_refused(db_session) -> None:
+    # Правило - «любое, кроме accrual/recalculation»; проверено не только на двух типах.
+    ctx = await _hired(db_session, D(2026, 3, 10))
+    await _accrue(db_session, ctx, AS_OF)
+    db_session.add(
+        LeaveBalanceEntry(
+            employee_id=ctx.employee_id,
+            leave_type_id=ctx.leave_type_id,
+            working_year_start=D(2026, 3, 10),
+            working_year_end=D(2027, 3, 10),
+            entry_type=USAGE,
+            quantity=Decimal("-2"),
+            entry_date=D(2026, 6, 1),
+        )
+    )
+    await db_session.flush()
+    await _set_hire(db_session, ctx, D(2026, 3, 20))
+    before = len(await _events(db_session, ctx))
+
+    with pytest.raises(BalanceEntryError, match="usage"):
+        await _recalculate(db_session, ctx, D(2026, 3, 10), D(2026, 3, 20))
+
+    assert len(await _events(db_session, ctx)) == before
+
+
+async def test_fr_bal_003_a_shift_by_whole_years_keeps_an_import_in_the_surviving_year(
+    db_session,
+) -> None:
+    ctx = await _hired(db_session, D(2026, 3, 10))
+    db_session.add(_import_event(ctx, D(2026, 3, 10), Decimal("5")))
+    await db_session.flush()
+    await _set_hire(db_session, ctx, D(2025, 3, 10))
+
+    result = await _recalculate(db_session, ctx, D(2026, 3, 10), D(2025, 3, 10))
+
+    assert result.closed_years == {}  # год с импортом сохранился - отказа нет
+    assert D(2025, 3, 10) in result.catch_up.skipped  # год ДО импорта закрыт им
+    assert D(2026, 3, 10) in result.catch_up.skipped
+    assert await _balance(db_session, ctx, D(2026, 3, 10)) == Decimal("5")
+
+
+async def test_fr_bal_003_moving_the_hire_date_back_accrues_the_years_before_the_old_date(
+    db_session,
+) -> None:
+    ctx = await _hired(db_session, D(2026, 3, 10))
+    await _accrue(db_session, ctx, AS_OF)
+    await _set_hire(db_session, ctx, D(2024, 3, 10))
+
+    result = await _recalculate(db_session, ctx, D(2026, 3, 10), D(2024, 3, 10))
+
+    assert result.closed_years == {}
+    assert result.catch_up.accrued == {
+        D(2024, 3, 10): Decimal("28.00"),
+        D(2025, 3, 10): Decimal("28.00"),
+    }
+    assert await _balance(db_session, ctx, D(2026, 3, 10)) == Decimal("18.67")  # не тронут
+
+
+async def test_fr_bal_003_several_years_with_mixed_events_survive_a_shift_by_whole_years(
+    db_session,
+) -> None:
+    ctx = await _hired(db_session, D(2024, 3, 10))
+    await accrue_all_working_years(
+        db_session, employee_id=ctx.employee_id, leave_type_id=ctx.leave_type_id, as_of=AS_OF
+    )
+    await adjust_balance(
+        db_session,
+        employee_id=ctx.employee_id,
+        leave_type_id=ctx.leave_type_id,
+        working_year_start=D(2025, 3, 10),
+        working_year_end=D(2026, 3, 10),
+        quantity=Decimal("3"),
+        reason="Перенос",
+        actor_account_id=ctx.actor_id,
+        entry_date=D(2025, 9, 1),
+    )
+    await _set_hire(db_session, ctx, D(2023, 3, 10))
+
+    result = await _recalculate(db_session, ctx, D(2024, 3, 10), D(2023, 3, 10))
+
+    assert result.closed_years == {}  # все старые годы - годовщины и при новой дате
+    assert result.catch_up.accrued == {D(2023, 3, 10): Decimal("28.00")}
+    assert await _balance(db_session, ctx, D(2025, 3, 10)) == Decimal("31.00")  # 28 + 3
+
+
+async def test_fr_bal_003_there_and_back_again_restores_the_original_years(db_session) -> None:
+    ctx = await _hired(db_session, D(2026, 3, 10))
+    await _accrue(db_session, ctx, AS_OF)
+    await _set_hire(db_session, ctx, D(2026, 3, 20))
+    await _recalculate(db_session, ctx, D(2026, 3, 10), D(2026, 3, 20))
+    await _set_hire(db_session, ctx, D(2026, 3, 10))
+
+    await _recalculate(db_session, ctx, D(2026, 3, 20), D(2026, 3, 10))
+
+    assert await _balance(db_session, ctx, D(2026, 3, 10)) == Decimal("18.67")
+    assert await _balance(db_session, ctx, D(2026, 3, 20)) == Decimal("0.00")
+
+
+# --- конфигурация, а не запрос -------------------------------------------------
+
+
+async def test_fr_bal_003_a_missing_main_leave_type_is_a_configuration_error_not_a_bad_request(
+    db_session,
+) -> None:
+    ctx = await _hired(db_session, D(2026, 3, 10))
+    await db_session.execute(text("DELETE FROM leave_types WHERE code = 'annual_paid'"))
+    await _set_hire(db_session, ctx, D(2026, 3, 20))
+
+    with pytest.raises(LeaveTypeNotSeededError) as excinfo:
+        await _recalculate(db_session, ctx, D(2026, 3, 10), D(2026, 3, 20))
+
+    assert not isinstance(excinfo.value, BalanceEntryError)  # эндпоинт не переведёт в 400

@@ -359,8 +359,10 @@ async def update_employee(
     """Правка карточки. Если изменилось поле из `BALANCE_RECALCULATION_FIELDS`
     (дата приёма), в ТОЙ ЖЕ транзакции выполняется пересчёт остатка
     (`FR-BAL-003`, `T-M2-07`) от имени `actor_account_id`; отказ пересчёта
-    (`BalanceEntryError`) уходит вызывающему, `commit` до него не доходит и
-    правка карточки не сохраняется (сессия закрывается без фиксации). К журналу
+    (`BalanceEntryError`) уходит вызывающему, и `commit` не вызывается (проверено
+    тестом); что правка карточки при этом не сохраняется, обеспечивает закрытие
+    сессии без фиксации в `get_db_session` - в тестах сессия общая, там это не
+    проверяется. К журналу
     остатка модуль обращается только через функции `balances`."""
     employee = await session.get(Employee, employee_id)
     if employee is None:
@@ -391,6 +393,10 @@ async def update_employee(
     await _require_email_free(session, payload.email, exclude_employee_id=employee.id)
     await _apply_auth_type_change(session, account, payload)
 
+    # `previous` читается БЕЗ замка строки сотрудника намеренно: замок в начале
+    # функции дал бы порядок "строка -> цепочка подчинения", обратный порядку
+    # `deactivate_employee` (цепочка -> запись строки), то есть взаимную блокировку.
+    # Остающаяся гонка названа в докстринге `recalculate_balance`.
     previous = {name: getattr(employee, name) for name in BALANCE_RECALCULATION_FIELDS}
     _apply_card_fields(employee, payload)
 

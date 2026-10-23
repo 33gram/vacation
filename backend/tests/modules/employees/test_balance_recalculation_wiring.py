@@ -16,7 +16,6 @@ from app.models.employee import Employee
 from app.models.leave_balance_entry import RECALCULATION, LeaveBalanceEntry
 from app.modules.balances.service import accrue_leave, adjust_balance
 from app.modules.employees import employee_service
-from app.modules.employees.employee_service import BALANCE_RECALCULATION_FIELDS
 from tests.modules.auth.factories import (
     bearer_header,
     make_account,
@@ -72,12 +71,6 @@ async def _accrue_now(db_session, ctx) -> None:
     await accrue_leave(
         db_session, employee_id=ctx.employee_id, leave_type_id=ctx.leave_type_id, as_of=TODAY
     )
-
-
-def test_only_the_hire_date_triggers_a_balance_recalculation_today() -> None:
-    # Категория названа в FR-BAL-003, но норма от неё сегодня не зависит (A-3.1);
-    # набор закреплён, чтобы изменение было видно в дифе.
-    assert BALANCE_RECALCULATION_FIELDS == ("hire_date",)
 
 
 async def test_fr_bal_003_changing_the_hire_date_recalculates_in_the_same_request(
@@ -157,7 +150,7 @@ async def test_fr_bal_003_an_employee_without_accrual_events_gets_nothing_writte
 
 
 async def test_fr_bal_003_a_refusal_of_the_recalculation_is_a_400_and_writes_no_event(
-    db_session, api_client
+    db_session, api_client, monkeypatch
 ) -> None:
     ctx, employee, admin, department = await _setup(db_session)
     await _accrue_now(db_session, ctx)
@@ -173,6 +166,7 @@ async def test_fr_bal_003_a_refusal_of_the_recalculation_is_a_400_and_writes_no_
         entry_date=TODAY,
     )
     before = len(await _events(db_session, employee.id))
+    commits = _count_commits(db_session, monkeypatch)
 
     response = await api_client.put(
         f"/api/employees/{employee.id}",
@@ -187,6 +181,41 @@ async def test_fr_bal_003_a_refusal_of_the_recalculation_is_a_400_and_writes_no_
     assert response.status_code == 400
     assert "manual_adjustment" in response.json()["detail"]
     assert len(await _events(db_session, employee.id)) == before
+    # Узкое утверждение, которое тест МОЖЕТ проверить: `commit` не вызывался. Что
+    # правка карточки не сохраняется, обеспечивает закрытие сессии без фиксации
+    # в `get_db_session`; здесь сессия общая (`api_client` подменяет её на
+    # `db_session`), и в памяти новая дата уже стоит, поэтому откат в БД тестом
+    # этой обвязки не показать.
+    assert commits == []
+
+
+async def test_fr_bal_003_a_successful_edit_does_commit(
+    db_session, api_client, monkeypatch
+) -> None:
+    # Положительный контроль к тесту выше: перехват `commit` видит фиксацию.
+    ctx, employee, admin, department = await _setup(db_session)
+    commits = _count_commits(db_session, monkeypatch)
+
+    response = await api_client.put(
+        f"/api/employees/{employee.id}",
+        json=_payload(employee, department.id, position="Старший инженер"),
+        headers=bearer_header(admin),
+    )
+
+    assert response.status_code == 200
+    assert len(commits) == 1
+
+
+def _count_commits(db_session, monkeypatch) -> list[int]:
+    commits: list[int] = []
+    original = db_session.commit
+
+    async def spy() -> None:
+        commits.append(1)
+        await original()
+
+    monkeypatch.setattr(db_session, "commit", spy)
+    return commits
 
 
 async def test_fr_bal_003_a_field_added_to_the_set_triggers_the_recalculation(

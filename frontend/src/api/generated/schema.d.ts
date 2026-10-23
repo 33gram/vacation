@@ -165,6 +165,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/employees/{employee_id}/balances": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Employee Balances */
+        get: operations["get_employee_balances_api_employees__employee_id__balances_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/employees/{employee_id}/balances/adjust": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Adjust Employee Balance */
+        post: operations["adjust_employee_balance_api_employees__employee_id__balances_adjust_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/departments": {
         parameters: {
             query?: never;
@@ -327,6 +361,74 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** BalanceAdjustOut */
+        BalanceAdjustOut: {
+            /** Leave Type Id */
+            leave_type_id: number;
+            /**
+             * Working Year Start
+             * Format: date
+             */
+            working_year_start: string;
+            /**
+             * Working Year End
+             * Format: date
+             */
+            working_year_end: string;
+            /** Balance */
+            balance: string;
+        };
+        /**
+         * BalanceAdjustRequest
+         * @description Ручная корректировка (`FR-BAL-004`). `reason` - обязательное поле схемы;
+         *     пустая строка и одни пробелы отклоняются сервисом. Рабочий год клиент не
+         *     присылает: его определяет модуль `balances` по `entry_date`.
+         */
+        BalanceAdjustRequest: {
+            /** Leave Type Id */
+            leave_type_id: number;
+            /** Quantity */
+            quantity: number | string;
+            /** Reason */
+            reason: string;
+            /** Entry Date */
+            entry_date?: string | null;
+        };
+        /**
+         * BalanceEntryOut
+         * @description Событие истории остатка. `actor_name` подставляет слой эндпоинта по
+         *     `actor_account_id` (сервис `balances` имя не резолвит); `None` у события, которое
+         *     начисляет система.
+         */
+        BalanceEntryOut: {
+            /** Id */
+            id: number;
+            /** Entry Type */
+            entry_type: string;
+            /** Quantity */
+            quantity: string;
+            /**
+             * Entry Date
+             * Format: date
+             */
+            entry_date: string;
+            /**
+             * Working Year Start
+             * Format: date
+             */
+            working_year_start: string;
+            /**
+             * Working Year End
+             * Format: date
+             */
+            working_year_end: string;
+            /** Reason */
+            reason: string | null;
+            /** Actor Account Id */
+            actor_account_id: number | null;
+            /** Actor Name */
+            actor_name: string | null;
+        };
         /** Body_import_employees_endpoint_api_employees_import_post */
         Body_import_employees_endpoint_api_employees_import_post: {
             /**
@@ -361,6 +463,18 @@ export interface components {
             parent_id?: number | null;
             /** Head Employee Id */
             head_employee_id?: number | null;
+        };
+        /** EmployeeBalancesOut */
+        EmployeeBalancesOut: {
+            /** Employee Id */
+            employee_id: number;
+            /**
+             * As Of
+             * Format: date
+             */
+            as_of: string;
+            /** Balances */
+            balances: components["schemas"]["LeaveTypeBalanceOut"][];
         };
         /** EmployeeCreate */
         EmployeeCreate: {
@@ -604,6 +718,30 @@ export interface components {
             success: boolean;
             /** Detail */
             detail: string;
+        };
+        /**
+         * LeaveTypeBalanceOut
+         * @description Остаток по одному виду (`FR-BAL-002`).
+         */
+        LeaveTypeBalanceOut: {
+            /** Leave Type Id */
+            leave_type_id: number;
+            /** Code */
+            code: string;
+            /** Name */
+            name: string;
+            /** Unit */
+            unit: string;
+            /** Working Year Start */
+            working_year_start: string | null;
+            /** Working Year End */
+            working_year_end: string | null;
+            /** Balance */
+            balance: string;
+            /** Total Balance */
+            total_balance: string;
+            /** History */
+            history: components["schemas"]["BalanceEntryOut"][];
         };
         /** LoginRequest */
         LoginRequest: {
@@ -925,6 +1063,93 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["MeResponse"];
+                };
+            };
+        };
+    };
+    get_employee_balances_api_employees__employee_id__balances_get: {
+        parameters: {
+            query?: {
+                /** @description Дата расчёта остатка (BR-8); по умолчанию сегодня (UTC). */
+                as_of?: string | null;
+            };
+            header?: never;
+            path: {
+                employee_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EmployeeBalancesOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    adjust_employee_balance_api_employees__employee_id__balances_adjust_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                employee_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BalanceAdjustRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BalanceAdjustOut"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

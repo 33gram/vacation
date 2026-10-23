@@ -38,15 +38,28 @@ T-M2-08, `FR-BAL-001`, `FR-BAL-002`, `FR-BAL-004`).
 from __future__ import annotations
 
 import datetime
+from dataclasses import dataclass
 from decimal import Decimal
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.employee import Employee
-from app.models.leave_balance_entry import ACCRUAL, MANUAL_ADJUSTMENT, LeaveBalanceEntry
+from app.models.leave_balance_entry import (
+    ACCRUAL,
+    INITIAL_IMPORT,
+    MANUAL_ADJUSTMENT,
+    RECALCULATION,
+    LeaveBalanceEntry,
+)
 from app.models.leave_type import LeaveType
-from app.modules.balances.accrual import MONTHS_IN_YEAR, compute_accrual
+from app.modules.balances.accrual import (
+    MONTHS_IN_YEAR,
+    compute_accrual,
+    is_working_year_start,
+    working_year_start_on,
+    working_year_starts,
+)
 from app.modules.business_rules.service import (
     ANNUAL_LEAVE_DAYS,
     MONTH_ROUNDING_THRESHOLD_DAYS,
@@ -59,24 +72,30 @@ from app.modules.business_rules.service import (
 # выбор нормы в `accrue_leave`.
 MAIN_LEAVE_TYPE_CODE = "annual_paid"
 
-# Типы событий, которые `accrue_leave` считает "уже начисленным". Сегодня -
-# один `accrual`. Расширять набор НАДО осознанно, и вот чем это грозит; решение
-# по каждому пункту НЕ принято:
-#   - `recalculation` (T-M2-07) несёт РАЗНОСТЬ при правке кадровых данных; если
-#     его не считать начисленным, следующий `accrue_leave` запишет эту
-#     разность второй раз;
-#   - правка даты приёма меняет годовщину, значит и `working_year_start`:
-#     "уже начислено" нового года равно нулю, и полное начисление пишется
-#     заново, а события прежнего года остаются (T-M2-07);
-#   - `initial_import` (T-M1-36) несёт начальный остаток за рабочий год; можно
-#     ли по такому году ещё и начислять, нигде не сказано.
-ALREADY_ACCRUED_ENTRY_TYPES = (ACCRUAL,)
+# Типы событий, которые `accrue_leave` считает "уже начисленным" (T-M2-07,
+# решения ВЫВЕДЕНЫ):
+#   - `accrual` - само начисление;
+#   - `recalculation` - пересчёт правит именно начисленное право; если не считать
+#     его, следующее начисление записало бы ту же разность второй раз;
+#   - `initial_import` НЕ входит: он несёт начальный ОСТАТОК, в котором уже учтено
+#     прошлое использование, и считать его начисленным значило бы заглушить
+#     законное начисление; вместо этого год с начальным остатком (и все годы до
+#     него) для начисления ЗАКРЫТ целиком - см. `AccrualClosedError`.
+# Расширять набор - осознанно: каждый тип сюда ломает или чинит двойной счёт.
+ALREADY_ACCRUED_ENTRY_TYPES = (ACCRUAL, RECALCULATION)
 
 
 class BalanceEntryError(Exception):
     """Событие нельзя записать: причина, автор, количество или период
     не годятся. Сообщение — для вызывающего (эндпоинт `T-M2-11` переводит
     его в ответ 4xx)."""
+
+
+class AccrualClosedError(BalanceEntryError):
+    """Начисление по рабочему году закрыто начальным остатком: в этом или
+    более позднем году есть событие `initial_import`. Начальный остаток
+    уже включает прошлое использование, прибавлять к нему вычисленное право -
+    двойной счёт, а годы ДО него им же и покрыты. Ничего не записано."""
 
 
 async def get_balance(
@@ -211,6 +230,21 @@ async def adjust_balance(
     return await get_balance(session, employee_id, leave_type_id, working_year_start)
 
 
+async def _require_main_leave_type(session: AsyncSession, leave_type_id: int) -> None:
+    """Вид существует и он основной. Проверяется ДО блокировки строки
+    сотрудника: неверный вызов не должен держать её до конца транзакции
+    вызывающего."""
+    leave_type_code = await session.scalar(
+        select(LeaveType.code).where(LeaveType.id == leave_type_id)
+    )
+    if leave_type_code is None:
+        raise BalanceEntryError("Вид отпуска не найден.")
+    if leave_type_code != MAIN_LEAVE_TYPE_CODE:
+        raise BalanceEntryError(
+            "Начисление выполняется только по основному оплачиваемому отпуску."
+        )
+
+
 async def accrue_leave(
     session: AsyncSession,
     *,
@@ -230,7 +264,9 @@ async def accrue_leave(
     вид нельзя; иной вид - `BalanceEntryError`, событий нет.
 
     «Уже начислено» - сумма событий типов `ALREADY_ACCRUED_ENTRY_TYPES`
-    (сейчас только `accrual`), см. оговорку у константы.
+    (`accrual` и `recalculation`), см. оговорку у константы. По году, который
+    закрыт начальным остатком (`initial_import` в этом или более позднем году),
+    начисление не выполняется: `AccrualClosedError`, событий нет.
 
     Норма и порог округления — из `business_rules_config`
     (`annual_leave_days`, `month_rounding_threshold_days`), дата приёма — из
@@ -243,24 +279,17 @@ async def accrue_leave(
     транзакции не записали одну и ту же разность дважды; это закрыто
     рассуждением, а не проверено тестом на гонку — проверены
     последовательные повторные вызовы. Две границы замка: (1) он защищает
-    только от ДРУГОГО `accrue_leave` — `adjust_balance` и будущие
-    `recalculation` (`T-M2-07`) и `initial_import` (`T-M1-36`) его не берут;
-    сегодня этого достаточно, потому что «уже начислено» считается только по
-    событиям `accrual`; (2) рассуждение опирается на уровень изоляции READ
-    COMMITTED (после ожидания замка читается уже зафиксированное другой
-    транзакцией); при более строгом уровне повторное чтение вело бы себя
+    от ДРУГИХ `accrue_leave`, `accrue_all_working_years` и
+    `recalculate_balance` (все берут его в одном порядке: вид отпуска, затем
+    строка сотрудника), но не от `adjust_balance`, который его не берёт;
+    сегодня этого достаточно, потому что корректировка не входит в «уже
+    начислено»; будущий `initial_import` (`T-M1-36`) его тоже не берёт, а закрытие
+    года им (`AccrualClosedError`) читается без замка; (2) рассуждение опирается
+    на уровень изоляции READ COMMITTED (после ожидания замка читается уже
+    зафиксированное другой транзакцией); при более строгом уровне повторное
+    чтение вело бы себя
     иначе."""
-    # Вид проверяется ДО блокировки: неверный вызов не должен держать строку
-    # сотрудника до конца транзакции вызывающего.
-    leave_type_code = await session.scalar(
-        select(LeaveType.code).where(LeaveType.id == leave_type_id)
-    )
-    if leave_type_code is None:
-        raise BalanceEntryError("Вид отпуска не найден.")
-    if leave_type_code != MAIN_LEAVE_TYPE_CODE:
-        raise BalanceEntryError(
-            "Начисление выполняется только по основному оплачиваемому отпуску."
-        )
+    await _require_main_leave_type(session, leave_type_id)
     employee = await session.get(Employee, employee_id, with_for_update=True)
     if employee is None:
         raise BalanceEntryError("Сотрудник не найден.")
@@ -276,6 +305,19 @@ async def accrue_leave(
         )
     except ValueError as error:
         raise BalanceEntryError(str(error)) from error
+
+    closing_import_year = await session.scalar(
+        select(func.max(LeaveBalanceEntry.working_year_start)).where(
+            LeaveBalanceEntry.employee_id == employee_id,
+            LeaveBalanceEntry.leave_type_id == leave_type_id,
+            LeaveBalanceEntry.entry_type == INITIAL_IMPORT,
+        )
+    )
+    if closing_import_year is not None and closing_import_year >= accrual.working_year_start:
+        raise AccrualClosedError(
+            f"Начисление за рабочий год с {accrual.working_year_start:%d.%m.%Y} закрыто: "
+            f"начальный остаток занесён за рабочий год с {closing_import_year:%d.%m.%Y}."
+        )
 
     already = await session.execute(
         select(func.coalesce(func.sum(LeaveBalanceEntry.quantity), 0)).where(
@@ -306,3 +348,232 @@ async def accrue_leave(
     )
     await session.flush()
     return difference
+
+
+@dataclass(frozen=True)
+class CatchUpResult:
+    accrued: dict[datetime.date, Decimal]  # начало года -> записанное (только > 0)
+    skipped: dict[datetime.date, str]  # начало года -> почему не начислялось
+
+
+async def accrue_all_working_years(
+    session: AsyncSession,
+    *,
+    employee_id: int,
+    leave_type_id: int,
+    as_of: datetime.date,
+) -> CatchUpResult:
+    """Догоняет начисление по ВСЕМ рабочим годам от даты приёма до `as_of`,
+    вызывая `accrue_leave` по каждому (своей арифметики и своей записи в журнал
+    нет). Завершённые годы начисляются на их последний день (значит, полной
+    нормой), текущий - на `as_of`. Повторный вызов ничего не пишет.
+
+    Годы, закрытые начальным остатком (`AccrualClosedError`), пропускаются и
+    названы в `skipped` с причиной. `excluded_days` = 0 для всех лет - оговорка
+    до появления учёта отпусков без содержания (M3, `T-M2-19`). Сотрудник
+    принят позже `as_of` - пусто. Замок и порядок - как в `accrue_leave`."""
+    await _require_main_leave_type(session, leave_type_id)
+    employee = await session.get(Employee, employee_id, with_for_update=True)
+    if employee is None:
+        raise BalanceEntryError("Сотрудник не найден.")
+    starts = working_year_starts(employee.hire_date, as_of)
+    accrued: dict[datetime.date, Decimal] = {}
+    skipped: dict[datetime.date, str] = {}
+    for index, start in enumerate(starts):
+        is_last = index == len(starts) - 1
+        year_as_of = (
+            as_of
+            if is_last
+            else working_year_start_on(employee.hire_date, index + 1)
+            - datetime.timedelta(days=1)
+        )
+        try:
+            written = await accrue_leave(
+                session,
+                employee_id=employee_id,
+                leave_type_id=leave_type_id,
+                as_of=year_as_of,
+                working_year_start=start,
+            )
+        except AccrualClosedError as error:
+            skipped[start] = str(error)
+            continue
+        if written > 0:
+            accrued[start] = written
+    return CatchUpResult(accrued=accrued, skipped=skipped)
+
+
+@dataclass(frozen=True)
+class RecalculationResult:
+    closed_years: dict[datetime.date, Decimal]  # начало года -> записанная разность (< 0)
+    catch_up: CatchUpResult
+
+
+async def recalculate_balance(
+    session: AsyncSession,
+    *,
+    employee_id: int,
+    actor_account_id: int | None,
+    as_of: datetime.date,
+    old_hire_date: datetime.date,
+    new_hire_date: datetime.date,
+) -> RecalculationResult:
+    """Пересчёт остатка при смене даты приёма (`FR-BAL-003`, `T-M2-07`).
+
+    Рабочий год - ФУНКЦИЯ даты приёма (годовщины), поэтому смена даты - это
+    переатрибуция (ВЫБРАНО: оставить прежние границы значило бы навсегда
+    оставить сотруднику неверный отпускной год). Журнал добавляемый, поэтому:
+      1. по каждому рабочему году, которого при новой дате больше нет, пишется
+         `recalculation` с ОТРИЦАТЕЛЬНОЙ разностью, закрывающей начисленное этого
+         года (`ALREADY_ACCRUED_ENTRY_TYPES`); прежние строки не правятся;
+      2. затем `accrue_all_working_years` начисляет по новым годам.
+    Причина события формируется системой и называет прежнюю и новую дату.
+
+    ГРОМКИЙ ОТКАЗ (`BalanceEntryError`, ничего не записано): в исчезающем году
+    есть событие, внесённое человеком против конкретного года
+    (`manual_adjustment`, `initial_import`) или иное, кроме `accrual`/
+    `recalculation` - переатрибуция перестаёт быть арифметикой, угадывать нельзя.
+    Дата приёма исправляется после разбора этих событий. Событий `usage` пока нет
+    (модуль заявок - M3); как относить их к годам при смене даты, не решено
+    (`T-M3-36`).
+
+    Сотрудник без событий основного вида - пусто: начислять по нему будет
+    ленивое начисление при чтении (`T-M2-19`). Дата приёма не менялась - пусто.
+    Смена категории сюда не приходит: норма от неё сегодня не зависит (`A-3.1`).
+    Годы, оставшиеся прежними, пересчёту не подвергаются (уменьшать там нечего:
+    границы и норма те же); уменьшение в сохранившемся году эта функция не
+    производит.
+
+    Автор обязателен; `recalculation` пишется только функцией
+    `_write_recalculation` с проверкой причины (`strip()`) и автора. Закрывается
+    именно НАЧИСЛЕННОЕ (сумма событий `ALREADY_ACCRUED_ENTRY_TYPES`), а не остаток
+    `get_balance`: остаток включал бы списания и корректировки, которых в
+    исчезающем году быть не должно (иначе отказ выше), и закрытие по остатку
+    стёрло бы чужие события. Транзакцией владеет вызывающий: только `flush`.
+    Замок - как в `accrue_leave`, порядок тот же: вид отпуска, затем строка
+    сотрудника (`accrue_all_working_years` берёт её повторно в той же
+    транзакции)."""
+    if actor_account_id is None:
+        raise BalanceEntryError("Не указан автор пересчёта.")
+    leave_type_id = await session.scalar(
+        select(LeaveType.id).where(LeaveType.code == MAIN_LEAVE_TYPE_CODE)
+    )
+    if leave_type_id is None:
+        raise BalanceEntryError("Вид отпуска не найден.")
+    employee = await session.get(Employee, employee_id, with_for_update=True)
+    if employee is None:
+        raise BalanceEntryError("Сотрудник не найден.")
+    if employee.hire_date != new_hire_date:
+        raise BalanceEntryError("Дата приёма в карточке не совпадает с новой датой пересчёта.")
+    empty = RecalculationResult(closed_years={}, catch_up=CatchUpResult({}, {}))
+    if old_hire_date == new_hire_date:
+        return empty
+
+    events = list(
+        (
+            await session.execute(
+                select(LeaveBalanceEntry)
+                .where(
+                    LeaveBalanceEntry.employee_id == employee_id,
+                    LeaveBalanceEntry.leave_type_id == leave_type_id,
+                )
+                .order_by(LeaveBalanceEntry.entry_date, LeaveBalanceEntry.id)
+            )
+        ).scalars()
+    )
+    if not events:
+        return empty
+
+    vanishing = sorted(
+        {
+            event.working_year_start
+            for event in events
+            if not is_working_year_start(new_hire_date, event.working_year_start)
+        }
+    )
+    blocking = [
+        event
+        for event in events
+        if event.working_year_start in vanishing
+        and event.entry_type not in (ACCRUAL, RECALCULATION)
+    ]
+    if blocking:
+        listed = "; ".join(
+            f"{event.entry_type} {event.quantity} от {event.entry_date:%d.%m.%Y} "
+            f"(рабочий год с {event.working_year_start:%d.%m.%Y})"
+            for event in blocking
+        )
+        raise BalanceEntryError(
+            "Дату приёма нельзя изменить автоматически: в рабочих годах, которых при новой "
+            f"дате не существует, есть события, внесённые против конкретного года: {listed}. "
+            "Разберитесь с ними и повторите."
+        )
+
+    closed: dict[datetime.date, Decimal] = {}
+    for start in vanishing:
+        year_events = [event for event in events if event.working_year_start == start]
+        accrued = sum(
+            (e.quantity for e in year_events if e.entry_type in ALREADY_ACCRUED_ENTRY_TYPES),
+            Decimal(0),
+        )
+        if accrued == 0:
+            continue
+        end = max(event.working_year_end for event in year_events)
+        await _write_recalculation(
+            session,
+            employee_id=employee_id,
+            leave_type_id=leave_type_id,
+            working_year_start=start,
+            working_year_end=end,
+            quantity=-accrued,
+            entry_date=as_of,
+            reason=(
+                f"Пересчёт при изменении даты приёма с {old_hire_date:%d.%m.%Y} на "
+                f"{new_hire_date:%d.%m.%Y}: закрыт рабочий год {start:%d.%m.%Y}-"
+                f"{end - datetime.timedelta(days=1):%d.%m.%Y} (начислено {accrued} дн.)"
+            ),
+            actor_account_id=actor_account_id,
+        )
+        closed[start] = -accrued
+    catch_up = await accrue_all_working_years(
+        session, employee_id=employee_id, leave_type_id=leave_type_id, as_of=as_of
+    )
+    return RecalculationResult(closed_years=closed, catch_up=catch_up)
+
+
+async def _write_recalculation(
+    session: AsyncSession,
+    *,
+    employee_id: int,
+    leave_type_id: int,
+    working_year_start: datetime.date,
+    working_year_end: datetime.date,
+    quantity: Decimal,
+    entry_date: datetime.date,
+    reason: str,
+    actor_account_id: int | None,
+) -> None:
+    """Единственное место записи `recalculation`: причина (`strip()`: пустая
+    строка и пробелы причиной не являются) и автор обязательны ещё в сервисе, а
+    не только `CHECK` базы; разность ненулевая."""
+    stripped_reason = reason.strip()
+    if not stripped_reason:
+        raise BalanceEntryError("Не указана причина пересчёта.")
+    if actor_account_id is None:
+        raise BalanceEntryError("Не указан автор пересчёта.")
+    if quantity == 0:
+        raise BalanceEntryError("Пересчёт на ноль ничего не меняет.")
+    session.add(
+        LeaveBalanceEntry(
+            employee_id=employee_id,
+            leave_type_id=leave_type_id,
+            working_year_start=working_year_start,
+            working_year_end=working_year_end,
+            entry_type=RECALCULATION,
+            quantity=quantity,
+            entry_date=entry_date,
+            reason=stripped_reason,
+            actor_account_id=actor_account_id,
+        )
+    )
+    await session.flush()

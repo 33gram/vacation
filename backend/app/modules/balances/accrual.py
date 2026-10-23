@@ -74,6 +74,30 @@ def _anniversary(hire_date: datetime.date, years: int) -> datetime.date:
     return _add_months(hire_date, years * MONTHS_IN_YEAR)
 
 
+def working_year_start_on(hire_date: datetime.date, year_index: int) -> datetime.date:
+    """Начало `year_index`-го рабочего года (0 - первый): годовщина приёма."""
+    return _anniversary(hire_date, year_index)
+
+
+def is_working_year_start(hire_date: datetime.date, start: datetime.date) -> bool:
+    """`start` - начало какого-то рабочего года при данной дате приёма, то есть
+    годовщина приёма (не раньше самой даты приёма)."""
+    year_index = start.year - hire_date.year
+    return year_index >= 0 and _anniversary(hire_date, year_index) == start
+
+
+def working_year_starts(hire_date: datetime.date, as_of: datetime.date) -> list[datetime.date]:
+    """Начала всех рабочих годов от приёма до `as_of` включительно (пусто, если
+    `as_of` раньше приёма). Исключаемые дни не учитываются (начала лет - годовщины,
+    см. границы в докстринге модуля)."""
+    starts: list[datetime.date] = []
+    year_index = 0
+    while _anniversary(hire_date, year_index) <= as_of:
+        starts.append(_anniversary(hire_date, year_index))
+        year_index += 1
+    return starts
+
+
 def _boundary(hire_date: datetime.date, months: int) -> datetime.date:
     """Граница `months`-го месяца: `hire_date + months` месяцев, ВСЕГДА от
     даты приёма, а не цепочкой от предыдущей границы (приём 31.01: вторая

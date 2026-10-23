@@ -17,7 +17,6 @@ from sqlalchemy import func, select, text
 from app.models.employee import Employee
 from app.models.leave_balance_entry import ACCRUAL, LeaveBalanceEntry
 from app.modules.balances.service import (
-    ALREADY_ACCRUED_ENTRY_TYPES,
     MAIN_LEAVE_TYPE_CODE,
     BalanceEntryError,
     accrue_leave,
@@ -303,10 +302,6 @@ async def test_fr_bal_001_a_manual_adjustment_is_not_counted_as_already_accrued(
     written = await _accrue(db_session, ctx, D(2026, 10, 24))
 
     assert written == Decimal("18.67")
-
-
-def test_the_already_accrued_event_types_are_the_explicit_set_with_accrual_only() -> None:
-    assert ALREADY_ACCRUED_ENTRY_TYPES == (ACCRUAL,)
 
 
 async def test_fr_bal_001_a_calculation_date_before_the_hire_date_is_refused(db_session) -> None:

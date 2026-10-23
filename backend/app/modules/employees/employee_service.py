@@ -393,10 +393,16 @@ async def update_employee(
     await _require_email_free(session, payload.email, exclude_employee_id=employee.id)
     await _apply_auth_type_change(session, account, payload)
 
-    # `previous` читается БЕЗ замка строки сотрудника намеренно: замок в начале
-    # функции дал бы порядок "строка -> цепочка подчинения", обратный порядку
-    # `deactivate_employee` (цепочка -> запись строки), то есть взаимную блокировку.
-    # Остающаяся гонка названа в докстринге `recalculate_balance`.
+    # Строка сотрудника берётся под замок ЗДЕСЬ - после цепочки подчинения (если
+    # она была нужна), перед чтением "было". Порядок "цепочка -> строка" тот же,
+    # что у `deactivate_employee`, `import_employees` и `update_department`
+    # (они берут цепочку до записи строк); замок строки в начале функции дал бы
+    # обратный порядок и взаимную блокировку. До этого места объект `employee`
+    # не изменялся (меняются `account` и, ниже, поля карточки), поэтому
+    # `refresh` не затирает несохранённых правок и даёт последнее зафиксированное
+    # значение. Нужен именно `refresh`: `session.get(..., with_for_update=True)`
+    # для уже загруженного объекта атрибуты не обновляет.
+    await session.refresh(employee, with_for_update=True)
     previous = {name: getattr(employee, name) for name in BALANCE_RECALCULATION_FIELDS}
     _apply_card_fields(employee, payload)
 

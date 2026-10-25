@@ -37,3 +37,33 @@ async def count_active_system_admins(session: AsyncSession) -> int:
         .where(Account.role == "system_admin", Account.is_active.is_(True))
     )
     return result.scalar_one()
+
+
+SYSTEM_AUTHOR_LABEL = "Система"
+_ADMIN_AUTHOR_LABEL = "Администратор"
+_USER_AUTHOR_LABEL = "Пользователь системы"
+
+
+async def get_author_display_names(session: AsyncSession, account_ids: set[int]) -> dict[int, str]:
+    """Подпись автора записи по аккаунту (`T-M2-11`): ФИО связанной карточки; у
+    аккаунта БЕЗ карточки - НЕЙТРАЛЬНАЯ подпись (логин чужого пользователя в
+    ответе рядовому сотруднику не нужен - ВЫБРАНО): «Администратор» для ролей
+    `hr_admin`/`system_admin`, иначе «Пользователь системы». События без автора
+    (начисляет система) подписывает вызывающий значением `SYSTEM_AUTHOR_LABEL`.
+    Данные двух таблиц собирает этот модуль, слой API - нет."""
+    if not account_ids:
+        return {}
+    rows = await session.execute(
+        select(Account.id, Account.role, Employee.full_name)
+        .outerjoin(Employee, Employee.id == Account.employee_id)
+        .where(Account.id.in_(account_ids))
+    )
+    names: dict[int, str] = {}
+    for row in rows:
+        if row.full_name:
+            names[row.id] = row.full_name
+        elif row.role in ("hr_admin", "system_admin"):
+            names[row.id] = _ADMIN_AUTHOR_LABEL
+        else:
+            names[row.id] = _USER_AUTHOR_LABEL
+    return names

@@ -58,6 +58,8 @@ from app.modules.balances.accrual import (
     MONTHS_IN_YEAR,
     compute_accrual,
     is_working_year_start,
+    working_year_containing,
+    working_year_start_on,
     working_year_starts,
 )
 from app.modules.business_rules.service import (
@@ -194,18 +196,34 @@ async def list_entries(
     session: AsyncSession,
     employee_id: int,
     leave_type_id: int | None = None,
+    *,
+    as_of: datetime.date | None = None,
 ) -> list[LeaveBalanceEntry]:
     """История событий сотрудника (`FR-BAL-002`): по дате события, при
     равных датах — в порядке записи. У события есть тип, количество со
     знаком, причина и автор (`actor_account_id`; имя автора по аккаунту
-    подставляет слой эндпоинта)."""
+    подставляет слой эндпоинта). `as_of` - только события с `entry_date` не позже
+    этой даты (то же отсечение, что у `get_balance(as_of=)`, делается в SQL)."""
     query = select(LeaveBalanceEntry).where(LeaveBalanceEntry.employee_id == employee_id)
     if leave_type_id is not None:
         query = query.where(LeaveBalanceEntry.leave_type_id == leave_type_id)
+    if as_of is not None:
+        query = query.where(LeaveBalanceEntry.entry_date <= as_of)
     result = await session.execute(
         query.order_by(LeaveBalanceEntry.entry_date, LeaveBalanceEntry.id)
     )
     return list(result.scalars())
+
+
+async def list_leave_type_ids_with_events(session: AsyncSession, employee_id: int) -> set[int]:
+    """Виды отпуска, по которым у сотрудника есть хотя бы одно событие журнала
+    (для набора видов в ответе `GET .../balances`, `T-M2-11`)."""
+    result = await session.execute(
+        select(LeaveBalanceEntry.leave_type_id)
+        .where(LeaveBalanceEntry.employee_id == employee_id)
+        .distinct()
+    )
+    return set(result.scalars())
 
 
 async def adjust_balance(
@@ -229,6 +247,15 @@ async def adjust_balance(
     stripped_reason = reason.strip()
     if not stripped_reason:
         raise BalanceEntryError("Укажите причину корректировки.")
+    # Корректировка по АКТИВНОМУ неосновному виду разрешена (осознанное действие HR,
+    # не начисление); по неактивному - отказ. ВЫБРАНО.
+    leave_type_active = await session.scalar(
+        select(LeaveType.is_active).where(LeaveType.id == leave_type_id)
+    )
+    if leave_type_active is None:
+        raise BalanceEntryError("Вид отпуска не найден.")
+    if not leave_type_active:
+        raise BalanceEntryError("Вид отпуска неактивен: корректировка по нему невозможна.")
     if actor_account_id is None:
         raise BalanceEntryError("Не указан автор корректировки.")
     if quantity == 0:
@@ -252,6 +279,24 @@ async def adjust_balance(
     return await get_balance(session, employee_id, leave_type_id, working_year_start)
 
 
+async def _lock_employee(session: AsyncSession, employee_id: int) -> Employee | None:
+    """Строка сотрудника ПОД ЗАМКОМ и ПЕРЕЧИТАННАЯ (`T-M2-11`, замечание ревью).
+
+    `session.get(..., with_for_update=True)` для уже загруженного объекта (слой API
+    читает сотрудника раньше) шлёт `SELECT ... FOR UPDATE`, но атрибуты объекта НЕ
+    обновляет: расчёт шёл бы по устаревшей `hire_date`, если параллельная
+    транзакция её сменила (измерено на sqlalchemy 2.0.54, закреплено тестом).
+    Поэтому `populate_existing=True`: одно обращение, перечитывает объект и
+    возвращает `None`, если строки нет (`refresh` в этом случае бросил бы
+    исключение). Перед этим `flush`: `populate_existing` затёр бы несохранённые
+    правки объекта, а пересчёт при смене даты приёма приходит с ещё не
+    сброшенной в БД новой датой. Единственный замок модуля; порядка замков нет."""
+    await session.flush()
+    return await session.get(
+        Employee, employee_id, with_for_update=True, populate_existing=True
+    )
+
+
 async def _require_main_leave_type(session: AsyncSession, leave_type_id: int) -> None:
     """Вид существует и он основной. Проверяется ДО блокировки строки
     сотрудника: неверный вызов не должен держать её до конца транзакции
@@ -265,6 +310,26 @@ async def _require_main_leave_type(session: AsyncSession, leave_type_id: int) ->
         raise BalanceEntryError(
             "Начисление выполняется только по основному оплачиваемому отпуску."
         )
+
+
+async def _latest_import_year(
+    session: AsyncSession, employee_id: int, leave_type_id: int
+) -> datetime.date | None:
+    """Начало самого позднего рабочего года с событием `initial_import`."""
+    return await session.scalar(
+        select(func.max(LeaveBalanceEntry.working_year_start)).where(
+            LeaveBalanceEntry.employee_id == employee_id,
+            LeaveBalanceEntry.leave_type_id == leave_type_id,
+            LeaveBalanceEntry.entry_type == INITIAL_IMPORT,
+        )
+    )
+
+
+def _closed_by_import_message(year_start: datetime.date, import_year: datetime.date) -> str:
+    return (
+        f"Начисление за рабочий год с {year_start:%d.%m.%Y} закрыто: "
+        f"начальный остаток занесён за рабочий год с {import_year:%d.%m.%Y}."
+    )
 
 
 async def accrue_leave(
@@ -320,7 +385,7 @@ async def accrue_leave(
     if attribution is not None and not attribution.reason_prefix.strip():
         raise BalanceEntryError("Для начисления по пересчёту нужна причина.")
     await _require_main_leave_type(session, leave_type_id)
-    employee = await session.get(Employee, employee_id, with_for_update=True)
+    employee = await _lock_employee(session, employee_id)
     if employee is None:
         raise BalanceEntryError("Сотрудник не найден.")
     rules = await get_ints(session, ANNUAL_LEAVE_DAYS, MONTH_ROUNDING_THRESHOLD_DAYS)
@@ -336,17 +401,10 @@ async def accrue_leave(
     except ValueError as error:
         raise BalanceEntryError(str(error)) from error
 
-    closing_import_year = await session.scalar(
-        select(func.max(LeaveBalanceEntry.working_year_start)).where(
-            LeaveBalanceEntry.employee_id == employee_id,
-            LeaveBalanceEntry.leave_type_id == leave_type_id,
-            LeaveBalanceEntry.entry_type == INITIAL_IMPORT,
-        )
-    )
+    closing_import_year = await _latest_import_year(session, employee_id, leave_type_id)
     if closing_import_year is not None and closing_import_year >= accrual.working_year_start:
         raise AccrualClosedError(
-            f"Начисление за рабочий год с {accrual.working_year_start:%d.%m.%Y} закрыто: "
-            f"начальный остаток занесён за рабочий год с {closing_import_year:%d.%m.%Y}."
+            _closed_by_import_message(accrual.working_year_start, closing_import_year)
         )
 
     already = await session.execute(
@@ -400,21 +458,60 @@ async def accrue_all_working_years(
     нет). Завершённые годы начисляются на их последний день (значит, полной
     нормой), текущий - на `as_of`. Повторный вызов ничего не пишет.
 
-    Годы, закрытые начальным остатком (`AccrualClosedError`), пропускаются и
-    названы в `skipped` с причиной. `excluded_days` = 0 для всех лет - оговорка
-    до появления учёта отпусков без содержания (M3, `T-M2-19`). Сотрудник
-    принят позже `as_of` - пусто. `attribution` пробрасывается в `accrue_leave`. Замок -
+    Годы, которые НЕ начисляются, пропускаются и названы в `skipped` с причиной
+    (это не ошибка читающего кода): (1) закрытые начальным остатком
+    (`AccrualClosedError`); (2) БАРЬЕР против выдуманного остатка (решение
+    заказчика, `T-M2-19`): годы, ЗАКОНЧИВШИЕСЯ до появления карточки сотрудника в
+    Системе (`employees.created_at`, дата в UTC). Смысл: Система ведёт остаток с
+    момента, как узнала о сотруднике, прошлое приходит начальным остатком
+    (`initial_import`, `T-M1-36`), а не вычисляется. Граница: год, закончившийся
+    ПОСЛЕ появления карточки (в том числе карточка заведена внутри первого
+    рабочего года, через неделю после приёма), начисляется целиком; год
+    заканчивается в последний день, и карточка, появившаяся в этот день, год
+    сохраняет. Если год попадает под оба правила, причина называет оба.
+    Остаётся ДЫРА (один текущий год): текущий год сотрудника без импорта
+    начисляется с начала года, хотя до появления карточки история использования
+    Системе неизвестна. `excluded_days` = 0 для всех лет - оговорка до появления
+    учёта отпусков без содержания (M3, `T-M3-37`). Сотрудник принят позже
+    `as_of` - пусто. Уволенный: догон идёт не дальше `termination_date` (включительно),
+    уволенный без даты - `BalanceEntryError`. `attribution` пробрасывается в `accrue_leave`. Замок -
     тот же единственный, что в `accrue_leave`."""
     await _require_main_leave_type(session, leave_type_id)
-    employee = await session.get(Employee, employee_id, with_for_update=True)
+    employee = await _lock_employee(session, employee_id)
     if employee is None:
         raise BalanceEntryError("Сотрудник не найден.")
+    if employee.termination_date is None and employee.employment_status == "terminated":
+        # Инвариант карточки (`deactivate_employee` требует дату увольнения): громкий
+        # отказ вместо догадки, до какой даты начислять.
+        raise BalanceEntryError(
+            "У уволенного сотрудника не указана дата увольнения: начислять не до какой даты."
+        )
+    if employee.termination_date is not None:
+        # Начисление не идёт дальше даты увольнения (последний день работы -
+        # включительно, ст. 84.1 ТК РФ): право за время после увольнения не
+        # возникает, а `T-M1-37` фиксирует остаток именно на эту дату.
+        as_of = min(as_of, employee.termination_date)
+    card_date = employee.created_at.astimezone(datetime.UTC).date()
+    import_year = await _latest_import_year(session, employee_id, leave_type_id)
     starts = working_year_starts(employee.hire_date, as_of)
     accrued: dict[datetime.date, Decimal] = {}
     skipped: dict[datetime.date, str] = {}
     for index, start in enumerate(starts):
         is_last = index == len(starts) - 1
-        year_as_of = as_of if is_last else starts[index + 1] - datetime.timedelta(days=1)
+        next_start = working_year_start_on(employee.hire_date, index + 1)
+        year_as_of = as_of if is_last else next_start - datetime.timedelta(days=1)
+        reasons: list[str] = []
+        if next_start <= card_date:
+            reasons.append(
+                f"Рабочий год {start:%d.%m.%Y}-{next_start - datetime.timedelta(days=1):%d.%m.%Y} "
+                f"закончился до появления карточки сотрудника в Системе ({card_date:%d.%m.%Y}): "
+                "прошлое приходит начальным остатком (initial_import, T-M1-36), а не вычисляется."
+            )
+        if import_year is not None and import_year >= start:
+            reasons.append(_closed_by_import_message(start, import_year))
+        if reasons:
+            skipped[start] = " ".join(reasons)
+            continue
         try:
             written = await accrue_leave(
                 session,
@@ -424,7 +521,7 @@ async def accrue_all_working_years(
                 working_year_start=start,
                 attribution=attribution,
             )
-        except AccrualClosedError as error:
+        except AccrualClosedError as error:  # защитно: между проверкой и записью
             skipped[start] = str(error)
             continue
         if written > 0:
@@ -516,7 +613,7 @@ async def recalculate_balance(
         raise LeaveTypeNotSeededError(
             f"В справочнике нет основного вида отпуска {MAIN_LEAVE_TYPE_CODE!r}."
         )
-    employee = await session.get(Employee, employee_id, with_for_update=True)
+    employee = await _lock_employee(session, employee_id)
     if employee is None:
         raise BalanceEntryError("Сотрудник не найден.")
     old_hire_date, new_hire_date = changes["hire_date"]
@@ -653,3 +750,54 @@ async def _write_recalculation(
         )
     )
     await session.flush()
+
+
+async def accrue_before_read(
+    session: AsyncSession, *, employee_id: int, as_of: datetime.date
+) -> CatchUpResult:
+    """Ленивое начисление при чтении (`T-M2-19`, решение заказчика): догоняет
+    начисление по основному виду на дату `as_of` через `accrue_all_working_years`
+    (своего цикла по годам и своей арифметики нет); остаток после этого читает
+    вызывающий через `get_balance`. Звать ПЕРЕД каждым чтением, по которому
+    принимается решение, а не только перед показом.
+
+    ЧТЕНИЕ СТАНОВИТСЯ ПИШУЩЕЙ ОПЕРАЦИЕЙ. Эндпоинт идёт в транзакции и сам делает
+    `commit`; одновременные чтения по одному сотруднику сериализуются на замке
+    строки сотрудника (`FOR UPDATE` в `accrue_all_working_years`). Пишущий `GET`
+    выглядит странно, но безопасен и чинить его не надо: повторный вызов на ту же
+    дату ничего не пишет (свойство `accrue_leave`, проверено тестом), поэтому
+    повтор запроса безопасен.
+
+    Годы, закрытые импортом или барьером, - не ошибка: они приходят в
+    `skipped`. Отказ самого начисления (не закрытый год: `BalanceEntryError`,
+    `LeaveTypeNotSeededError`) НЕ перехватывается - устаревшее число молча не
+    отдаётся. `excluded_days` = 0 - оговорка до периодов без содержания (M3)."""
+    leave_type_id = await session.scalar(
+        select(LeaveType.id).where(LeaveType.code == MAIN_LEAVE_TYPE_CODE)
+    )
+    if leave_type_id is None:
+        raise LeaveTypeNotSeededError(
+            f"В справочнике нет основного вида отпуска {MAIN_LEAVE_TYPE_CODE!r}."
+        )
+    return await accrue_all_working_years(
+        session, employee_id=employee_id, leave_type_id=leave_type_id, as_of=as_of
+    )
+
+
+async def get_working_year(
+    session: AsyncSession, employee_id: int, on_date: datetime.date
+) -> tuple[datetime.date, datetime.date]:
+    """Рабочий год сотрудника, в который попадает `on_date`: (начало, конец
+    исключительно). ЕДИНСТВЕННОЕ место, которое отвечает на этот вопрос для слоя
+    API (эндпоинт корректировки не вычисляет границы сам, клиент их не присылает).
+    Исключаемые дни не учитываются (`excluded_days` = 0, оговорка `T-M2-19`).
+    Сотрудника нет или дата раньше приёма - `BalanceEntryError`."""
+    hire_date = await session.scalar(select(Employee.hire_date).where(Employee.id == employee_id))
+    if hire_date is None:
+        raise BalanceEntryError("Сотрудник не найден.")
+    try:
+        return working_year_containing(hire_date, on_date)
+    except ValueError as error:
+        raise BalanceEntryError(
+            f"Дата {on_date:%d.%m.%Y} раньше даты приёма сотрудника ({hire_date:%d.%m.%Y})."
+        ) from error

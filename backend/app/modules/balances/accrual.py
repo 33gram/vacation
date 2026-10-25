@@ -79,6 +79,19 @@ def working_year_start_on(hire_date: datetime.date, year_index: int) -> datetime
     return _anniversary(hire_date, year_index)
 
 
+def working_year_containing(
+    hire_date: datetime.date, on_date: datetime.date
+) -> tuple[datetime.date, datetime.date]:
+    """Рабочий год, в который попадает `on_date`: (начало, конец исключительно) по
+    годовщинам приёма. Исключаемые дни не учитываются (границы - в докстринге
+    модуля: дата в «хвосте» сдвинутого года относится к следующему году)."""
+    if on_date < hire_date:
+        raise ValueError("Дата раньше даты приёма.")
+    start = working_year_starts(hire_date, on_date)[-1]
+    year_index = start.year - hire_date.year
+    return start, _anniversary(hire_date, year_index + 1)
+
+
 def is_working_year_start(hire_date: datetime.date, start: datetime.date) -> bool:
     """`start` - начало какого-то рабочего года при данной дате приёма, то есть
     годовщина приёма (не раньше самой даты приёма)."""

@@ -41,10 +41,24 @@ D = datetime.date
 AS_OF = D(2026, 10, 24)
 
 
-async def _hired(db_session, hire: datetime.date, suffix: str = "a") -> Context:
+async def _hired(
+    db_session,
+    hire: datetime.date,
+    suffix: str = "a",
+    card_created: datetime.date | None = None,
+) -> Context:
+    """Сотрудник с датой приёма `hire`. Карточка по умолчанию заведена задолго до
+    всех дат приёма этого файла (01.01.2020): барьер против выдуманного остатка
+    (годы, закончившиеся до появления карточки, не начисляются) не мешает
+    проверять сам пересчёт; барьер проверяется отдельным тестом ниже и в
+    `test_lazy_accrual.py`."""
     ctx = await make_context(db_session, suffix)
     employee = await db_session.get(Employee, ctx.employee_id)
     employee.hire_date = hire
+    created = card_created or D(2020, 1, 1)
+    employee.created_at = datetime.datetime(
+        created.year, created.month, created.day, tzinfo=datetime.UTC
+    )
     await db_session.flush()
     return ctx
 
@@ -636,3 +650,19 @@ async def test_fr_bal_003_a_missing_main_leave_type_is_a_configuration_error_not
         await _recalculate(db_session, ctx, D(2026, 3, 10), D(2026, 3, 20))
 
     assert not isinstance(excinfo.value, BalanceEntryError)  # эндпоинт не переведёт в 400
+
+
+async def test_fr_bal_003_moving_the_hire_date_back_before_the_card_does_not_invent_the_years(
+    db_session,
+) -> None:
+    # Карточка заведена 10.03.2026; дата приёма сдвинута на два года назад. Годы,
+    # закончившиеся до появления карточки, пересчёт НЕ начисляет (барьер, T-M2-19):
+    # прошлое приходит начальным остатком, а не вычисляется.
+    ctx = await _hired(db_session, D(2026, 3, 10), card_created=D(2026, 3, 10))
+    await _accrue(db_session, ctx, AS_OF)
+    await _set_hire(db_session, ctx, D(2024, 3, 10))
+
+    result = await _recalculate(db_session, ctx, D(2026, 3, 10), D(2024, 3, 10))
+
+    assert result.catch_up.accrued == {}
+    assert set(result.catch_up.skipped) == {D(2024, 3, 10), D(2025, 3, 10)}

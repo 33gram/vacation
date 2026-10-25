@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-from sqlalchemy import CheckConstraint, Numeric
+from sqlalchemy import CheckConstraint, Numeric, false
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -68,6 +68,14 @@ class LeaveType(Base):
     # количество.
     unit: Mapped[str] = mapped_column(nullable=False)
     reduces_main_balance: Mapped[bool] = mapped_column(nullable=False)
+    # Ведёт ли Система по виду остаток: начисление, списание, историю и
+    # показ в «Моём отпуске» (раздел 6 v1.26). Не то же, что
+    # `reduces_main_balance` (использование вида списывает ОСНОВНОЙ
+    # остаток), `annual_limit` (размер) и `is_paid` (оплата). Единственное
+    # исключение из «колонки без умолчания»: умолчание ложь стоит в БД
+    # (миграция `0010`, там причина) и повторено здесь, чтобы схема модели
+    # совпадала со схемой БД.
+    balance_tracked: Mapped[bool] = mapped_column(nullable=False, server_default=false())
     requires_document: Mapped[bool] = mapped_column(nullable=False)
     # Только факт «нужно ли согласование»; МАРШРУТ (раздел 6: «и по какому
     # маршруту») живёт не здесь, а в `approval_routes.leave_type_id`

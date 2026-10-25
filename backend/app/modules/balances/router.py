@@ -12,14 +12,20 @@
 правит; `system_admin` права на корректировку остатка не получает - ВЫБРАНО).
 
 ЧТЕНИЕ ПИШЕТ (`T-M2-19`): `GET` начисляет лениво и коммитит; повтор запроса ничего не
-пишет, поэтому безопасен. Начисление идёт не дальше сегодняшней даты: запрос на
-будущую дату показывает записанное, прогноз не считается (второй арифметики остатка
-быть не должно).
+пишет, поэтому безопасен. Начисление всегда идёт до сегодняшней даты (и не дальше даты
+увольнения), а `as_of` - только фильтр показа: смотреть историю на дату - не повод менять
+журнал задним числом; запрос на будущую дату показывает записанное, прогноз не считается
+(второй арифметики остатка быть не должно).
+
+ПОРЯДОК 404/403: в `GET` сначала 404, потом 403 (как у `GET /api/employees/{id}`); в
+`POST` роль проверяет зависимость FastAPI ДО тела обработчика, поэтому там 403 раньше
+404. Выравнивать значило бы тащить проверку роли в тело - не делаем.
 """
 
 from __future__ import annotations
 
 import datetime
+from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import or_, select
@@ -28,9 +34,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.time_utils import utcnow
 from app.db.session import get_db_session
 from app.models.account import Account
-from app.models.employee import Employee
 from app.models.leave_type import LeaveType
 from app.modules.auth.rbac import get_current_account, require_roles
+from app.modules.auth.repository import SYSTEM_AUTHOR_LABEL, get_author_display_names
 from app.modules.balances.accrual import working_year_containing
 from app.modules.balances.service import (
     MAIN_LEAVE_TYPE_CODE,
@@ -57,31 +63,15 @@ router = APIRouter(prefix="/api/employees/{employee_id}/balances", tags=["balanc
 
 _require_balance_editor = require_roles("hr_admin")
 
-# Набор видов в ответе (`FR-BAL-002`: «по каждому применимому виду оплачиваемого
-# отпуска») - ВЫБРАНО: основной вид ВСЕГДА (нулевая строка у него осмысленна: «у вас пока
-# ноль») плюс любой вид, по которому у сотрудника есть события журнала. Причина: в
-# справочнике нет признака «по виду ведётся остаток» (`annual_limit` пуст у всех видов,
-# `reduces_main_balance` означает другое), фильтр по `is_active`/`is_paid` пропускал бы
-# «командировку» нулевой строкой в «Моём отпуске». Остальные виды появятся сами, когда
-# M3 начнёт писать по ним использование. Настоящий пробел - `T-M2-20`.
-
-
-async def _author_names(session: AsyncSession, account_ids: set[int]) -> dict[int, str]:
-    if not account_ids:
-        return {}
-    rows = await session.execute(
-        select(Account.id, Employee.full_name, Account.login)
-        .outerjoin(Employee, Employee.id == Account.employee_id)
-        .where(Account.id.in_(account_ids))
-    )
-    return {row.id: row.full_name or row.login or f"аккаунт {row.id}" for row in rows}
-
-
 @router.get("", response_model=EmployeeBalancesOut)
 async def get_employee_balances(
     employee_id: int,
     as_of: datetime.date | None = Query(
-        default=None, description="Дата расчёта остатка (BR-8); по умолчанию сегодня (UTC)."
+        default=None,
+        description=(
+            "Дата показа остатка (BR-8); по умолчанию сегодня (UTC). Это только ФИЛЬТР "
+            "показа: журнал по ней не меняется, начисление идёт до сегодняшнего дня."
+        ),
     ),
     session: AsyncSession = Depends(get_db_session),
     account: Account = Depends(get_current_account),
@@ -95,41 +85,62 @@ async def get_employee_balances(
         )
     today = utcnow().date()
     on_date = as_of or today
-    # Ленивое начисление перед чтением (T-M2-19); не дальше сегодня. Отказ
-    # начисления не перехватывается: устаревшее число молча не отдаётся.
-    await accrue_before_read(session, employee_id=employee_id, as_of=min(on_date, today))
+    # Ленивое начисление перед чтением (T-M2-19) ВСЕГДА до сегодняшнего дня (и не дальше
+    # даты увольнения - это решает модуль): запрос на прошлую дату журнал задним числом
+    # не меняет, запрос на будущую - не пишет вперёд и показывает записанное, прогноз не
+    # считается. Отказ начисления не перехватывается: устаревшее число молча не отдаётся.
+    await accrue_before_read(session, employee_id=employee_id, as_of=today)
     await session.commit()
 
+    # Набор видов (FR-BAL-002: «по каждому применимому виду оплачиваемого отпуска») -
+    # ВЫБРАНО: основной вид ВСЕГДА (нулевая строка у него осмысленна: «у вас пока ноль»)
+    # плюс любой вид, по которому у сотрудника есть события журнала. Причина: в
+    # справочнике нет признака «по виду ведётся остаток» (`annual_limit` пуст у всех
+    # видов, `reduces_main_balance` означает другое), а фильтр по `is_active`/`is_paid`
+    # пропускал бы «командировку» нулевой строкой в «Моём отпуске». Остальные виды
+    # появятся сами, когда M3 начнёт писать по ним использование; настоящий пробел -
+    # `T-M2-20`. `is_active` НЕ проверяется: остаток существует независимо от того, активен
+    # ли справочный вид (деактивация вида не должна прятать накопленное).
     with_events = await list_leave_type_ids_with_events(session, employee_id)
     leave_types = (
-        await session.execute(
-            select(LeaveType)
-            .where(or_(LeaveType.code == MAIN_LEAVE_TYPE_CODE, LeaveType.id.in_(with_events)))
-            .order_by(LeaveType.id)
+        (
+            await session.execute(
+                select(LeaveType)
+                .where(or_(LeaveType.code == MAIN_LEAVE_TYPE_CODE, LeaveType.id.in_(with_events)))
+                .order_by(LeaveType.id)
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
+
+    # Рабочий год даты от вида отпуска не зависит. Чистая функция, а не
+    # `get_working_year`: сотрудник уже загружен, лишний запрос не нужен (в `POST` берётся
+    # `get_working_year`, она оборачивает эту же функцию).
+    if employee.hire_date <= on_date:
+        year_start, year_end = working_year_containing(employee.hire_date, on_date)
+    else:
+        year_start = year_end = None
+
+    histories = {
+        leave_type.id: await list_entries(session, employee_id, leave_type.id, as_of=on_date)
+        for leave_type in leave_types
+    }
+    author_ids = {
+        e.actor_account_id
+        for entries in histories.values()
+        for e in entries
+        if e.actor_account_id is not None
+    }
+    names = await get_author_display_names(session, author_ids)
 
     out: list[LeaveTypeBalanceOut] = []
-    histories = {}
-    author_ids: set[int] = set()
     for leave_type in leave_types:
-        entries = await list_entries(session, employee_id, leave_type.id, as_of=on_date)
-        histories[leave_type.id] = entries
-        author_ids |= {e.actor_account_id for e in entries if e.actor_account_id is not None}
-    names = await _author_names(session, author_ids)
-
-    for leave_type in leave_types:
-        if employee.hire_date <= on_date:
-            # Чистая функция, а не `get_working_year`: сотрудник уже загружен выше,
-            # лишний запрос за датой приёма не нужен (в `POST` её нет - там берётся
-            # `get_working_year`, она оборачивает эту же функцию).
-            year_start, year_end = working_year_containing(employee.hire_date, on_date)
-            balance = await get_balance(
-                session, employee_id, leave_type.id, year_start, as_of=on_date
-            )
-        else:
-            year_start = year_end = None
-            balance = 0
+        balance = (
+            await get_balance(session, employee_id, leave_type.id, year_start, as_of=on_date)
+            if year_start is not None
+            else Decimal(0)
+        )
         out.append(
             LeaveTypeBalanceOut(
                 leave_type_id=leave_type.id,
@@ -151,10 +162,10 @@ async def get_employee_balances(
                         working_year_start=e.working_year_start,
                         working_year_end=e.working_year_end,
                         reason=e.reason,
-                        actor_account_id=e.actor_account_id,
-                        actor_name=names.get(e.actor_account_id)
-                        if e.actor_account_id is not None
-                        else None,
+                        # Только подпись: идентификатор аккаунта наружу не отдаётся.
+                        actor_name=SYSTEM_AUTHOR_LABEL
+                        if e.actor_account_id is None
+                        else names.get(e.actor_account_id, SYSTEM_AUTHOR_LABEL),
                     )
                     for e in histories[leave_type.id]
                 ],

@@ -247,6 +247,15 @@ async def adjust_balance(
     stripped_reason = reason.strip()
     if not stripped_reason:
         raise BalanceEntryError("Укажите причину корректировки.")
+    # Корректировка по АКТИВНОМУ неосновному виду разрешена (осознанное действие HR,
+    # не начисление); по неактивному - отказ. ВЫБРАНО.
+    leave_type_active = await session.scalar(
+        select(LeaveType.is_active).where(LeaveType.id == leave_type_id)
+    )
+    if leave_type_active is None:
+        raise BalanceEntryError("Вид отпуска не найден.")
+    if not leave_type_active:
+        raise BalanceEntryError("Вид отпуска неактивен: корректировка по нему невозможна.")
     if actor_account_id is None:
         raise BalanceEntryError("Не указан автор корректировки.")
     if quantity == 0:
@@ -268,6 +277,24 @@ async def adjust_balance(
     )
     await session.flush()
     return await get_balance(session, employee_id, leave_type_id, working_year_start)
+
+
+async def _lock_employee(session: AsyncSession, employee_id: int) -> Employee | None:
+    """Строка сотрудника ПОД ЗАМКОМ и ПЕРЕЧИТАННАЯ (`T-M2-11`, замечание ревью).
+
+    `session.get(..., with_for_update=True)` для уже загруженного объекта (слой API
+    читает сотрудника раньше) шлёт `SELECT ... FOR UPDATE`, но атрибуты объекта НЕ
+    обновляет: расчёт шёл бы по устаревшей `hire_date`, если параллельная
+    транзакция её сменила (измерено на sqlalchemy 2.0.54, закреплено тестом).
+    Поэтому `populate_existing=True`: одно обращение, перечитывает объект и
+    возвращает `None`, если строки нет (`refresh` в этом случае бросил бы
+    исключение). Перед этим `flush`: `populate_existing` затёр бы несохранённые
+    правки объекта, а пересчёт при смене даты приёма приходит с ещё не
+    сброшенной в БД новой датой. Единственный замок модуля; порядка замков нет."""
+    await session.flush()
+    return await session.get(
+        Employee, employee_id, with_for_update=True, populate_existing=True
+    )
 
 
 async def _require_main_leave_type(session: AsyncSession, leave_type_id: int) -> None:
@@ -358,7 +385,7 @@ async def accrue_leave(
     if attribution is not None and not attribution.reason_prefix.strip():
         raise BalanceEntryError("Для начисления по пересчёту нужна причина.")
     await _require_main_leave_type(session, leave_type_id)
-    employee = await session.get(Employee, employee_id, with_for_update=True)
+    employee = await _lock_employee(session, employee_id)
     if employee is None:
         raise BalanceEntryError("Сотрудник не найден.")
     rules = await get_ints(session, ANNUAL_LEAVE_DAYS, MONTH_ROUNDING_THRESHOLD_DAYS)
@@ -442,16 +469,28 @@ async def accrue_all_working_years(
     рабочего года, через неделю после приёма), начисляется целиком; год
     заканчивается в последний день, и карточка, появившаяся в этот день, год
     сохраняет. Если год попадает под оба правила, причина называет оба.
-    Остаётся ДЫРА (одна, а не все годы): текущий год сотрудника без импорта
+    Остаётся ДЫРА (один текущий год): текущий год сотрудника без импорта
     начисляется с начала года, хотя до появления карточки история использования
     Системе неизвестна. `excluded_days` = 0 для всех лет - оговорка до появления
-    учёта отпусков без содержания (M3, `T-M2-19`). Сотрудник принят позже
-    `as_of` - пусто. `attribution` пробрасывается в `accrue_leave`. Замок -
+    учёта отпусков без содержания (M3, `T-M3-37`). Сотрудник принят позже
+    `as_of` - пусто. Уволенный: догон идёт не дальше `termination_date` (включительно),
+    уволенный без даты - `BalanceEntryError`. `attribution` пробрасывается в `accrue_leave`. Замок -
     тот же единственный, что в `accrue_leave`."""
     await _require_main_leave_type(session, leave_type_id)
-    employee = await session.get(Employee, employee_id, with_for_update=True)
+    employee = await _lock_employee(session, employee_id)
     if employee is None:
         raise BalanceEntryError("Сотрудник не найден.")
+    if employee.termination_date is None and employee.employment_status == "terminated":
+        # Инвариант карточки (`deactivate_employee` требует дату увольнения): громкий
+        # отказ вместо догадки, до какой даты начислять.
+        raise BalanceEntryError(
+            "У уволенного сотрудника не указана дата увольнения: начислять не до какой даты."
+        )
+    if employee.termination_date is not None:
+        # Начисление не идёт дальше даты увольнения (последний день работы -
+        # включительно, ст. 84.1 ТК РФ): право за время после увольнения не
+        # возникает, а `T-M1-37` фиксирует остаток именно на эту дату.
+        as_of = min(as_of, employee.termination_date)
     card_date = employee.created_at.astimezone(datetime.UTC).date()
     import_year = await _latest_import_year(session, employee_id, leave_type_id)
     starts = working_year_starts(employee.hire_date, as_of)
@@ -574,7 +613,7 @@ async def recalculate_balance(
         raise LeaveTypeNotSeededError(
             f"В справочнике нет основного вида отпуска {MAIN_LEAVE_TYPE_CODE!r}."
         )
-    employee = await session.get(Employee, employee_id, with_for_update=True)
+    employee = await _lock_employee(session, employee_id)
     if employee is None:
         raise BalanceEntryError("Сотрудник не найден.")
     old_hire_date, new_hire_date = changes["hire_date"]

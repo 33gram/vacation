@@ -237,3 +237,46 @@ async def test_lazy_a_missing_main_leave_type_is_a_configuration_error(db_sessio
 
     with pytest.raises(LeaveTypeNotSeededError):
         await accrue_before_read(db_session, employee_id=ctx.employee_id, as_of=AS_OF)
+
+
+# --- уволенный сотрудник ---------------------------------------------------------
+
+
+async def test_terminated_accrual_stops_at_the_termination_date_even_a_year_later(
+    db_session,
+) -> None:
+    # Принят 10.03.2026, уволен 10.07.2026 (последний день работы - включительно).
+    # Прочитан спустя год (27.10.2027): событий после даты увольнения нет.
+    ctx = await _employee(db_session, D(2026, 3, 10), _utc(2026, 3, 10))
+    employee = await db_session.get(Employee, ctx.employee_id)
+    employee.employment_status = "terminated"
+    employee.termination_date = D(2026, 7, 10)
+    await db_session.flush()
+
+    result = await _catch_up(db_session, ctx, as_of=D(2027, 10, 27))
+
+    # 4 полных месяца (10.03-09.07) + остаток 10.07 = 1 день < 15: 28 * 4 / 12.
+    assert result.accrued == {D(2026, 3, 10): Decimal("9.33")}
+    entries = (
+        await db_session.execute(
+            select(LeaveBalanceEntry.entry_date).where(
+                LeaveBalanceEntry.employee_id == ctx.employee_id
+            )
+        )
+    ).scalars()
+    assert max(entries) == D(2026, 7, 10)
+    again = await _catch_up(db_session, ctx, as_of=D(2028, 10, 27))
+    assert again.accrued == {}  # и ещё через год - ничего нового
+
+
+async def test_terminated_without_a_termination_date_is_a_loud_refusal(db_session) -> None:
+    ctx = await _employee(db_session, D(2026, 3, 10), _utc(2026, 3, 10))
+    employee = await db_session.get(Employee, ctx.employee_id)
+    employee.employment_status = "terminated"
+    employee.termination_date = None
+    await db_session.flush()
+
+    with pytest.raises(BalanceEntryError, match="не указана дата увольнения"):
+        await _catch_up(db_session, ctx)
+
+    assert await _count(db_session, ctx) == 0

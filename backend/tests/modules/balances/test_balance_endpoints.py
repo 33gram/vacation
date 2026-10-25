@@ -64,7 +64,7 @@ def _url(employee_id: int, suffix: str = "") -> str:
 # --- FR-BAL-002 ----------------------------------------------------------------
 
 
-async def test_fr_bal_002_opening_my_balance_gives_every_applicable_type_and_the_history(
+async def test_fr_bal_002_opening_my_balance_gives_the_main_type_with_its_history(
     db_session, api_client
 ) -> None:
     ctx, employee, own = await _setup(db_session)
@@ -83,7 +83,8 @@ async def test_fr_bal_002_opening_my_balance_gives_every_applicable_type_and_the
     assert main["unit"] == "calendar_days"
     assert main["working_year_start"] == HIRED.isoformat()
     assert [e["entry_type"] for e in main["history"]] == [ACCRUAL]
-    assert main["history"][0]["actor_name"] is None  # начисляет система
+    assert main["history"][0]["actor_name"] == "Система"  # начисляет система
+    assert "actor_account_id" not in main["history"][0]  # внутренний идентификатор не отдаётся
     assert body["as_of"] == TODAY.isoformat()
 
 
@@ -135,21 +136,65 @@ async def test_fr_bal_002_the_history_is_cut_at_the_requested_date(db_session, a
     assert MANUAL_ADJUSTMENT not in [e["entry_type"] for e in main["history"]]
 
 
-async def test_fr_bal_002_the_history_shows_the_name_of_the_author(db_session, api_client) -> None:
+async def test_fr_bal_002_the_history_shows_the_name_of_the_author_not_the_login(
+    db_session, api_client
+) -> None:
     ctx, employee, own = await _setup(db_session)
     hr = await _account(db_session, "hr_admin", "hr-name@company.local", full_name="Анна Кадрова")
-    adjust = await api_client.post(
-        _url(employee.id, "/adjust"),
-        json={"leave_type_id": ctx.leave_type_id, "quantity": "2", "reason": "Перенос"},
-        headers=bearer_header(hr),
+    # Аккаунт БЕЗ карточки (например, первичный администратор): логин не показывается.
+    cardless = await make_account(
+        db_session, login="secret-boss", role="hr_admin", auth_type="local"
     )
-    assert adjust.status_code == 200
+    for account, quantity in ((hr, "2"), (cardless, "1")):
+        adjust = await api_client.post(
+            _url(employee.id, "/adjust"),
+            json={"leave_type_id": ctx.leave_type_id, "quantity": quantity, "reason": "Перенос"},
+            headers=bearer_header(account),
+        )
+        assert adjust.status_code == 200
 
     response = await api_client.get(_url(employee.id), headers=bearer_header(own))
 
     main = next(b for b in response.json()["balances"] if b["code"] == "annual_paid")
     manual = [e for e in main["history"] if e["entry_type"] == MANUAL_ADJUSTMENT]
-    assert [(e["actor_name"], e["reason"]) for e in manual] == [("Анна Кадрова", "Перенос")]
+    assert [e["actor_name"] for e in manual] == ["Анна Кадрова", "Администратор"]
+    assert "secret-boss" not in response.text
+
+
+async def test_fr_bal_002_the_history_is_cut_at_the_requested_date_and_keeps_the_accrual(
+    db_session, api_client
+) -> None:
+    # Принят 400 дней назад: завершённый год начислен на его последний день.
+    ctx, employee, own = await _setup(db_session)
+    hire = TODAY - datetime.timedelta(days=400)
+    employee.hire_date = hire
+    employee.created_at = datetime.datetime(2000, 1, 1, tzinfo=datetime.UTC)
+    await db_session.flush()
+    hr = await _account(db_session, "hr_admin", "hr-cut@company.local")
+    first_year_last_day = hire.replace(year=hire.year + 1) - datetime.timedelta(days=1)
+    adjust_date = first_year_last_day + datetime.timedelta(days=5)
+    adjust = await api_client.post(
+        _url(employee.id, "/adjust"),
+        json={
+            "leave_type_id": ctx.leave_type_id,
+            "quantity": "3",
+            "reason": "Позже",
+            "entry_date": adjust_date.isoformat(),
+        },
+        headers=bearer_header(hr),
+    )
+    assert adjust.status_code == 200
+
+    earlier = await api_client.get(
+        _url(employee.id),
+        params={"as_of": (adjust_date - datetime.timedelta(days=1)).isoformat()},
+        headers=bearer_header(own),
+    )
+
+    main = earlier.json()["balances"][0]
+    types = [e["entry_type"] for e in main["history"]]
+    assert types == [ACCRUAL]  # начисление за завершённый год осталось, корректировки нет
+    assert main["history"][0]["entry_date"] == first_year_last_day.isoformat()
 
 
 # --- ленивое начисление (T-M2-19) ----------------------------------------------
@@ -171,17 +216,36 @@ async def test_lazy_the_first_get_writes_the_accrual_and_the_second_get_writes_n
     assert first.json() == second.json()
 
 
-async def test_lazy_a_get_on_a_past_date_does_not_accrue_forward(db_session, api_client) -> None:
+async def test_lazy_a_get_on_a_past_date_does_not_write_events_dated_that_day(
+    db_session, api_client
+) -> None:
+    # Смотреть остаток на прошлую дату - не повод менять журнал задним числом: начисление
+    # идёт до СЕГОДНЯ, `as_of` - только фильтр показа.
     ctx, employee, own = await _setup(db_session)
-    past = HIRED + datetime.timedelta(days=60)
+    hire = TODAY - datetime.timedelta(days=400)
+    employee.hire_date = hire
+    employee.created_at = datetime.datetime(2000, 1, 1, tzinfo=datetime.UTC)
+    await db_session.flush()
+    first_year_last_day = hire.replace(year=hire.year + 1) - datetime.timedelta(days=1)
+    past = hire + datetime.timedelta(days=50)
 
-    response = await api_client.get(
+    on_past = await api_client.get(
         _url(employee.id), params={"as_of": past.isoformat()}, headers=bearer_header(own)
     )
+    after_past = await _events(db_session, employee.id)
+    today = await api_client.get(_url(employee.id), headers=bearer_header(own))
 
-    assert response.status_code == 200
-    events = await _events(db_session, employee.id)
-    assert events and max(e.entry_date for e in events) == past  # дальше past не начислено
+    assert on_past.status_code == today.status_code == 200
+    assert {e.entry_date for e in after_past} == {first_year_last_day, TODAY}  # не `past`
+    assert len(await _events(db_session, employee.id)) == len(after_past)  # «сегодня» не дописало
+    # Остаток на прошлую дату - записанное на неё: до последнего дня года начисления ещё нет.
+    assert Decimal(on_past.json()["balances"][0]["balance"]) == 0
+    at_year_end = await api_client.get(
+        _url(employee.id),
+        params={"as_of": first_year_last_day.isoformat()},
+        headers=bearer_header(own),
+    )
+    assert Decimal(at_year_end.json()["balances"][0]["balance"]) == Decimal("28.00")
 
 
 async def test_lazy_a_get_on_a_future_date_never_writes_an_accrual_dated_in_the_future(
@@ -195,7 +259,9 @@ async def test_lazy_a_get_on_a_future_date_never_writes_an_accrual_dated_in_the_
     )
 
     assert response.status_code == 200 and response.json()["as_of"] == future.isoformat()
-    assert max(e.entry_date for e in await _events(db_session, employee.id)) <= TODAY
+    events = await _events(db_session, employee.id)
+    assert events  # начисление до сегодня записано
+    assert max(e.entry_date for e in events) == TODAY  # а не на будущую дату
 
 
 async def test_lazy_an_employee_whose_every_year_is_closed_reads_without_an_error(
@@ -445,3 +511,118 @@ async def test_the_total_balance_sums_every_working_year(db_session, api_client)
     years = {e["working_year_start"] for e in main["history"]}
     assert len(years) == 2
     assert Decimal(main["total_balance"]) > Decimal(main["balance"])
+
+
+# --- уволенный, неактивный вид, границы корректировки ---------------------------
+
+
+async def test_a_terminated_employee_is_accrued_only_up_to_the_termination_date(
+    db_session, api_client
+) -> None:
+    ctx, employee, own = await _setup(db_session)
+    termination = HIRED + datetime.timedelta(days=100)
+    employee.employment_status = "terminated"
+    employee.termination_date = termination
+    await db_session.flush()
+    hr = await _account(db_session, "hr_admin", "hr-term@company.local")
+
+    response = await api_client.get(_url(employee.id), headers=bearer_header(hr))
+
+    assert response.status_code == 200
+    events = await _events(db_session, employee.id)
+    assert events and {e.entry_date for e in events} == {termination}  # после увольнения - ничего
+
+
+async def test_a_manager_of_a_subordinates_subordinate_reads_the_balance(
+    db_session, api_client
+) -> None:
+    ctx, employee, own = await _setup(db_session)
+    middle = await _account(db_session, "employee", "middle@company.local")
+    top = await _account(db_session, "employee", "top@company.local")
+    employee.manager_id = middle.employee_id
+    middle_employee = await db_session.get(Employee, middle.employee_id)
+    middle_employee.manager_id = top.employee_id
+    await db_session.flush()
+
+    response = await api_client.get(_url(employee.id), headers=bearer_header(top))
+
+    assert response.status_code == 200
+
+
+async def test_fr_bal_004_an_adjustment_for_a_missing_employee_is_404(
+    db_session, api_client
+) -> None:
+    ctx, employee, own = await _setup(db_session)
+    hr = await _account(db_session, "hr_admin", "hr-missing@company.local")
+
+    response = await api_client.post(
+        _url(10_000_000, "/adjust"),
+        json={"leave_type_id": ctx.leave_type_id, "quantity": "1", "reason": "Причина"},
+        headers=bearer_header(hr),
+    )
+
+    assert response.status_code == 404
+
+
+async def test_fr_bal_004_an_adjustment_dated_in_the_future_is_rejected_by_the_schema(
+    db_session, api_client
+) -> None:
+    ctx, employee, own = await _setup(db_session)
+    hr = await _account(db_session, "hr_admin", "hr-future@company.local")
+
+    response = await api_client.post(
+        _url(employee.id, "/adjust"),
+        json={
+            "leave_type_id": ctx.leave_type_id,
+            "quantity": "1",
+            "reason": "Причина",
+            "entry_date": (TODAY + datetime.timedelta(days=1)).isoformat(),
+        },
+        headers=bearer_header(hr),
+    )
+
+    assert response.status_code == 422
+    events = await _events(db_session, employee.id)
+    assert [e for e in events if e.entry_type == MANUAL_ADJUSTMENT] == []
+
+
+async def test_fr_bal_004_an_adjustment_for_an_inactive_leave_type_is_refused(
+    db_session, api_client
+) -> None:
+    ctx, employee, own = await _setup(db_session)
+    hr = await _account(db_session, "hr_admin", "hr-inactive@company.local")
+    inactive_id = (
+        await db_session.execute(text("SELECT id FROM leave_types WHERE code = 'additional_paid'"))
+    ).scalar_one()  # засеян неактивным (A-3.1)
+
+    response = await api_client.post(
+        _url(employee.id, "/adjust"),
+        json={"leave_type_id": inactive_id, "quantity": "1", "reason": "Причина"},
+        headers=bearer_header(hr),
+    )
+
+    assert response.status_code == 400
+    assert "неактивен" in response.json()["detail"]
+
+
+async def test_an_inactive_main_leave_type_is_still_shown_but_cannot_be_adjusted(
+    db_session, api_client
+) -> None:
+    # Остаток существует независимо от того, активен ли справочный вид: деактивация вида
+    # не должна прятать накопленное (ВЫБРАНО); корректировать по неактивному нельзя.
+    ctx, employee, own = await _setup(db_session)
+    hr = await _account(db_session, "hr_admin", "hr-inactive-main@company.local")
+    await db_session.execute(
+        text("UPDATE leave_types SET is_active = false WHERE code = 'annual_paid'")
+    )
+
+    read = await api_client.get(_url(employee.id), headers=bearer_header(own))
+    adjust = await api_client.post(
+        _url(employee.id, "/adjust"),
+        json={"leave_type_id": ctx.leave_type_id, "quantity": "1", "reason": "Причина"},
+        headers=bearer_header(hr),
+    )
+
+    assert read.status_code == 200
+    assert [b["code"] for b in read.json()["balances"]] == ["annual_paid"]
+    assert adjust.status_code == 400

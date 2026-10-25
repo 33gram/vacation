@@ -5,13 +5,16 @@ from __future__ import annotations
 import datetime
 from decimal import Decimal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+from app.core.time_utils import utcnow
 
 
 class BalanceEntryOut(BaseModel):
-    """Событие истории остатка. `actor_name` подставляет слой эндпоинта по
-    `actor_account_id` (сервис `balances` имя не резолвит); `None` у события, которое
-    начисляет система."""
+    """Событие истории остатка. `actor_name` - ТОЛЬКО подпись автора: идентификатор
+    аккаунта в ответ не отдаётся (внутренний). «Система» - начисляет система; ФИО -
+    автор с карточкой; без карточки - нейтральная подпись («Администратор»,
+    «Пользователь системы»), логин не показывается."""
 
     id: int
     entry_type: str
@@ -20,8 +23,7 @@ class BalanceEntryOut(BaseModel):
     working_year_start: datetime.date
     working_year_end: datetime.date
     reason: str | None
-    actor_account_id: int | None
-    actor_name: str | None
+    actor_name: str
 
     model_config = {"from_attributes": True}
 
@@ -55,7 +57,20 @@ class BalanceAdjustRequest(BaseModel):
     leave_type_id: int
     quantity: Decimal = Field(max_digits=7, decimal_places=2)
     reason: str
-    entry_date: datetime.date | None = None
+    entry_date: datetime.date | None = Field(
+        default=None,
+        description=(
+            "Дата, на которую действует корректировка; по умолчанию сегодня (UTC). Не может "
+            "быть в будущем: корректировка фиксирует уже случившееся."
+        ),
+    )
+
+    @field_validator("entry_date")
+    @classmethod
+    def _not_in_the_future(cls, value: datetime.date | None) -> datetime.date | None:
+        if value is not None and value > utcnow().date():
+            raise ValueError("Дата корректировки не может быть в будущем.")
+        return value
 
 
 class BalanceAdjustOut(BaseModel):

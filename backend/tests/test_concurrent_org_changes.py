@@ -43,6 +43,7 @@ from app.models.account import Account
 from app.models.department import Department
 from app.models.employee import Employee
 from app.models.leave_balance_entry import ACCRUAL, RECALCULATION, LeaveBalanceEntry
+from app.modules.balances.service import accrue_before_read
 from app.modules.employees import department_service, employee_service
 from app.schemas.department import DepartmentUpdate
 from app.schemas.employee import EmployeeDeactivate, EmployeeUpdate
@@ -602,3 +603,120 @@ async def test_concurrent_hire_date_edits_recalculate_from_the_committed_previou
             )
             await cleanup.execute(delete(Department).where(Department.name == department_name))
             await cleanup.commit()
+
+
+# --- модуль balances: замок строки сотрудника и перечитывание (T-M2-11) -------------
+
+
+@asynccontextmanager
+async def _committed_employee(engine: AsyncEngine, hire_date: datetime.date):
+    """Сотрудник, реально зафиксированный в БД (для гонок между сессиями); по выходу
+    его события и строка удаляются по уникальному табельному номеру."""
+    marker = uuid.uuid4().hex[:12]
+    personnel_number = f"RACE-B-{marker}"
+    async with _fresh_session(engine) as setup:
+        employee = Employee(
+            full_name="Race Balance",
+            personnel_number=personnel_number,
+            position="Engineer",
+            hire_date=hire_date,
+            email=f"race-balance-{marker}@company.local",
+            work_schedule_type="standard",
+        )
+        setup.add(employee)
+        await setup.commit()
+        employee_id = employee.id
+    try:
+        yield employee_id
+    finally:
+        async with _fresh_session(engine) as cleanup:
+            await cleanup.execute(
+                text("DELETE FROM leave_balance_entries WHERE employee_id = :id"),
+                {"id": employee_id},
+            )
+            await cleanup.execute(delete(Employee).where(Employee.id == employee_id))
+            await cleanup.commit()
+
+
+async def _change_hire_date(engine: AsyncEngine, employee_id: int, hire_date: datetime.date):
+    async with _fresh_session(engine) as other:
+        await other.execute(
+            update(Employee).where(Employee.id == employee_id).values(hire_date=hire_date)
+        )
+        await other.commit()
+
+
+async def test_for_update_alone_does_not_refresh_a_loaded_employee_populate_existing_does() -> None:
+    """Закрепляет то, на чём стоит `_lock_employee` (измерено на sqlalchemy 2.0.x):
+    `get(..., with_for_update=True)` для уже загруженного объекта атрибуты НЕ
+    обновляет, `populate_existing=True` - обновляет."""
+    engine = get_engine()
+    today = datetime.datetime.now(datetime.UTC).date()
+    old, new = today - datetime.timedelta(days=200), today - datetime.timedelta(days=100)
+    async with _committed_employee(engine, old) as employee_id:
+        async with _fresh_session(engine) as session:
+            loaded = await session.get(Employee, employee_id)
+            await _change_hire_date(engine, employee_id, new)
+
+            stale = await session.get(Employee, employee_id, with_for_update=True)
+            assert stale is loaded and stale.hire_date == old  # замок взят, дата устарела
+            await session.rollback()  # снять замок
+            fresh = await session.get(
+                Employee, employee_id, with_for_update=True, populate_existing=True
+            )
+            assert fresh.hire_date == new
+
+
+async def test_accrual_uses_the_hire_date_committed_by_another_transaction() -> None:
+    """Слой API читает сотрудника раньше начисления; параллельная транзакция меняет
+    дату приёма. Начисление должно считаться по НОВОЙ дате (замок + перечитывание)."""
+    engine = get_engine()
+    today = datetime.datetime.now(datetime.UTC).date()
+    old, new = today - datetime.timedelta(days=200), today - datetime.timedelta(days=100)
+    async with _committed_employee(engine, old) as employee_id:
+        async with _fresh_session(engine) as session:
+            # Предзагрузка, как в роутере. Ссылку НАДО держать: identity map слабая, и
+            # без ссылки объект был бы загружен заново, а тест ничего не проверял бы.
+            preloaded = await session.get(Employee, employee_id)
+            await _change_hire_date(engine, employee_id, new)
+
+            await accrue_before_read(session, employee_id=employee_id, as_of=today)
+            await session.commit()
+            assert preloaded.hire_date == new  # карточка в сессии перечитана
+
+        async with _fresh_session(engine) as verify:
+            years = (
+                await verify.execute(
+                    select(LeaveBalanceEntry.working_year_start).where(
+                        LeaveBalanceEntry.employee_id == employee_id
+                    )
+                )
+            ).scalars().all()
+        assert years == [new]  # а не [old]: расчёт по устаревшей карточке
+
+
+async def test_two_concurrent_reads_write_the_accrual_once() -> None:
+    """Два одновременных ленивых начисления по одному сотруднику сериализуются на замке
+    строки: событие начисления одно, а не два. Раньше это было рассуждением, а не
+    проверенным сценарием."""
+    engine = get_engine()
+    today = datetime.datetime.now(datetime.UTC).date()
+    async with _committed_employee(engine, today - datetime.timedelta(days=200)) as employee_id:
+
+        async def read(session: AsyncSession) -> None:
+            await accrue_before_read(session, employee_id=employee_id, as_of=today)
+            await session.commit()
+
+        async with AsyncExitStack() as stack:
+            session_1 = await stack.enter_async_context(_fresh_session(engine))
+            session_2 = await stack.enter_async_context(_fresh_session(engine))
+            results = await _run_racing_pair(read(session_1), read(session_2))
+        assert all(not isinstance(r, Exception) for r in results), results
+
+        async with _fresh_session(engine) as verify:
+            events = (
+                await verify.execute(
+                    select(LeaveBalanceEntry).where(LeaveBalanceEntry.employee_id == employee_id)
+                )
+            ).scalars().all()
+        assert len(events) == 1 and events[0].entry_type == ACCRUAL

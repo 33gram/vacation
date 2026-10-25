@@ -391,14 +391,18 @@ export interface components {
             quantity: number | string;
             /** Reason */
             reason: string;
-            /** Entry Date */
+            /**
+             * Entry Date
+             * @description Дата, на которую действует корректировка; по умолчанию сегодня (UTC). Не может быть в будущем: корректировка фиксирует уже случившееся.
+             */
             entry_date?: string | null;
         };
         /**
          * BalanceEntryOut
-         * @description Событие истории остатка. `actor_name` подставляет слой эндпоинта по
-         *     `actor_account_id` (сервис `balances` имя не резолвит); `None` у события, которое
-         *     начисляет система.
+         * @description Событие истории остатка. `actor_name` - ТОЛЬКО подпись автора: идентификатор
+         *     аккаунта в ответ не отдаётся (внутренний). «Система» - начисляет система; ФИО -
+         *     автор с карточкой; без карточки - нейтральная подпись («Администратор»,
+         *     «Пользователь системы»), логин не показывается.
          */
         BalanceEntryOut: {
             /** Id */
@@ -424,10 +428,8 @@ export interface components {
             working_year_end: string;
             /** Reason */
             reason: string | null;
-            /** Actor Account Id */
-            actor_account_id: number | null;
             /** Actor Name */
-            actor_name: string | null;
+            actor_name: string;
         };
         /** Body_import_employees_endpoint_api_employees_import_post */
         Body_import_employees_endpoint_api_employees_import_post: {
@@ -1070,7 +1072,7 @@ export interface operations {
     get_employee_balances_api_employees__employee_id__balances_get: {
         parameters: {
             query?: {
-                /** @description Дата расчёта остатка (BR-8); по умолчанию сегодня (UTC). */
+                /** @description Дата показа остатка (BR-8); по умолчанию сегодня (UTC). Это только ФИЛЬТР показа: журнал по ней не меняется, начисление идёт до сегодняшнего дня. */
                 as_of?: string | null;
             };
             header?: never;

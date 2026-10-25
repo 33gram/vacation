@@ -33,7 +33,12 @@ _PUBLIC_ENDPOINTS: set[tuple[str, str]] = {
 }
 
 # Значения для подстановки в path-параметры (`{year}` и т. п.).
-_PATH_PARAM_SAMPLES = {"year": "2026", "department_id": "999999", "employee_id": "999999"}
+_PATH_PARAM_SAMPLES = {
+    "year": "2026",
+    "department_id": "999999",
+    "employee_id": "999999",
+    "leave_type_id": "999999",
+}
 
 
 def _concrete_path(path_template: str) -> str:

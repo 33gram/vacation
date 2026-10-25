@@ -54,7 +54,12 @@ _EXEMPT_FROM_PASSWORD_CHANGE_GATE: set[tuple[str, str]] = {
     ("post", "/api/auth/logout"),
 }
 
-_PATH_PARAM_SAMPLES = {"year": "2026", "department_id": "999999", "employee_id": "999999"}
+_PATH_PARAM_SAMPLES = {
+    "year": "2026",
+    "department_id": "999999",
+    "employee_id": "999999",
+    "leave_type_id": "999999",
+}
 
 _GATE_MESSAGE = "Перед тем как продолжить, необходимо сменить пароль"
 

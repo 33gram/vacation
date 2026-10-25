@@ -74,9 +74,13 @@ async def test_fr_bal_002_opening_my_balance_gives_the_main_type_with_its_histor
     assert response.status_code == 200
     body = response.json()
     by_code = {item["code"]: item for item in body["balances"]}
-    # Набор видов (ВЫБРАНО, T-M2-11): основной ВСЕГДА + виды, по которым есть события.
-    # «Командировка» и прочие отсутствия нулевой строкой в «Моём отпуске» не показываются.
-    assert set(by_code) == {"annual_paid"}
+    # Набор видов (T-M2-20, требования v1.26): активные виды с признаком «по виду ведётся
+    # остаток» (основной и отгул) + виды с событиями. Без признака (sick, study,
+    # business_trip, unpaid, maternity_childcare) и неактивный additional_paid не показываются.
+    assert set(by_code) == {"annual_paid", "time_off"}
+    assert Decimal(by_code["time_off"]["balance"]) == 0  # осмысленный ноль: компенсации нет
+    assert by_code["time_off"]["history"] == []
+    assert by_code["time_off"]["unit"] == "working_days"
     main = by_code["annual_paid"]
     assert Decimal(main["balance"]) > 0
     assert Decimal(main["total_balance"]) == Decimal(main["balance"])
@@ -88,17 +92,17 @@ async def test_fr_bal_002_opening_my_balance_gives_the_main_type_with_its_histor
     assert body["as_of"] == TODAY.isoformat()
 
 
-async def test_fr_bal_002_a_type_with_events_appears_with_its_unit_and_others_do_not(
+async def test_fr_bal_002_an_untracked_type_with_events_still_appears_with_its_unit(
     db_session, api_client
 ) -> None:
     ctx, employee, own = await _setup(db_session)
     hr = await _account(db_session, "hr_admin", "hr-types@company.local")
-    time_off_id = (
-        await db_session.execute(text("SELECT id FROM leave_types WHERE code = 'time_off'"))
+    study_id = (
+        await db_session.execute(text("SELECT id FROM leave_types WHERE code = 'study'"))
     ).scalar_one()
     adjust = await api_client.post(
         _url(employee.id, "/adjust"),
-        json={"leave_type_id": time_off_id, "quantity": "8", "reason": "Переработка"},
+        json={"leave_type_id": study_id, "quantity": "8", "reason": "Запись по виду без признака"},
         headers=bearer_header(hr),
     )
     assert adjust.status_code == 200
@@ -106,9 +110,43 @@ async def test_fr_bal_002_a_type_with_events_appears_with_its_unit_and_others_do
     response = await api_client.get(_url(employee.id), headers=bearer_header(own))
 
     by_code = {item["code"]: item for item in response.json()["balances"]}
-    assert set(by_code) == {"annual_paid", "time_off"}  # study, business_trip - без событий
-    assert by_code["time_off"]["unit"] == "working_days"  # единица из справочника
-    assert Decimal(by_code["time_off"]["balance"]) == Decimal("8")
+    # study без признака, но с событием: история не прячется; sick, business_trip - без событий
+    assert set(by_code) == {"annual_paid", "time_off", "study"}
+    assert by_code["study"]["unit"] == "calendar_days"  # единица из справочника
+    assert Decimal(by_code["study"]["balance"]) == Decimal("8")
+
+
+async def test_fr_bal_002_an_inactive_tracked_type_is_hidden_until_it_has_events(
+    db_session, api_client
+) -> None:
+    ctx, employee, own = await _setup(db_session)
+    additional_id = (
+        await db_session.execute(
+            text("SELECT id FROM leave_types WHERE code = 'additional_paid'")
+        )
+    ).scalar_one()
+
+    hr = await _account(db_session, "hr_admin", "hr-inactive@company.local")
+    hidden = await api_client.get(_url(employee.id), headers=bearer_header(own))
+    # Вид с событиями показывается, даже когда он неактивен: событие пишем напрямую.
+    db_session.add(
+        LeaveBalanceEntry(
+            employee_id=employee.id,
+            leave_type_id=additional_id,
+            entry_type=MANUAL_ADJUSTMENT,
+            quantity=Decimal("2"),
+            entry_date=TODAY,
+            working_year_start=HIRED,
+            working_year_end=HIRED.replace(year=HIRED.year + 1),
+            reason="Исторический остаток неактивного вида",
+            actor_account_id=hr.id,
+        )
+    )
+    await db_session.flush()
+    shown = await api_client.get(_url(employee.id), headers=bearer_header(own))
+
+    assert "additional_paid" not in {b["code"] for b in hidden.json()["balances"]}
+    assert "additional_paid" in {b["code"] for b in shown.json()["balances"]}
 
 
 async def test_fr_bal_002_the_history_is_cut_at_the_requested_date(db_session, api_client) -> None:
@@ -624,5 +662,6 @@ async def test_an_inactive_main_leave_type_is_still_shown_but_cannot_be_adjusted
     )
 
     assert read.status_code == 200
-    assert [b["code"] for b in read.json()["balances"]] == ["annual_paid"]
+    # Неактивный основной виден по событию (ленивое начисление его записало), отгул - по признаку.
+    assert [b["code"] for b in read.json()["balances"]] == ["annual_paid", "time_off"]
     assert adjust.status_code == 400

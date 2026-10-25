@@ -11,7 +11,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.leave_type import LeaveType
-from app.modules.balances.service import leave_type_has_events
+from app.modules.balances.service import MAIN_LEAVE_TYPE_CODE, leave_type_has_events
 from app.schemas.leave_type import LeaveTypeCreate, LeaveTypeUpdate
 
 
@@ -27,8 +27,18 @@ class LeaveTypeCodeImmutableError(ValueError):
     """Код вида после создания не меняется."""
 
 
+class MainLeaveTypeProtectedError(ValueError):
+    """Основной вид нельзя вывести из обращения или лишить признака «ведётся остаток»."""
+
+
 class LeaveTypeHasEventsError(Exception):
-    """Нельзя снять «по виду ведётся остаток» у вида, по которому есть события."""
+    """Нельзя снять «по виду ведётся остаток» у вида, по которому есть события.
+    Проверка моментальная, замка на писателях журнала нет: если первое событие по виду
+    записано одновременно с правкой, признак окажется снятым при живом событии. Цена
+    такой гонки мала: `GET .../balances` показывает вид по наличию событий и без
+    признака (история не прячется), начисление по виду без признака не идёт (оно только
+    по основному виду, а он от этой правки защищён); расходится лишь справочник и журнал,
+    правится повторным включением признака."""
 
 
 async def list_leave_types(session: AsyncSession) -> list[LeaveType]:
@@ -67,6 +77,17 @@ async def update_leave_type(
         raise LeaveTypeCodeImmutableError(
             "Код вида отпуска после создания не меняется: по нему находится основной вид, "
             "переименование сломало бы начисление. Меняется наименование"
+        )
+    if leave_type.code == MAIN_LEAVE_TYPE_CODE and not (
+        payload.balance_tracked and payload.is_active
+    ):
+        # Независимо от событий: на свежей базе их ещё нет, а начисление (`FR-BAL-001`)
+        # находит вид по КОДУ и писало бы события по виду, который справочник объявил
+        # выведенным из обращения или не ведущим остаток, - `GET .../balances` его бы
+        # не показал при живом журнале.
+        raise MainLeaveTypeProtectedError(
+            "Основной оплачиваемый отпуск нельзя деактивировать и нельзя лишить признака "
+            "«по виду ведётся остаток»: от него зависит начисление (FR-BAL-001)"
         )
     if leave_type.balance_tracked and not payload.balance_tracked:
         if await leave_type_has_events(session, leave_type_id):

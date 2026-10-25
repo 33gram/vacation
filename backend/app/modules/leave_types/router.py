@@ -4,6 +4,14 @@
 отпуску»). Ведение - `hr_admin` и `system_admin`: строка матрицы раздела 7 «Ведение
 справочников (виды отпусков, подразделения, календарь)» даёт его HR и Админу.
 `DELETE` нет сознательно: вид выводят признаком `is_active`.
+
+Коды отказов (правило проекта, см. `CLAUDE.md`, «Соглашения»): 409 - запрос конфликтует с
+УЖЕ ЗАПИСАННЫМИ данными (дубль кода, события журнала мешают правке); 400 - запрос
+недопустим сам по себе (смена неизменяемого кода, защита основного вида), от записей не
+зависит.
+
+`code` на `PUT` необязателен: то же значение, что у вида, принимается (форма отправляет
+объект целиком), ДРУГОЕ - 400; сравнение строгое, регистр и пробелы не нормализуются.
 """
 
 from __future__ import annotations
@@ -54,7 +62,7 @@ async def update_leave_type(
         leave_type = await service.update_leave_type(session, leave_type_id, payload)
     except service.LeaveTypeNotFoundError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
-    except service.LeaveTypeCodeImmutableError as exc:
+    except (service.LeaveTypeCodeImmutableError, service.MainLeaveTypeProtectedError) as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
     except service.LeaveTypeHasEventsError as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc

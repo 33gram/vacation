@@ -149,7 +149,7 @@ async def test_fr_bal_003_an_employee_without_accrual_events_gets_nothing_writte
     assert await _events(db_session, employee.id) == []
 
 
-async def test_fr_bal_003_a_refusal_of_the_recalculation_is_a_400_and_writes_no_event(
+async def test_fr_bal_003_a_refusal_of_the_recalculation_is_a_409_and_writes_no_event(
     db_session, api_client, monkeypatch
 ) -> None:
     ctx, employee, admin, department = await _setup(db_session)
@@ -178,7 +178,8 @@ async def test_fr_bal_003_a_refusal_of_the_recalculation_is_a_400_and_writes_no_
         headers=bearer_header(admin),
     )
 
-    assert response.status_code == 400
+    # Конфликт с уже записанными событиями - 409 (правило кодов отказа, `CLAUDE.md`).
+    assert response.status_code == 409
     assert "manual_adjustment" in response.json()["detail"]
     assert len(await _events(db_session, employee.id)) == before
     # Узкое утверждение, которое тест МОЖЕТ проверить: `commit` не вызывался. Что

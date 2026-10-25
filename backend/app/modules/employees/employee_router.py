@@ -29,7 +29,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.session import get_db_session
 from app.models.account import Account
 from app.modules.auth.rbac import get_current_account, require_roles
-from app.modules.balances.service import BalanceEntryError
+from app.modules.balances.service import BalanceConflictError, BalanceEntryError
 from app.modules.employees import employee_service
 from app.modules.employees.import_parsing import ImportFileError, parse_import_file
 from app.modules.employees.import_service import import_employees
@@ -157,9 +157,12 @@ async def update_employee(
         )
     except employee_service.EmployeeNotFoundError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+    except BalanceConflictError as exc:
+        # 409: правка конфликтует с уже записанными событиями журнала (правило кодов
+        # отказа, `CLAUDE.md`) - тот же класс, что дубль уникального поля.
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
     except (ValueError, BalanceEntryError) as exc:
-        # 400, как у остальных отказов этого эндпоинта (бизнес-правило не
-        # допускает правку); 409 в проекте занят нарушением уникальности.
+        # 400: запрос недопустим сам по себе (бизнес-правило, не связанное с записями).
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
     return await employee_service.to_employee_out(session, employee)
 

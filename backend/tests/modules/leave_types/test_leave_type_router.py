@@ -306,3 +306,68 @@ async def test_there_is_no_delete(db_session, api_client) -> None:
 
     assert response.status_code == 405
     assert await _type_id(db_session, "study") == type_id
+
+
+# --- основной вид защищён от правки справочника (PR #182 check, п. 1) ---------------------
+
+
+async def test_the_main_type_cannot_lose_the_flag_even_on_a_base_without_events(
+    db_session, api_client
+) -> None:
+    hr = await _account(db_session, "hr_admin")
+    main_id = await _type_id(db_session, "annual_paid")
+    assert (await db_session.scalar(select(LeaveBalanceEntry.id).limit(1))) is None  # событий нет
+
+    response = await api_client.put(
+        f"{_URL}/{main_id}",
+        json=_body(code="annual_paid", balance_tracked=False),
+        headers=bearer_header(hr),
+    )
+
+    assert response.status_code == 400
+    assert "FR-BAL-001" in response.json()["detail"]
+    flag = await db_session.scalar(select(LeaveType.balance_tracked).where(LeaveType.id == main_id))
+    assert flag is True
+
+
+async def test_the_main_type_cannot_be_deactivated(db_session, api_client) -> None:
+    hr = await _account(db_session, "hr_admin")
+    main_id = await _type_id(db_session, "annual_paid")
+
+    response = await api_client.put(
+        f"{_URL}/{main_id}",
+        json=_body(code="annual_paid", is_active=False),
+        headers=bearer_header(hr),
+    )
+
+    assert response.status_code == 400
+    active = await db_session.scalar(select(LeaveType.is_active).where(LeaveType.id == main_id))
+    assert active is True
+
+
+async def test_the_main_type_is_still_editable_otherwise(db_session, api_client) -> None:
+    hr = await _account(db_session, "hr_admin")
+    main_id = await _type_id(db_session, "annual_paid")
+
+    response = await api_client.put(
+        f"{_URL}/{main_id}",
+        json=_body(code="annual_paid", name="Основной отпуск (правка)"),
+        headers=bearer_header(hr),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["name"] == "Основной отпуск (правка)"
+
+
+async def test_another_type_may_be_deactivated_and_lose_the_flag(db_session, api_client) -> None:
+    hr = await _account(db_session, "hr_admin")
+    type_id = await _type_id(db_session, "time_off")
+
+    response = await api_client.put(
+        f"{_URL}/{type_id}",
+        json=_body(code="time_off", is_active=False, balance_tracked=False),
+        headers=bearer_header(hr),
+    )
+
+    assert response.status_code == 200
+    assert (response.json()["is_active"], response.json()["balance_tracked"]) == (False, False)

@@ -93,6 +93,12 @@ class BalanceEntryError(Exception):
     его в ответ 4xx)."""
 
 
+class BalanceConflictError(BalanceEntryError):
+    """Операция конфликтует с УЖЕ ЗАПИСАННЫМИ событиями журнала (например, дату приёма
+    нельзя сменить из-за событий исчезающего года). Отдельный класс, чтобы эндпоинт
+    ответил 409, а не 400 (правило кодов отказа, `CLAUDE.md`)."""
+
+
 class LeaveTypeNotSeededError(RuntimeError):
     """Основной вид отпуска (`MAIN_LEAVE_TYPE_CODE`) отсутствует в справочнике:
     сломана КОНФИГУРАЦИЯ, а не запрос. Намеренно не `BalanceEntryError`: эндпоинт
@@ -673,7 +679,7 @@ async def recalculate_balance(
             f"(рабочий год с {event.working_year_start:%d.%m.%Y})"
             for event in blocking
         )
-        raise BalanceEntryError(
+        raise BalanceConflictError(
             "Дату приёма нельзя изменить автоматически: в рабочих годах, которых при новой "
             f"дате не существует, есть события, внесённые против конкретного года: {listed}. "
             "Разберитесь с ними и повторите."

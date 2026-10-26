@@ -58,7 +58,8 @@ test("logs in via LDAP, and the admin sees the matching employee card", async ({
   await expect(page).toHaveURL(/\/my-leave$/);
   await expect(page.getByRole("heading", { name: "Мой отпуск" })).toBeVisible();
   await expect(page.getByText("Основной оплачиваемый отпуск")).toBeVisible();
-  await expect(page.getByText("Остаток за текущий рабочий год")).toBeVisible();
+  // Видов с остатком несколько (основной и отгул), подпись повторяется - достаточно первой.
+  await expect(page.getByText("Остаток за текущий рабочий год").first()).toBeVisible();
 
   await page.getByRole("button", { name: "Выйти" }).click();
   await expect(page).toHaveURL(/\/login$/);

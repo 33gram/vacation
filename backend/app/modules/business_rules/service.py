@@ -27,7 +27,7 @@
   ключ — человек, разворачивающий систему, видит всё сразу, до первого
   пользователя. Рантайм-проверка при чтении остаётся: строка могла быть
   испорчена после старта.
-- Запись параметра (`T-M2-12`) обязана проверять значение тем же
+- Запись параметра (`update_rules`, `T-M2-12`) проверяет значение тем же
   `parse_stored_value`, а не отдельной логикой, иначе запись и чтение
   разойдутся в понимании допустимого.
 
@@ -48,6 +48,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import BCRYPT_MAX_INPUT_BYTES
+from app.core.time_utils import utcnow
 from app.models.business_rule_config import INTEGER, MONTH_DAY, BusinessRuleConfig
 
 # Имена ключей — константами, чтобы опечатка в строке не превращалась в
@@ -256,3 +257,118 @@ async def validate_all(session: AsyncSession) -> None:
             problems.append(error)
     if problems:
         raise BusinessRulesConfigError(problems)
+
+
+# --- Запись (T-M2-12) --------------------------------------------------------------------
+
+
+class RuleKeysNotFoundError(Exception):
+    """Ключа нет в реестре или его строки нет в таблице. Создать ключ эндпоинтом
+    нельзя: реестр живёт в коде, строку заводит миграция.
+
+    Причин две: ключа нет в реестре (запрос неверен, 404 уместен) и у ключа реестра нет
+    СТРОКИ в таблице (сломанная конфигурация, 404 про неё не совсем верен). Не разводятся,
+    потому что вторая не ожидается после успешного старта: `validate_all` в `lifespan`
+    отказывает в запуске, если строки ключа реестра нет. Строка может пропасть уже после
+    старта тремя способами: её удалили в БД вручную, откатили миграцию, реестр в коде и БД
+    разошлись (например, БД подменили копией со старым составом). Сегодняшнее поведение
+    закреплено тестом: `GET` такой ключ не показывает, `PUT` отвечает 404."""
+
+    def __init__(self, keys: list[str]) -> None:
+        super().__init__("Параметры не найдены: " + ", ".join(keys))
+        self.keys = keys
+
+
+class RuleValuesInvalidError(ValueError):
+    """Значения не прошли проверку реестра. Несёт ВСЕ негодные ключи, не первый."""
+
+    def __init__(self, problems: dict[str, str]) -> None:
+        super().__init__("; ".join(f"{key}: {text}" for key, text in problems.items()))
+        self.problems = problems
+
+
+def _canonical(value: RuleValue) -> str:
+    """Каноническая запись разобранного значения (то, что принимает CHECK таблицы)."""
+    if isinstance(value, MonthDay):
+        return f"{value.month:02d}-{value.day:02d}"
+    return str(value)
+
+
+def _invalid_value_text(spec: RuleSpec) -> str:
+    if spec.value_type == INTEGER:
+        return f"значение недопустимо, нужно целое число от {spec.minimum} до {spec.maximum}"
+    return "значение недопустимо, нужна дата в формате ММ-ДД (например, 12-17), без 29 февраля"
+
+
+async def list_rule_rows(session: AsyncSession) -> list[BusinessRuleConfig]:
+    """Строки таблицы по ключам РЕЕСТРА, в порядке реестра. Строка без записи в реестре
+    не показывается (у неё нет диапазона, читатель её не видит - см. ГРАНИЦЫ модуля)."""
+    result = await session.execute(
+        select(BusinessRuleConfig).where(BusinessRuleConfig.key.in_(list(RULES)))
+    )
+    rows = {row.key: row for row in result.scalars()}
+    return [rows[key] for key in RULES if key in rows]
+
+
+async def update_rules(
+    session: AsyncSession, values: dict[str, str], *, actor_account_id: int
+) -> list[BusinessRuleConfig]:
+    """Меняет значения существующих ключей. Сначала проверяются ВСЕ пары, потом
+    применяются ВСЕ: одна негодная - ничего не записано, в отказе названы все негодные.
+    Неизвестные ключи (404) проверяются раньше значений (400): запрос о несуществующем
+    не разбирается дальше.
+
+    Проверка - тот же `parse_stored_value` и реестр, что у чтения и `validate_all`, с
+    `value_type` из строки таблицы, как при чтении (расхождение типа строки с реестром
+    даёт отказ, а не молчаливую запись). Пишет ORM; `updated_by_account_id` и `updated_at`
+    ставятся ЯВНО и вместе - это единственный механизм (у колонки нет `onupdate`, см.
+    модель). Время - часы ПРИЛОЖЕНИЯ, начальное значение при сидировании - часы БД: при
+    расхождении часов сравнение «позже» между ними может нарушиться.
+
+    «Пара равна текущему» сравнивается по РАЗОБРАННЫМ значениям: `"028"` поверх `"28"` не
+    пишется и автора/время не трогает. Записывается каноническая форма (`"29"`, не `"029"`).
+
+    Блокировка строк (`FOR UPDATE`, по порядку ключей): два одновременных `PUT` не должны
+    оба прочитать старое значение и записать каждый своё поверх друг друга молча, а порядок
+    по ключу исключает взаимную блокировку при пересекающихся наборах. «Последняя запись
+    побеждает» - ОСОЗНАННОЕ решение: устаревшая форма второго администратора затрёт чужую
+    правку; кто и когда изменил, видно в ответе `GET`, аудит - `T-M6-02`; проверки версии
+    нет.
+
+    Коммитит сервис: составлять эту запись не с чем, транзакция кончается записью
+    параметров (в `balances` наоборот - там только `flush`, начальные остатки пишутся одной
+    транзакцией с карточкой сотрудника)."""
+    result = await session.execute(
+        select(BusinessRuleConfig)
+        .where(BusinessRuleConfig.key.in_(list(values)))
+        .order_by(BusinessRuleConfig.key)
+        .with_for_update()
+    )
+    rows = {row.key: row for row in result.scalars()}
+    unknown = sorted(key for key in values if key not in RULES or key not in rows)
+    if unknown:
+        raise RuleKeysNotFoundError(unknown)
+
+    problems: dict[str, str] = {}
+    parsed: dict[str, RuleValue] = {}
+    for key, value in values.items():
+        try:
+            parsed[key] = parse_stored_value(key, value, rows[key].value_type)
+        except BusinessRuleError:
+            problems[key] = _invalid_value_text(RULES[key])
+    if problems:
+        raise RuleValuesInvalidError(problems)
+
+    now = utcnow()
+    for key, new_value in parsed.items():
+        row = rows[key]
+        try:
+            unchanged = parse_stored_value(key, row.value, row.value_type) == new_value
+        except BusinessRuleError:
+            unchanged = False  # в таблице негодное значение: запись его чинит
+        if not unchanged:
+            row.value = _canonical(new_value)
+            row.updated_by_account_id = actor_account_id
+            row.updated_at = now
+    await session.commit()
+    return await list_rule_rows(session)

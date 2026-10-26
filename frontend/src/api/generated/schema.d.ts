@@ -392,6 +392,24 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/admin/business-rules": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Business Rules */
+        get: operations["get_business_rules_api_admin_business_rules_get"];
+        /** Put Business Rules */
+        put: operations["put_business_rules_api_admin_business_rules_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -473,6 +491,47 @@ export interface components {
              * Format: binary
              */
             file: string;
+        };
+        /**
+         * BusinessRuleOut
+         * @description Параметр реестра. `value` - строка в формате `value_type` (как в таблице и как её
+         *     принимает `PUT`): `integer` - десятичное целое, `month_day` - `ММ-ДД`.
+         *
+         *     `minimum`/`maximum` - допустимый диапазон ИЗ РЕЕСТРА (`RuleSpec`), то есть то, что проверяет
+         *     и запись, и чтение; у `month_day` диапазона нет - там `null`. Диапазон отдаётся ДЛЯ
+         *     интерфейса `T-M2-15`; решает всё равно сервер.
+         */
+        BusinessRuleOut: {
+            /** Key */
+            key: string;
+            /** Value */
+            value: string;
+            /** Value Type */
+            value_type: string;
+            /** Description */
+            description: string;
+            /** Minimum */
+            minimum: number | null;
+            /** Maximum */
+            maximum: number | null;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+            /** Updated By Name */
+            updated_by_name: string | null;
+        };
+        /**
+         * BusinessRulesUpdate
+         * @description Набор «ключ - значение» (форма параметров правится целиком). Значения - СТРОКИ в
+         *     формате параметра (`"28"`, `"12-17"`); число JSON отклоняется схемой (422).
+         */
+        BusinessRulesUpdate: {
+            /** Values */
+            values: {
+                [key: string]: string;
+            };
         };
         /** DepartmentCreate */
         DepartmentCreate: {
@@ -1081,6 +1140,24 @@ export interface operations {
                     "application/json": components["schemas"]["TokenResponse"];
                 };
             };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
             /** @description Validation Error */
             422: {
                 headers: {
@@ -1112,6 +1189,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["TokenResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
             /** @description Validation Error */
@@ -1154,6 +1240,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
             /** @description Validation Error */
             422: {
                 headers: {
@@ -1183,6 +1278,15 @@ export interface operations {
                     "application/json": components["schemas"]["PasswordPolicyHintOut"][];
                 };
             };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
         };
     };
     logout_api_auth_logout_post: {
@@ -1200,6 +1304,15 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
             };
         };
     };
@@ -1219,6 +1332,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["MeResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
         };
@@ -1929,6 +2051,24 @@ export interface operations {
                     "application/json": components["schemas"]["LdapSettingsOut"] | null;
                 };
             };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
         };
     };
     put_ldap_settings_api_admin_ldap_settings_put: {
@@ -1951,6 +2091,24 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["LdapSettingsOut"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
             /** @description Validation Error */
@@ -1984,6 +2142,33 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["LdapTestResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
             /** @description Validation Error */
@@ -2195,6 +2380,24 @@ export interface operations {
                     "application/json": components["schemas"]["ProductionCalendarYearOut"];
                 };
             };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
             /** @description Validation Error */
             422: {
                 headers: {
@@ -2228,6 +2431,140 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ProductionCalendarYearOut"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_business_rules_api_admin_business_rules_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BusinessRuleOut"][];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+        };
+    };
+    put_business_rules_api_admin_business_rules_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BusinessRulesUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BusinessRuleOut"][];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
             /** @description Validation Error */

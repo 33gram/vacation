@@ -27,7 +27,7 @@
   ключ — человек, разворачивающий систему, видит всё сразу, до первого
   пользователя. Рантайм-проверка при чтении остаётся: строка могла быть
   испорчена после старта.
-- Запись параметра (`T-M2-12`) обязана проверять значение тем же
+- Запись параметра (`update_rules`, `T-M2-12`) проверяет значение тем же
   `parse_stored_value`, а не отдельной логикой, иначе запись и чтение
   разойдутся в понимании допустимого.
 
@@ -48,6 +48,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import BCRYPT_MAX_INPUT_BYTES
+from app.core.time_utils import utcnow
 from app.models.business_rule_config import INTEGER, MONTH_DAY, BusinessRuleConfig
 
 # Имена ключей — константами, чтобы опечатка в строке не превращалась в
@@ -256,3 +257,81 @@ async def validate_all(session: AsyncSession) -> None:
             problems.append(error)
     if problems:
         raise BusinessRulesConfigError(problems)
+
+
+# --- Запись (T-M2-12) --------------------------------------------------------------------
+
+
+class RuleKeysNotFoundError(Exception):
+    """Ключа нет в реестре или его строки нет в таблице. Создать ключ эндпоинтом
+    нельзя: реестр живёт в коде, строку заводит миграция."""
+
+    def __init__(self, keys: list[str]) -> None:
+        super().__init__("Параметры не найдены: " + ", ".join(keys))
+        self.keys = keys
+
+
+class RuleValuesInvalidError(ValueError):
+    """Значения не прошли проверку реестра. Несёт ВСЕ негодные ключи, не первый."""
+
+    def __init__(self, problems: dict[str, str]) -> None:
+        super().__init__("; ".join(f"{key}: {text}" for key, text in problems.items()))
+        self.problems = problems
+
+
+def _invalid_value_text(spec: RuleSpec) -> str:
+    if spec.value_type == INTEGER:
+        return f"значение недопустимо, нужно целое число от {spec.minimum} до {spec.maximum}"
+    return "значение недопустимо, нужна дата в формате ММ-ДД (например, 12-17), без 29 февраля"
+
+
+async def list_rule_rows(session: AsyncSession) -> list[BusinessRuleConfig]:
+    """Строки таблицы по ключам РЕЕСТРА, в порядке реестра. Строка без записи в реестре
+    не показывается (у неё нет диапазона, читатель её не видит - см. ГРАНИЦЫ модуля)."""
+    result = await session.execute(
+        select(BusinessRuleConfig).where(BusinessRuleConfig.key.in_(list(RULES)))
+    )
+    rows = {row.key: row for row in result.scalars()}
+    return [rows[key] for key in RULES if key in rows]
+
+
+async def update_rules(
+    session: AsyncSession, values: dict[str, str], *, actor_account_id: int
+) -> list[BusinessRuleConfig]:
+    """Меняет значения существующих ключей. Сначала проверяются ВСЕ пары, потом
+    применяются ВСЕ: одна негодная - ничего не записано, в отказе названы все негодные.
+    Неизвестные ключи (404) проверяются раньше значений (400): запрос о несуществующем
+    не разбирается дальше.
+
+    Проверка - тот же `parse_stored_value` и реестр, что у чтения и `validate_all`, с
+    `value_type` из строки таблицы, как при чтении. Пишет ORM, `updated_by_account_id` и
+    `updated_at` ставятся ЯВНО (`onupdate` модели не используется). Пара с прежним
+    значением не пишется и автора/время не трогает. Коммитит сервис."""
+    result = await session.execute(
+        select(BusinessRuleConfig)
+        .where(BusinessRuleConfig.key.in_(list(values)))
+        .with_for_update()
+    )
+    rows = {row.key: row for row in result.scalars()}
+    unknown = sorted(key for key in values if key not in RULES or key not in rows)
+    if unknown:
+        raise RuleKeysNotFoundError(unknown)
+
+    problems: dict[str, str] = {}
+    for key, value in values.items():
+        try:
+            parse_stored_value(key, value, rows[key].value_type)
+        except BusinessRuleError:
+            problems[key] = _invalid_value_text(RULES[key])
+    if problems:
+        raise RuleValuesInvalidError(problems)
+
+    now = utcnow()
+    for key, value in values.items():
+        row = rows[key]
+        if row.value != value:
+            row.value = value
+            row.updated_by_account_id = actor_account_id
+            row.updated_at = now
+    await session.commit()
+    return await list_rule_rows(session)

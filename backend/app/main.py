@@ -14,6 +14,7 @@ from app.core.health import router as health_router
 from app.core.logging import configure_logging
 from app.core.security import warm_dummy_password_hash_cache
 from app.db.session import get_session_factory
+from app.modules.admin.business_rules_router import router as business_rules_router
 from app.modules.admin.ldap_settings_router import router as ldap_settings_router
 from app.modules.admin.production_calendar_router import router as production_calendar_router
 from app.modules.auth.bootstrap import ensure_bootstrap_admin
@@ -75,6 +76,7 @@ app.include_router(employee_router)
 app.include_router(ldap_settings_router)
 app.include_router(leave_types_router)
 app.include_router(production_calendar_router)
+app.include_router(business_rules_router)
 
 
 @app.exception_handler(AuthenticationError)

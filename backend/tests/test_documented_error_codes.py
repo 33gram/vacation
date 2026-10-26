@@ -15,6 +15,12 @@
      обработчики `main.py`; ЗАПОЛНЯЕТСЯ ВРУЧНУЮ, с причиной у каждой строки.
 Маршрут с несколькими методами проверяется по КАЖДОМУ методу.
 
+АУТЕНТИФИКАЦИЯ фиксируется явно, в обе стороны. Маршрут относится ровно к одной из трёх
+групп: открытый без токена (`_PUBLIC_ROUTES`), с токеном без гейта смены пароля
+(`_PASSWORD_GATE_EXEMPT_ROUTES`), все остальные - ОБЯЗАНЫ зависеть от `get_current_account`.
+Маршрут из списка не должен требовать токен сверх списка, маршрут вне списков - обязан
+(иначе потеря зависимости и объявления 401/403 одновременно прошла бы молча).
+
 ГРАНИЦЫ (CLAUDE.md, правило 8) - сторож НЕ видит:
   1. код, записанный не как `status.HTTP_NNN_*`: `HTTPException(404, ...)`,
      `status_code=404` литералом, код из словаря или константы;
@@ -28,7 +34,16 @@
      в код - проверяется перевод в роутере, а не ветка;
   6. ложные срабатывания в другую сторону: ЛЮБОЕ упоминание `status.HTTP_4xx` в теле
      (в сравнении, в комментарии-коде, в ветке без `raise`) засчитывается как поднимаемый
-     код.
+     код (литерал 422 исключён: этот код объявляет FastAPI, в сверку он не входит);
+  7. публичность и освобождение от гейта смены пароля ведутся РУКАМИ (`_PUBLIC_ROUTES`,
+     `_PASSWORD_GATE_EXEMPT_ROUTES`): новый открытый маршрут без строки в списке краснит
+     тест, но лишняя строка про маршрут, который стал закрытым, краснит только по обратной
+     сверке (маршрут из списка не должен требовать токен);
+  8. маршрут со скрытой схемой (`include_in_schema=False`) в OpenAPI отсутствует: такой
+     `APIRoute` не сверяется и обязан быть назван в `_HIDDEN_FROM_SCHEMA` с причиной, иначе
+     тест падает с объяснением (сейчас таких нет).
+Порог числа маршрутов (`>= 28`) краснеет на УДАЛЕНИИ маршрутов и молчит на добавлении:
+это защита от пустого перебора, а не контроль состава.
 """
 
 from __future__ import annotations
@@ -59,6 +74,25 @@ _NOT_API_ROUTES: dict[str, str] = {
     "/redoc": "ReDoc, служебная страница FastAPI",
 }
 
+# APIRoute, скрытые из OpenAPI (`include_in_schema=False`): в схеме их нет, сверять не с чем.
+_HIDDEN_FROM_SCHEMA: dict[tuple[str, str], str] = {}
+
+# Маршруты, СОЗНАТЕЛЬНО открытые без аутентификации. (метод, путь) -> причина.
+_PUBLIC_ROUTES: dict[tuple[str, str], str] = {
+    ("GET", "/healthz"): "проверка живости для оркестратора, данных не отдаёт",
+    ("POST", "/api/auth/login"): "вход: токена у вызывающего ещё нет",
+    ("POST", "/api/auth/login/local"): "вход: токена у вызывающего ещё нет",
+}
+
+# Маршруты с токеном, но БЕЗ гейта обязательной смены пароля (зависят от
+# `get_current_account_allowing_password_change`). Причины - в докстринге этой зависимости.
+_PASSWORD_GATE_EXEMPT_ROUTES: dict[tuple[str, str], str] = {
+    ("POST", "/api/auth/password/change"): "иначе первичный пароль нечем сменить",
+    ("GET", "/api/auth/password-policy"): "экран смены пароля показывает требования",
+    ("POST", "/api/auth/logout"): "выйти можно всегда",
+    ("GET", "/api/auth/me"): "флаг must_change_password приходит только отсюда",
+}
+
 # Коды, которые маршрут отдаёт через обработчики `main.py` (в теле эндпоинта их не видно).
 # (метод, путь) -> (коды, причина).
 _CODES_FROM_APP_HANDLERS: dict[tuple[str, str], tuple[set[str], str]] = {
@@ -74,7 +108,14 @@ _CODES_FROM_APP_HANDLERS: dict[tuple[str, str], tuple[set[str], str]] = {
 
 
 def _api_routes() -> list[APIRoute]:
-    return [r for r in app.routes if isinstance(r, APIRoute)]
+    routes = [r for r in app.routes if isinstance(r, APIRoute)]
+    hidden = {(m, r.path) for r in routes if not r.include_in_schema for m in r.methods}
+    assert hidden == set(_HIDDEN_FROM_SCHEMA), (
+        "маршрут с include_in_schema=False отсутствует в OpenAPI, сверять его не с чем; "
+        "назовите его в _HIDDEN_FROM_SCHEMA с причиной: "
+        f"{sorted(hidden ^ set(_HIDDEN_FROM_SCHEMA))}"
+    )
+    return [r for r in routes if r.include_in_schema]
 
 
 def _body_codes(route: APIRoute) -> set[str]:
@@ -85,7 +126,7 @@ def _body_codes(route: APIRoute) -> set[str]:
             match = re.fullmatch(r"HTTP_(\d{3})_[A-Z_]+", node.attr)
             if match and not match.group(1).startswith(_NOT_AN_ERROR_CODE):
                 codes.add(match.group(1))
-    return codes
+    return codes - _FRAMEWORK_CODES
 
 
 def _dependency_calls(route: APIRoute) -> set:
@@ -127,7 +168,8 @@ def test_every_route_is_checked_or_explicitly_excluded():
     # Новый маршрут не из `APIRoute` (Mount, Route) должен получить решение, а не пройти молча.
     others = {r.path for r in app.routes if not isinstance(r, APIRoute)}
     assert others == set(_NOT_API_ROUTES), sorted(others ^ set(_NOT_API_ROUTES))
-    assert len(_api_routes()) >= 28  # защита от пустого перебора
+    # Защита от пустого перебора: краснеет на УДАЛЕНИИ маршрутов, на добавлении молчит.
+    assert len(_api_routes()) >= 28
 
 
 def test_the_handler_table_names_only_existing_routes():
@@ -149,3 +191,32 @@ def test_declared_error_codes_match_what_each_route_returns():
                     f"зависимости {sorted(_dependency_codes(route))})"
                 )
     assert not problems, "\n".join(problems)
+
+
+def test_authentication_is_pinned_in_both_directions():
+    problems = []
+    for route in _api_routes():
+        calls = _dependency_calls(route)
+        needs_token = bool(
+            calls & {get_current_account, get_current_account_allowing_password_change}
+        )
+        for method in sorted(route.methods):
+            key = (method, route.path)
+            if key in _PUBLIC_ROUTES:
+                if needs_token:
+                    problems.append(f"{key}: в _PUBLIC_ROUTES, но требует токен")
+            elif key in _PASSWORD_GATE_EXEMPT_ROUTES:
+                if get_current_account_allowing_password_change not in calls:
+                    problems.append(f"{key}: в списке без гейта, но зависимость другая")
+                if get_current_account in calls:
+                    problems.append(f"{key}: в списке без гейта, но гейт применяется")
+            elif get_current_account not in calls:
+                problems.append(
+                    f"{key}: не в списках публичных/без гейта и не зависит от get_current_account"
+                )
+    assert not problems, "\n".join(problems)
+
+
+def test_the_authentication_lists_name_only_existing_routes():
+    existing = {(m, r.path) for r in _api_routes() for m in r.methods}
+    assert set(_PUBLIC_ROUTES) | set(_PASSWORD_GATE_EXEMPT_ROUTES) <= existing

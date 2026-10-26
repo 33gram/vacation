@@ -22,9 +22,10 @@ export function RoleGuard({
   const me = useSession();
   const navigate = useNavigate();
   const role = asRole(me.role);
+  const hasEmployeeCard = me.employee_id !== null;
 
-  if (!isPathAllowedForRole(role, path)) {
-    const homePath = defaultPathForRole(role) ?? "/";
+  if (!isPathAllowedForRole(role, path, hasEmployeeCard)) {
+    const homePath = defaultPathForRole(role, hasEmployeeCard) ?? "/";
     return (
       <NoAccessState
         message="Доступ запрещён. Обратитесь к HR-администратору."

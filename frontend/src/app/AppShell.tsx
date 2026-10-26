@@ -11,9 +11,16 @@ import { useSession } from "./useSession";
 const { Header, Sider, Content } = Layout;
 
 function buildMenuItems(items: MenuItemConfig[]): MenuProps["items"] {
+  // Личные разделы (`group: null`) - сверху, без заголовка группы (`ui.md` §2.2).
+  const personal = items
+    .filter((item) => item.group === null)
+    .map((item) => ({ key: item.path, label: item.label }));
   const order: string[] = [];
   const byGroup = new Map<string, MenuItemConfig[]>();
   for (const item of items) {
+    if (item.group === null) {
+      continue;
+    }
     if (!byGroup.has(item.group)) {
       order.push(item.group);
       byGroup.set(item.group, []);
@@ -24,12 +31,15 @@ function buildMenuItems(items: MenuItemConfig[]): MenuProps["items"] {
   // один её пункт» — здесь это выполняется автоматически: группа попадает
   // в `byGroup` только если у неё есть хотя бы один элемент `items`
   // (уже отфильтрованных по роли, `menuItemsForRole`).
-  return order.map((group) => ({
-    key: group,
-    label: group,
-    type: "group" as const,
-    children: byGroup.get(group)!.map((item) => ({ key: item.path, label: item.label })),
-  }));
+  return [
+    ...personal,
+    ...order.map((group) => ({
+      key: group,
+      label: group,
+      type: "group" as const,
+      children: byGroup.get(group)!.map((item) => ({ key: item.path, label: item.label })),
+    })),
+  ];
 }
 
 /** Оболочка приложения (`ui.md` §2.1–2.4): боковое меню, отфильтрованное
@@ -50,7 +60,7 @@ export function AppShell() {
   // что вручную на широком экране (PR #144 review).
   const [siderCollapsed, setSiderCollapsed] = useState(false);
 
-  const items = menuItemsForRole(role);
+  const items = menuItemsForRole(role, me.employee_id !== null);
   const currentItem = items.find((item) => item.path === location.pathname);
 
   const handleLogout = useLogout();

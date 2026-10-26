@@ -39,7 +39,7 @@ export function SessionGate() {
     // Пароль уже сменён (например, вернулись назад после успешной смены,
     // или обновили страницу) — незачем оставаться на экране, которого
     // больше не требует состояние сессии.
-    const target = defaultPathForRole(asRole(me.role)) ?? "/";
+    const target = defaultPathForRole(asRole(me.role), me.employee_id !== null) ?? "/";
     return <Navigate to={target} replace />;
   }
 

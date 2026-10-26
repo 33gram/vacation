@@ -1,0 +1,126 @@
+import { Card, Descriptions, Space, Table, Typography } from "antd";
+import { useNavigate } from "react-router-dom";
+
+import { asRole, defaultPathForRole } from "../app/roles";
+import { formatDate } from "../app/format";
+import { EmptyState, ErrorLoadingState, LoadingState, NoAccessState } from "../app/states";
+import { useSession } from "../app/useSession";
+import {
+  entryTypeLabel,
+  formatAmount,
+  type BalanceEntry,
+  type LeaveTypeBalance,
+} from "../entities/balance";
+import { BalancesLoadError, useMyBalancesQuery } from "../entities/useMyBalancesQuery";
+
+/** «Мой отпуск» (`FR-BAL-002`, `T-M2-13`). Тип экрана по `ui.md` §3 - «Карточка записи»:
+ * шапка с названием раздела и датой, под ней блок на каждый вид отпуска (остаток и границы
+ * рабочего года) и таблица истории событий. Не «Список с фильтрами» (фильтров и выбора записи
+ * нет), не форма и не мастер.
+ *
+ * Единственный источник - `GET /api/employees/{id}/balances`; на фронтенде НЕТ расчёта (ни
+ * сумм, ни разниц): показывается то, что посчитал сервер. Единица - из ответа, подпись одна
+ * на всё приложение (`entities/balance.ts`). Выбора даты нет сознательно: пока не сделана
+ * `T-M2-21`, остаток на дату внутри текущего рабочего года занижен. */
+export function MyLeavePage() {
+  const me = useSession();
+  const navigate = useNavigate();
+  // Страница открывается только при наличии карточки (`RoleGuard`, `roles.ts`); `0` ниже -
+  // недостижимая подстраховка типа, запрос без карточки не уходит (`enabled` нет, потому что
+  // защита выше по дереву, а не здесь).
+  const employeeId = me.employee_id ?? 0;
+  const query = useMyBalancesQuery(employeeId);
+
+  if (query.isLoading) {
+    return <LoadingState />;
+  }
+  if (query.isError) {
+    const error = query.error;
+    if (error instanceof BalancesLoadError && error.status === 403) {
+      return (
+        <NoAccessState
+          message={error.detail ?? "Доступ запрещён. Обратитесь к HR-администратору."}
+          onGoHome={() =>
+            navigate(defaultPathForRole(asRole(me.role), me.employee_id !== null) ?? "/", {
+              replace: true,
+            })
+          }
+        />
+      );
+    }
+    // `cancelRefetch: false`: повторное нажатие, пока запрос в полёте, не запускает второй -
+    // этот `GET` пишет в журнал, один запрос на нажатие.
+    return <ErrorLoadingState onRetry={() => query.refetch({ cancelRefetch: false })} />;
+  }
+
+  const balances = query.data?.balances ?? [];
+  if (balances.length === 0) {
+    return (
+      <EmptyState
+        title="Остатков пока нет"
+        description="По вашей карточке ещё нет видов отпуска, по которым ведётся остаток."
+      />
+    );
+  }
+
+  return (
+    <Space direction="vertical" size="large" style={{ width: "100%" }}>
+      <div>
+        <Typography.Title level={3} style={{ margin: 0 }}>
+          Мой отпуск
+        </Typography.Title>
+        <Typography.Text type="secondary">
+          Остаток на {formatDate(query.data?.as_of ?? null)}
+        </Typography.Text>
+      </div>
+      {balances.map((balance) => (
+        <LeaveTypeCard key={balance.leave_type_id} balance={balance} />
+      ))}
+    </Space>
+  );
+}
+
+function LeaveTypeCard({ balance }: { balance: LeaveTypeBalance }) {
+  const yearRange =
+    balance.working_year_start && balance.working_year_end
+      ? `${formatDate(balance.working_year_start)} — ${formatDate(balance.working_year_end)}`
+      : "—";
+
+  return (
+    <Card title={balance.name} aria-label={balance.name}>
+      <Descriptions column={{ xs: 1, md: 3 }} size="small">
+        <Descriptions.Item label="Остаток за текущий рабочий год">
+          {formatAmount(balance.balance, balance.unit)}
+        </Descriptions.Item>
+        <Descriptions.Item label="Рабочий год">{yearRange}</Descriptions.Item>
+        <Descriptions.Item label="Всего по всем рабочим годам">
+          {formatAmount(balance.total_balance, balance.unit)}
+        </Descriptions.Item>
+      </Descriptions>
+      <Typography.Title level={5}>История</Typography.Title>
+      <Table<BalanceEntry>
+        size="small"
+        rowKey="id"
+        dataSource={balance.history}
+        pagination={{ pageSize: 10, hideOnSinglePage: true }}
+        locale={{ emptyText: "Событий пока нет" }}
+        columns={[
+          { title: "Дата", dataIndex: "entry_date", render: (value: string) => formatDate(value) },
+          {
+            title: "Тип",
+            dataIndex: "entry_type",
+            render: (value: string) => entryTypeLabel(value),
+          },
+          {
+            title: "Количество",
+            dataIndex: "quantity",
+            align: "right",
+            render: (value: string) => formatAmount(value, balance.unit, { signed: true }),
+          },
+          { title: "Причина", dataIndex: "reason", render: (value: string | null) => value ?? "—" },
+          { title: "Кто", dataIndex: "actor_name" },
+        ]}
+      />
+    </Card>
+  );
+}

@@ -45,12 +45,20 @@ test("logs in via LDAP, and the admin sees the matching employee card", async ({
   // без параметра - свойство верно на сегодняшнюю поверхность API, не
   // навсегда), а `/employees/:id` на фронтенде доступен только
   // hr_admin/system_admin (roles.ts,
-  // NON_MENU_ROUTES) - сотрудник без доступного в M1 раздела видит
-  // состояние "Пусто" (StubPage). Карточка проверяется ниже сессией
-  // администратора - той же, что готовила данные (токен из
+  // NON_MENU_ROUTES) - сотрудник видит свой раздел «Мой отпуск» (с
+  // T-M2-13; до неё - состояние "Пусто", StubPage). Карточка проверяется
+  // ниже сессией администратора - той же, что готовила данные (токен из
   // setupLdapScenario, без повторного входа через интерфейс, см. ниже).
   await expect(page.getByRole("button", { name: "Выйти" })).toBeVisible();
-  await expect(page.getByText("Разделы этой роли ещё не готовы")).toBeVisible();
+  // T-M2-13: у сотрудника с карточкой стартовая страница - «Мой отпуск» (`ui.md` §2.3), и
+  // остаток виден: тот же вход, что проверял заглушку роли, - отдельного входа ради раздела
+  // не заводится (E2E расширяется по одному случаю, T-M1-59/T-M1-61). Данные не готовятся:
+  // раздел показывает вид «Основной оплачиваемый отпуск» (засеян миграцией) и при нулевом
+  // остатке, а сумму не проверяем - она зависит от дня прогона.
+  await expect(page).toHaveURL(/\/my-leave$/);
+  await expect(page.getByRole("heading", { name: "Мой отпуск" })).toBeVisible();
+  await expect(page.getByText("Основной оплачиваемый отпуск")).toBeVisible();
+  await expect(page.getByText("Остаток за текущий рабочий год")).toBeVisible();
 
   await page.getByRole("button", { name: "Выйти" }).click();
   await expect(page).toHaveURL(/\/login$/);

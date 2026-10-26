@@ -56,13 +56,15 @@ from app.schemas.balance import (
     EmployeeBalancesOut,
     LeaveTypeBalanceOut,
 )
-from app.schemas.errors import ErrorDetail
+from app.schemas.errors import AUTH_RESPONSES, error_responses
 
-router = APIRouter(prefix="/api/employees/{employee_id}/balances", tags=["balances"])
+router = APIRouter(
+    prefix="/api/employees/{employee_id}/balances", tags=["balances"], responses=AUTH_RESPONSES
+)
 
 _require_balance_editor = require_roles("hr_admin")
 
-@router.get("", response_model=EmployeeBalancesOut)
+@router.get("", response_model=EmployeeBalancesOut, responses=error_responses(404))
 async def get_employee_balances(
     employee_id: int,
     as_of: datetime.date | None = Query(
@@ -180,7 +182,7 @@ async def get_employee_balances(
 @router.post(
     "/adjust",
     response_model=BalanceAdjustOut,
-    responses={400: {"model": ErrorDetail}, 404: {"model": ErrorDetail}},
+    responses=error_responses(400, 404),
 )
 async def adjust_employee_balance(
     employee_id: int,

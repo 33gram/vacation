@@ -23,9 +23,10 @@ from app.db.session import get_db_session
 from app.models.account import Account
 from app.modules.auth.rbac import get_current_account, require_roles
 from app.modules.leave_types import service
+from app.schemas.errors import AUTH_RESPONSES, error_responses
 from app.schemas.leave_type import LeaveTypeCreate, LeaveTypeOut, LeaveTypeUpdate
 
-router = APIRouter(prefix="/api/leave-types", tags=["leave-types"])
+router = APIRouter(prefix="/api/leave-types", tags=["leave-types"], responses=AUTH_RESPONSES)
 
 _require_directory_admin = require_roles("hr_admin", "system_admin")
 
@@ -38,7 +39,12 @@ async def get_leave_types(
     return [LeaveTypeOut.model_validate(t) for t in await service.list_leave_types(session)]
 
 
-@router.post("", response_model=LeaveTypeOut, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "",
+    response_model=LeaveTypeOut,
+    status_code=status.HTTP_201_CREATED,
+    responses=error_responses(409),
+)
 async def create_leave_type(
     payload: LeaveTypeCreate,
     session: AsyncSession = Depends(get_db_session),
@@ -51,7 +57,11 @@ async def create_leave_type(
     return LeaveTypeOut.model_validate(leave_type)
 
 
-@router.put("/{leave_type_id}", response_model=LeaveTypeOut)
+@router.put(
+    "/{leave_type_id}",
+    response_model=LeaveTypeOut,
+    responses=error_responses(400, 404, 409),
+)
 async def update_leave_type(
     leave_type_id: int,
     payload: LeaveTypeUpdate,

@@ -42,11 +42,11 @@ from app.schemas.employee import (
     ImportRowError,
     ImportSummary,
 )
-from app.schemas.errors import ErrorDetail
+from app.schemas.errors import AUTH_RESPONSES, error_responses
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/employees", tags=["employees"])
+router = APIRouter(prefix="/api/employees", tags=["employees"], responses=AUTH_RESPONSES)
 
 _require_employee_admin = require_roles("hr_admin", "system_admin")
 
@@ -67,7 +67,7 @@ async def get_employees(
     "",
     response_model=EmployeeOut,
     status_code=status.HTTP_201_CREATED,
-    responses={400: {"model": ErrorDetail}},
+    responses=error_responses(400, 409),
 )
 async def create_employee(
     payload: EmployeeCreate,
@@ -87,7 +87,7 @@ async def create_employee(
     return await employee_service.to_employee_out(session, employee)
 
 
-@router.post("/import", response_model=ImportSummary)
+@router.post("/import", response_model=ImportSummary, responses=error_responses(400))
 async def import_employees_endpoint(
     file: UploadFile = File(...),
     session: AsyncSession = Depends(get_db_session),
@@ -127,7 +127,7 @@ async def import_employees_endpoint(
     )
 
 
-@router.get("/{employee_id}", response_model=EmployeeOut)
+@router.get("/{employee_id}", response_model=EmployeeOut, responses=error_responses(404))
 async def get_employee(
     employee_id: int,
     session: AsyncSession = Depends(get_db_session),
@@ -143,7 +143,11 @@ async def get_employee(
     return await employee_service.to_employee_out(session, employee)
 
 
-@router.put("/{employee_id}", response_model=EmployeeOut, responses={400: {"model": ErrorDetail}})
+@router.put(
+    "/{employee_id}",
+    response_model=EmployeeOut,
+    responses=error_responses(400, 404, 409),
+)
 async def update_employee(
     employee_id: int,
     payload: EmployeeUpdate,
@@ -171,7 +175,11 @@ async def update_employee(
     return await employee_service.to_employee_out(session, employee)
 
 
-@router.post("/{employee_id}/deactivate", response_model=EmployeeOut)
+@router.post(
+    "/{employee_id}/deactivate",
+    response_model=EmployeeOut,
+    responses=error_responses(400, 404),
+)
 async def deactivate_employee(
     employee_id: int,
     payload: EmployeeDeactivate,

@@ -16,7 +16,10 @@ import { routes } from "../app/router";
  * запросы одного теста утекали бы в следующий. `registerNavigate`
  * перерегистрируется на КАЖДЫЙ рендер — иначе 401-мидлварь клиента
  * (`api/client.ts`) продолжала бы звать роутер предыдущего теста. */
-export function renderApp(initialPath = "/", { strictMode = false, retry = false } = {}) {
+export function renderApp(
+  initialPath = "/",
+  { strictMode = false, retry = false }: { strictMode?: boolean; retry?: boolean | number } = {},
+) {
   const queryClient = new QueryClient({
     // `retry` - для теста, которому нужен промышленный умолчательный повтор `QueryClient`
     // (он повторяет упавший запрос трижды): по умолчанию в тестах повторов нет.

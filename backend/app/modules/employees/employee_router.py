@@ -33,6 +33,7 @@ from app.modules.balances.service import BalanceConflictError, BalanceEntryError
 from app.modules.employees import employee_service
 from app.modules.employees.import_parsing import ImportFileError, parse_import_file
 from app.modules.employees.import_service import import_employees
+from app.modules.employees.unique_violations import UniqueValueConflictError
 from app.schemas.employee import (
     EmployeeCreate,
     EmployeeDeactivate,
@@ -78,6 +79,9 @@ async def create_employee(
     # не локально — см. ту же правку в auth/router.change_password.
     try:
         employee = await employee_service.create_employee(session, payload)
+    except UniqueValueConflictError as exc:
+        # 409 с префиксом поля в тексте (`personnel_number:`/`email:`) - как был при 400.
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
     return await employee_service.to_employee_out(session, employee)
@@ -157,7 +161,7 @@ async def update_employee(
         )
     except employee_service.EmployeeNotFoundError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
-    except BalanceConflictError as exc:
+    except (BalanceConflictError, UniqueValueConflictError) as exc:
         # 409: правка конфликтует с уже записанными событиями журнала (правило кодов
         # отказа, `CLAUDE.md`) - тот же класс, что дубль уникального поля.
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc

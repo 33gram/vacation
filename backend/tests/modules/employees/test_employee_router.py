@@ -218,8 +218,9 @@ async def test_create_employee_rejects_duplicate_personnel_number(db_session, ap
         headers=bearer_header(account),
     )
 
-    assert response.status_code == 400
-    assert "personnel_number" in response.json()["detail"]
+    # Дубль - конфликт с существующими данными: 409, поле определяется по префиксу текста.
+    assert response.status_code == 409
+    assert response.json()["detail"].startswith("personnel_number:")
 
 
 async def test_create_employee_rejects_duplicate_email_case_insensitive(
@@ -239,8 +240,41 @@ async def test_create_employee_rejects_duplicate_email_case_insensitive(
         headers=bearer_header(account),
     )
 
-    assert response.status_code == 400
-    assert "email" in response.json()["detail"]
+    assert response.status_code == 409
+    assert response.json()["detail"].startswith("email:")
+
+
+async def test_put_employee_duplicate_unique_fields_are_409_with_the_field_prefix(
+    db_session, api_client
+) -> None:
+    department = await make_department(db_session)
+    taken = await make_employee(db_session, email="taken-put@company.local")
+    employee = await make_employee(db_session, email="mine-put@company.local")
+    await make_account(db_session, employee_id=employee.id, role="employee", auth_type="ldap")
+    account = await _make_admin(db_session)
+
+    by_number = await api_client.put(
+        f"/api/employees/{employee.id}",
+        json=_employee_payload(
+            department_id=department.id,
+            personnel_number=taken.personnel_number,
+            email="mine-put@company.local",
+            auth_type="ldap",
+        ),
+        headers=bearer_header(account),
+    )
+    by_email = await api_client.put(
+        f"/api/employees/{employee.id}",
+        json=_employee_payload(
+            department_id=department.id, email="TAKEN-PUT@company.local", auth_type="ldap"
+        ),
+        headers=bearer_header(account),
+    )
+
+    assert by_number.status_code == 409
+    assert by_number.json()["detail"].startswith("personnel_number:")
+    assert by_email.status_code == 409
+    assert by_email.json()["detail"].startswith("email:")
 
 
 # --- POST /api/employees: manager must be active ----------------------------

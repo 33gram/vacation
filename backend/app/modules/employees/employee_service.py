@@ -29,6 +29,7 @@ from app.modules.auth.repository import get_account_by_employee_id
 from app.modules.balances.service import recalculate_balance
 from app.modules.business_rules.service import PASSWORD_MIN_LENGTH, get_int
 from app.modules.employees.unique_violations import (
+    UniqueValueConflictError,
     email_conflict_message,
     personnel_number_conflict_message,
     translate_unique_violation,
@@ -231,7 +232,7 @@ async def _require_personnel_number_free(
     if exclude_employee_id is not None:
         query = query.where(Employee.id != exclude_employee_id)
     if (await session.execute(query.limit(1))).first() is not None:
-        raise ValueError(personnel_number_conflict_message(personnel_number))
+        raise UniqueValueConflictError(personnel_number_conflict_message(personnel_number))
 
 
 async def _require_email_free(
@@ -241,7 +242,7 @@ async def _require_email_free(
     if exclude_employee_id is not None:
         query = query.where(Employee.id != exclude_employee_id)
     if (await session.execute(query.limit(1))).first() is not None:
-        raise ValueError(email_conflict_message(email))
+        raise UniqueValueConflictError(email_conflict_message(email))
 
 
 def _apply_card_fields(employee: Employee, payload: EmployeeCardFields) -> None:

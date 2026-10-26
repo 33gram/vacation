@@ -28,7 +28,7 @@ import datetime
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import or_, select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.time_utils import utcnow
@@ -39,7 +39,6 @@ from app.modules.auth.rbac import get_current_account, require_roles
 from app.modules.auth.repository import SYSTEM_AUTHOR_LABEL, get_author_display_names
 from app.modules.balances.accrual import working_year_containing
 from app.modules.balances.service import (
-    MAIN_LEAVE_TYPE_CODE,
     BalanceEntryError,
     accrue_before_read,
     adjust_balance,
@@ -57,13 +56,15 @@ from app.schemas.balance import (
     EmployeeBalancesOut,
     LeaveTypeBalanceOut,
 )
-from app.schemas.errors import ErrorDetail
+from app.schemas.errors import AUTH_RESPONSES, error_responses
 
-router = APIRouter(prefix="/api/employees/{employee_id}/balances", tags=["balances"])
+router = APIRouter(
+    prefix="/api/employees/{employee_id}/balances", tags=["balances"], responses=AUTH_RESPONSES
+)
 
 _require_balance_editor = require_roles("hr_admin")
 
-@router.get("", response_model=EmployeeBalancesOut)
+@router.get("", response_model=EmployeeBalancesOut, responses=error_responses(404))
 async def get_employee_balances(
     employee_id: int,
     as_of: datetime.date | None = Query(
@@ -93,20 +94,24 @@ async def get_employee_balances(
     await session.commit()
 
     # Набор видов (FR-BAL-002: «по каждому применимому виду оплачиваемого отпуска») -
-    # ВЫБРАНО: основной вид ВСЕГДА (нулевая строка у него осмысленна: «у вас пока ноль»)
-    # плюс любой вид, по которому у сотрудника есть события журнала. Причина: в
-    # справочнике нет признака «по виду ведётся остаток» (`annual_limit` пуст у всех
-    # видов, `reduces_main_balance` означает другое), а фильтр по `is_active`/`is_paid`
-    # пропускал бы «командировку» нулевой строкой в «Моём отпуске». Остальные виды
-    # появятся сами, когда M3 начнёт писать по ним использование; настоящий пробел -
-    # `T-M2-20`. `is_active` НЕ проверяется: остаток существует независимо от того, активен
-    # ли справочный вид (деактивация вида не должна прятать накопленное).
+    # ВЫБРАНО (требования v1.26, раздел 13 п. 32): виды с признаком «по виду ведётся
+    # остаток» (`balance_tracked`) и активные, ПЛЮС любой вид, по которому у сотрудника
+    # уже есть события журнала: деактивация вида или снятие с него признака не должны
+    # прятать записанную историю. Нулевая строка у вида с признаком осмысленна («у вас
+    # пока ноль», в том числе накопленной компенсации по отгулу) - в отличие от прежней
+    # «Командировка: 0»; вид без признака нулём не показывается. Начисления по отгулу
+    # эта выборка не заводит (`FR-DAYOFF-001`, M3).
     with_events = await list_leave_type_ids_with_events(session, employee_id)
     leave_types = (
         (
             await session.execute(
                 select(LeaveType)
-                .where(or_(LeaveType.code == MAIN_LEAVE_TYPE_CODE, LeaveType.id.in_(with_events)))
+                .where(
+                    or_(
+                        and_(LeaveType.balance_tracked.is_(True), LeaveType.is_active.is_(True)),
+                        LeaveType.id.in_(with_events),
+                    )
+                )
                 .order_by(LeaveType.id)
             )
         )
@@ -177,7 +182,7 @@ async def get_employee_balances(
 @router.post(
     "/adjust",
     response_model=BalanceAdjustOut,
-    responses={400: {"model": ErrorDetail}, 404: {"model": ErrorDetail}},
+    responses=error_responses(400, 404),
 )
 async def adjust_employee_balance(
     employee_id: int,

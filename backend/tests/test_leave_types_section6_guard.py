@@ -42,6 +42,7 @@ _ATTRIBUTE_COLUMNS: dict[str, tuple[str, ...]] = {
     "Оплачиваемость": ("is_paid",),
     "Единица учёта": ("unit",),
     "Уменьшает остаток основного отпуска": ("reduces_main_balance",),
+    "По виду ведётся остаток": ("balance_tracked",),
     "Требует подтверждающий документ": ("requires_document",),
     # Маршрут («и по какому маршруту») здесь не хранится — это
     # `approval_routes.leave_type_id` (`plan.md` §4, T-M3-04).

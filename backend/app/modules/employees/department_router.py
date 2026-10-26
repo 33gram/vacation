@@ -15,8 +15,9 @@ from app.models.account import Account
 from app.modules.auth.rbac import get_current_account, require_roles
 from app.modules.employees import department_service
 from app.schemas.department import DepartmentCreate, DepartmentOut, DepartmentUpdate
+from app.schemas.errors import AUTH_RESPONSES, error_responses
 
-router = APIRouter(prefix="/api/departments", tags=["departments"])
+router = APIRouter(prefix="/api/departments", tags=["departments"], responses=AUTH_RESPONSES)
 
 _require_department_admin = require_roles("hr_admin", "system_admin")
 
@@ -30,7 +31,12 @@ async def get_departments(
     return [DepartmentOut.model_validate(d) for d in departments]
 
 
-@router.post("", response_model=DepartmentOut, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "",
+    response_model=DepartmentOut,
+    status_code=status.HTTP_201_CREATED,
+    responses=error_responses(400),
+)
 async def create_department(
     payload: DepartmentCreate,
     session: AsyncSession = Depends(get_db_session),
@@ -43,7 +49,11 @@ async def create_department(
     return DepartmentOut.model_validate(department)
 
 
-@router.put("/{department_id}", response_model=DepartmentOut)
+@router.put(
+    "/{department_id}",
+    response_model=DepartmentOut,
+    responses=error_responses(400, 404),
+)
 async def update_department(
     department_id: int,
     payload: DepartmentUpdate,

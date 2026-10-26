@@ -42,7 +42,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from decimal import Decimal
 
-from sqlalchemy import func, select
+from sqlalchemy import exists, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.employee import Employee
@@ -91,6 +91,12 @@ class BalanceEntryError(Exception):
     """Событие нельзя записать: причина, автор, количество или период
     не годятся. Сообщение — для вызывающего (эндпоинт `T-M2-11` переводит
     его в ответ 4xx)."""
+
+
+class BalanceConflictError(BalanceEntryError):
+    """Операция конфликтует с УЖЕ ЗАПИСАННЫМИ событиями журнала (например, дату приёма
+    нельзя сменить из-за событий исчезающего года). Отдельный класс, чтобы эндпоинт
+    ответил 409, а не 400 (правило кодов отказа, `CLAUDE.md`)."""
 
 
 class LeaveTypeNotSeededError(RuntimeError):
@@ -224,6 +230,18 @@ async def list_leave_type_ids_with_events(session: AsyncSession, employee_id: in
         .distinct()
     )
     return set(result.scalars())
+
+
+async def leave_type_has_events(session: AsyncSession, leave_type_id: int) -> bool:
+    """Есть ли по виду отпуска хотя бы одно событие журнала у любого сотрудника
+    (справочник `T-M2-10`: признак «ведётся остаток» нельзя снять у такого вида).
+    Проверка моментальная: событие, записанное одновременно с правкой справочника,
+    в неё может не попасть."""
+    return bool(
+        await session.scalar(
+            select(exists().where(LeaveBalanceEntry.leave_type_id == leave_type_id))
+        )
+    )
 
 
 async def adjust_balance(
@@ -661,7 +679,7 @@ async def recalculate_balance(
             f"(рабочий год с {event.working_year_start:%d.%m.%Y})"
             for event in blocking
         )
-        raise BalanceEntryError(
+        raise BalanceConflictError(
             "Дату приёма нельзя изменить автоматически: в рабочих годах, которых при новой "
             f"дате не существует, есть события, внесённые против конкретного года: {listed}. "
             "Разберитесь с ними и повторите."

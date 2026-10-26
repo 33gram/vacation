@@ -204,3 +204,34 @@ async def test_running_the_seed_again_does_not_overwrite_an_admin_edit(db_sessio
         True,
         5.0,
     )
+
+
+async def test_balance_is_tracked_for_exactly_the_three_accruing_types(db_session) -> None:
+    """Состояние ПОСЛЕ миграции `0010` (раздел 13 п. 32), прочитанное из
+    базы, а не список из кода миграции: ДА - основной, дополнительный и
+    отгул, остальные пять - НЕТ. Основания значений - в докстринге `0010`."""
+    rows = await _rows(db_session)
+
+    assert {code for code, row in rows.items() if row["balance_tracked"]} == {
+        "annual_paid",
+        "additional_paid",
+        "time_off",
+    }
+    assert len(rows) - sum(row["balance_tracked"] for row in rows.values()) == 5
+
+
+async def test_a_type_inserted_without_the_flag_does_not_keep_a_balance(db_session) -> None:
+    """Умолчание ложь на уровне БД (`0010`): повторный `seed_preset` из
+    `0006` не знает колонки, а вид, добавленный мимо API, не ведёт остаток."""
+    await db_session.execute(
+        text(
+            "INSERT INTO leave_types (code, name, is_paid, unit, reduces_main_balance, "
+            "requires_document, requires_approval, carry_over_policy, "
+            "counted_non_working_days, is_active) VALUES ('probe', 'Проба', 'full', "
+            "'calendar_days', FALSE, FALSE, TRUE, 'none', 'all', TRUE)"
+        )
+    )
+
+    rows = await _rows(db_session)
+
+    assert rows["probe"]["balance_tracked"] is False

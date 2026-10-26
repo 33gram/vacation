@@ -30,6 +30,7 @@ from app.modules.employees.department_router import router as department_router
 from app.modules.employees.employee_router import router as employee_router
 from app.modules.employees.import_parsing import ImportFileError
 from app.modules.employees.unique_violations import unique_violation_field
+from app.modules.leave_types.router import router as leave_types_router
 from app.schemas.errors import PasswordPolicyViolationOut
 
 logger = logging.getLogger(__name__)
@@ -72,6 +73,7 @@ app.include_router(balances_router)
 app.include_router(department_router)
 app.include_router(employee_router)
 app.include_router(ldap_settings_router)
+app.include_router(leave_types_router)
 app.include_router(production_calendar_router)
 
 

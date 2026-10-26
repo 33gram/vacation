@@ -189,9 +189,9 @@ async def test_concurrent_creates_with_colliding_email_never_500(client, monkeyp
         statuses = [r.status_code for r in responses]
         assert 500 not in statuses, statuses
         assert statuses.count(201) == 1, statuses
-        assert statuses.count(400) == CONCURRENCY - 1, statuses
+        assert statuses.count(409) == CONCURRENCY - 1, statuses
         for response in responses:
-            if response.status_code == 400:
+            if response.status_code == 409:
                 assert "email" in response.json()["detail"]
     finally:
         await _cleanup(marker, department_id, personnel_numbers)
@@ -230,9 +230,9 @@ async def test_concurrent_creates_with_colliding_personnel_number_never_500(
         statuses = [r.status_code for r in responses]
         assert 500 not in statuses, statuses
         assert statuses.count(201) == 1, statuses
-        assert statuses.count(400) == CONCURRENCY - 1, statuses
+        assert statuses.count(409) == CONCURRENCY - 1, statuses
         for response in responses:
-            if response.status_code == 400:
+            if response.status_code == 409:
                 assert "personnel_number" in response.json()["detail"]
     finally:
         await _cleanup(marker, department_id, [shared_personnel_number])
@@ -297,9 +297,9 @@ async def test_concurrent_updates_with_colliding_personnel_number_never_500(
         statuses = [r.status_code for r in responses]
         assert 500 not in statuses, statuses
         assert statuses.count(200) == 1, statuses
-        assert statuses.count(400) == CONCURRENCY - 1, statuses
+        assert statuses.count(409) == CONCURRENCY - 1, statuses
         for response in responses:
-            if response.status_code == 400:
+            if response.status_code == 409:
                 assert "personnel_number" in response.json()["detail"]
     finally:
         await _cleanup(marker, department_id, [*personnel_numbers, target_personnel_number])

@@ -29,10 +29,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.session import get_db_session
 from app.models.account import Account
 from app.modules.auth.rbac import get_current_account, require_roles
-from app.modules.balances.service import BalanceEntryError
+from app.modules.balances.service import BalanceConflictError, BalanceEntryError
 from app.modules.employees import employee_service
 from app.modules.employees.import_parsing import ImportFileError, parse_import_file
 from app.modules.employees.import_service import import_employees
+from app.modules.employees.unique_violations import UniqueValueConflictError
 from app.schemas.employee import (
     EmployeeCreate,
     EmployeeDeactivate,
@@ -41,11 +42,11 @@ from app.schemas.employee import (
     ImportRowError,
     ImportSummary,
 )
-from app.schemas.errors import ErrorDetail
+from app.schemas.errors import AUTH_RESPONSES, error_responses
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/employees", tags=["employees"])
+router = APIRouter(prefix="/api/employees", tags=["employees"], responses=AUTH_RESPONSES)
 
 _require_employee_admin = require_roles("hr_admin", "system_admin")
 
@@ -66,7 +67,7 @@ async def get_employees(
     "",
     response_model=EmployeeOut,
     status_code=status.HTTP_201_CREATED,
-    responses={400: {"model": ErrorDetail}},
+    responses=error_responses(400, 409),
 )
 async def create_employee(
     payload: EmployeeCreate,
@@ -78,12 +79,15 @@ async def create_employee(
     # не локально — см. ту же правку в auth/router.change_password.
     try:
         employee = await employee_service.create_employee(session, payload)
+    except UniqueValueConflictError as exc:
+        # 409 с префиксом поля в тексте (`personnel_number:`/`email:`) - как был при 400.
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
     return await employee_service.to_employee_out(session, employee)
 
 
-@router.post("/import", response_model=ImportSummary)
+@router.post("/import", response_model=ImportSummary, responses=error_responses(400))
 async def import_employees_endpoint(
     file: UploadFile = File(...),
     session: AsyncSession = Depends(get_db_session),
@@ -123,7 +127,7 @@ async def import_employees_endpoint(
     )
 
 
-@router.get("/{employee_id}", response_model=EmployeeOut)
+@router.get("/{employee_id}", response_model=EmployeeOut, responses=error_responses(404))
 async def get_employee(
     employee_id: int,
     session: AsyncSession = Depends(get_db_session),
@@ -139,7 +143,11 @@ async def get_employee(
     return await employee_service.to_employee_out(session, employee)
 
 
-@router.put("/{employee_id}", response_model=EmployeeOut, responses={400: {"model": ErrorDetail}})
+@router.put(
+    "/{employee_id}",
+    response_model=EmployeeOut,
+    responses=error_responses(400, 404, 409),
+)
 async def update_employee(
     employee_id: int,
     payload: EmployeeUpdate,
@@ -157,14 +165,21 @@ async def update_employee(
         )
     except employee_service.EmployeeNotFoundError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+    except (BalanceConflictError, UniqueValueConflictError) as exc:
+        # 409: правка конфликтует с уже записанными событиями журнала (правило кодов
+        # отказа, `CLAUDE.md`) - тот же класс, что дубль уникального поля.
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
     except (ValueError, BalanceEntryError) as exc:
-        # 400, как у остальных отказов этого эндпоинта (бизнес-правило не
-        # допускает правку); 409 в проекте занят нарушением уникальности.
+        # 400: запрос недопустим сам по себе (бизнес-правило, не связанное с записями).
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
     return await employee_service.to_employee_out(session, employee)
 
 
-@router.post("/{employee_id}/deactivate", response_model=EmployeeOut)
+@router.post(
+    "/{employee_id}/deactivate",
+    response_model=EmployeeOut,
+    responses=error_responses(400, 404),
+)
 async def deactivate_employee(
     employee_id: int,
     payload: EmployeeDeactivate,

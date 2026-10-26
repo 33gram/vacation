@@ -60,6 +60,14 @@ def personnel_number_conflict_message(personnel_number: str) -> str:
     return f"personnel_number: табельный номер «{personnel_number}» уже используется"
 
 
+class UniqueValueConflictError(ValueError):
+    """Значение уникального поля уже занято: запрос конфликтует с существующими данными.
+    Роутер отвечает 409 (правило кодов отказа, `CLAUDE.md`); текст несёт машиночитаемый
+    префикс поля (`personnel_number:`/`email:`) так же, как раньше при 400 - форма
+    определяет поле по тексту, а не по коду. Наследник `ValueError` намеренно: места,
+    ловящие `ValueError` (импорт сотрудников), продолжают работать без изменений."""
+
+
 def email_conflict_message(email: str) -> str:
     """Симметрично `personnel_number_conflict_message` — для `email`."""
     return f"email: адрес «{email}» уже используется"
@@ -68,17 +76,17 @@ def email_conflict_message(email: str) -> str:
 def translate_unique_violation(
     exc: IntegrityError, *, personnel_number: str | None, email: str | None
 ) -> Exception:
-    """`ValueError` с тем же текстом и тем же полем, что и опережающая
+    """`UniqueValueConflictError` с тем же текстом и тем же полем, что и опережающая
     проверка (`_require_personnel_number_free`/`_require_email_free`,
     `employee_service.py`) — клиент не должен различать «поймали до
     записи» и «поймали на гонке», поэтому оба пути дают один и тот же
     тип исключения и один и тот же текст (`*_conflict_message` выше —
     единственный источник этого текста для обоих). Ограничение, не
     входящее в карту, не подменяется — исходная ошибка поднимается как
-    есть, чтобы не маскировать неожиданный сбой под штатный отказ 400."""
+    есть, чтобы не маскировать неожиданный сбой под штатный отказ 409."""
     field = unique_violation_field(exc)
     if field == "personnel_number" and personnel_number is not None:
-        return ValueError(personnel_number_conflict_message(personnel_number))
+        return UniqueValueConflictError(personnel_number_conflict_message(personnel_number))
     if field == "email" and email is not None:
-        return ValueError(email_conflict_message(email))
+        return UniqueValueConflictError(email_conflict_message(email))
     return exc

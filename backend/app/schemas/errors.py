@@ -12,6 +12,8 @@ FR-AUTH-002 v1.8, «показывать все невыполненные тр�
 
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import BaseModel
 
 
@@ -30,3 +32,19 @@ class PasswordPolicyViolationOut(BaseModel):
 
 class ErrorDetail(BaseModel):
     detail: str | list[PasswordPolicyViolationOut]
+
+
+# 401/403 приходят от общих зависимостей (`get_current_account`: нет или просрочен токен,
+# гейт обязательной смены пароля; `require_roles`: роль) и нигде глобально в OpenAPI не
+# описаны, поэтому роутер объявляет их у себя: `APIRouter(..., responses=AUTH_RESPONSES)`.
+# Остальные коды объявляет каждый эндпоинт сам - по тому, что он действительно поднимает
+# (сверка - `tests/test_documented_error_codes.py`).
+AUTH_RESPONSES: dict[int | str, dict[str, Any]] = {
+    401: {"model": ErrorDetail},
+    403: {"model": ErrorDetail},
+}
+
+
+def error_responses(*codes: int) -> dict[int | str, dict[str, Any]]:
+    """`responses=` для кодов, которые эндпоинт поднимает сам: `error_responses(400, 404)`."""
+    return {code: {"model": ErrorDetail} for code in codes}

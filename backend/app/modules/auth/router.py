@@ -22,7 +22,7 @@ from app.schemas.auth import (
     PasswordPolicyHintOut,
     TokenResponse,
 )
-from app.schemas.errors import ErrorDetail
+from app.schemas.errors import error_responses
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
@@ -35,7 +35,10 @@ def _to_token_response(result: AuthResult) -> TokenResponse:
     )
 
 
-@router.post("/login", response_model=TokenResponse)
+# 401/403 здесь - не от зависимостей (их у входа нет), а от обработчиков `main.py`:
+# `AuthenticationError` -> 401, `AccessDeniedError` -> 403 (LDAP-вход). Локальный вход
+# 403 не отдаёт: `local_service` поднимает только `AuthenticationError`.
+@router.post("/login", response_model=TokenResponse, responses=error_responses(401, 403))
 async def login(
     payload: LoginRequest, session: AsyncSession = Depends(get_db_session)
 ) -> TokenResponse:
@@ -60,7 +63,7 @@ async def login(
     return _to_token_response(result)
 
 
-@router.post("/login/local", response_model=TokenResponse)
+@router.post("/login/local", response_model=TokenResponse, responses=error_responses(401))
 async def login_local(
     payload: LoginRequest, session: AsyncSession = Depends(get_db_session)
 ) -> TokenResponse:
@@ -92,7 +95,9 @@ async def _identity_context(
     "/password/change",
     status_code=status.HTTP_204_NO_CONTENT,
     response_model=None,
-    responses={400: {"model": ErrorDetail}},
+    # 401: токен недействителен или неверен текущий пароль; 403 нет - зависимость
+    # `..._allowing_password_change` гейт смены пароля не применяет.
+    responses=error_responses(400, 401),
 )
 async def change_password(
     payload: PasswordChangeRequest,
@@ -141,7 +146,11 @@ async def change_password(
     await session.commit()
 
 
-@router.get("/password-policy", response_model=list[PasswordPolicyHintOut])
+@router.get(
+    "/password-policy",
+    response_model=list[PasswordPolicyHintOut],
+    responses=error_responses(401),
+)
 async def get_password_policy(
     _: Account = Depends(get_current_account_allowing_password_change),
     session: AsyncSession = Depends(get_db_session),
@@ -162,7 +171,12 @@ async def get_password_policy(
     ]
 
 
-@router.post("/logout", status_code=status.HTTP_204_NO_CONTENT, response_model=None)
+@router.post(
+    "/logout",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_model=None,
+    responses=error_responses(401),
+)
 async def logout(_: Account = Depends(get_current_account_allowing_password_change)) -> None:
     """См. обоснование выбора (stateless JWT, не отзывается) в теле
     коммита T-M1-13: клиент обязан удалить оба токена локально. Доступен
@@ -171,7 +185,7 @@ async def logout(_: Account = Depends(get_current_account_allowing_password_chan
     return None
 
 
-@router.get("/me", response_model=MeResponse)
+@router.get("/me", response_model=MeResponse, responses=error_responses(401))
 async def me(
     account: Account = Depends(get_current_account_allowing_password_change),
     session: AsyncSession = Depends(get_db_session),

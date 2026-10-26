@@ -10,6 +10,7 @@ from app.db.session import get_db_session
 from app.models.account import Account
 from app.modules.admin import ldap_settings_service
 from app.modules.auth.rbac import require_roles
+from app.schemas.errors import AUTH_RESPONSES, error_responses
 from app.schemas.ldap_settings import (
     LdapSettingsIn,
     LdapSettingsOut,
@@ -17,7 +18,7 @@ from app.schemas.ldap_settings import (
     LdapTestResponse,
 )
 
-router = APIRouter(prefix="/api/admin", tags=["admin"])
+router = APIRouter(prefix="/api/admin", tags=["admin"], responses=AUTH_RESPONSES)
 
 _require_system_admin = require_roles("system_admin")
 
@@ -41,7 +42,9 @@ async def put_ldap_settings(
     return LdapSettingsOut.model_validate(row)
 
 
-@router.post("/ldap-settings/test", response_model=LdapTestResponse)
+@router.post(
+    "/ldap-settings/test", response_model=LdapTestResponse, responses=error_responses(400)
+)
 async def test_ldap_settings(
     payload: LdapTestRequest,
     session: AsyncSession = Depends(get_db_session),

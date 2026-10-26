@@ -10,13 +10,14 @@ from app.db.session import get_db_session
 from app.models.account import Account
 from app.modules.admin import production_calendar_service
 from app.modules.auth.rbac import require_roles
+from app.schemas.errors import AUTH_RESPONSES, error_responses
 from app.schemas.production_calendar import (
     ProductionCalendarDayOut,
     ProductionCalendarYearIn,
     ProductionCalendarYearOut,
 )
 
-router = APIRouter(prefix="/api/admin", tags=["admin"])
+router = APIRouter(prefix="/api/admin", tags=["admin"], responses=AUTH_RESPONSES)
 
 _require_system_admin = require_roles("system_admin")
 
@@ -33,7 +34,11 @@ async def get_production_calendar(
     )
 
 
-@router.put("/production-calendar/{year}", response_model=ProductionCalendarYearOut)
+@router.put(
+    "/production-calendar/{year}",
+    response_model=ProductionCalendarYearOut,
+    responses=error_responses(400),
+)
 async def put_production_calendar(
     year: int,
     payload: ProductionCalendarYearIn,

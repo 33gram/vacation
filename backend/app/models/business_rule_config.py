@@ -58,6 +58,12 @@ class BusinessRuleConfig(Base):
     updated_by_account_id: Mapped[int | None] = mapped_column(
         ForeignKey("accounts.id"), nullable=True
     )
+    # РЕШЕНИЕ (PR #183 review, п. 1): `onupdate` у колонки НЕТ, единственный механизм - явная
+    # запись сервиса (`update_rules` ставит и `updated_at`, и `updated_by_account_id` вместе).
+    # Причина: два механизма означали бы два возможных времени (часы БД и часы приложения), а
+    # `onupdate` срабатывает и на ORM-обновлении, которое автора не ставит, - получилась бы
+    # запись с новым временем и старым автором. Путь записи сейчас один; новый обязан ставить
+    # обе колонки сам. Начальное значение - `server_default` (часы БД, миграция `0007`).
     updated_at: Mapped[datetime.datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+        DateTime(timezone=True), server_default=func.now(), nullable=False
     )

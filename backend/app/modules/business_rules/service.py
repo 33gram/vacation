@@ -267,10 +267,12 @@ class RuleKeysNotFoundError(Exception):
     нельзя: реестр живёт в коде, строку заводит миграция.
 
     Причин две: ключа нет в реестре (запрос неверен, 404 уместен) и у ключа реестра нет
-    СТРОКИ в таблице (сломанная конфигурация). Не разводятся, потому что вторая
-    недостижима после успешного старта: `validate_all` в `lifespan` отказывает в запуске,
-    если строки ключа реестра нет (кроме удаления строки в БД напрямую при работающем
-    приложении)."""
+    СТРОКИ в таблице (сломанная конфигурация, 404 про неё не совсем верен). Не разводятся,
+    потому что вторая не ожидается после успешного старта: `validate_all` в `lifespan`
+    отказывает в запуске, если строки ключа реестра нет. Строка может пропасть уже после
+    старта тремя способами: её удалили в БД вручную, откатили миграцию, реестр в коде и БД
+    разошлись (например, БД подменили копией со старым составом). Сегодняшнее поведение
+    закреплено тестом: `GET` такой ключ не показывает, `PUT` отвечает 404."""
 
     def __init__(self, keys: list[str]) -> None:
         super().__init__("Параметры не найдены: " + ", ".join(keys))
@@ -283,6 +285,13 @@ class RuleValuesInvalidError(ValueError):
     def __init__(self, problems: dict[str, str]) -> None:
         super().__init__("; ".join(f"{key}: {text}" for key, text in problems.items()))
         self.problems = problems
+
+
+def _canonical(value: RuleValue) -> str:
+    """Каноническая запись разобранного значения (то, что принимает CHECK таблицы)."""
+    if isinstance(value, MonthDay):
+        return f"{value.month:02d}-{value.day:02d}"
+    return str(value)
 
 
 def _invalid_value_text(spec: RuleSpec) -> str:
@@ -310,14 +319,29 @@ async def update_rules(
     не разбирается дальше.
 
     Проверка - тот же `parse_stored_value` и реестр, что у чтения и `validate_all`, с
-    `value_type` из строки таблицы, как при чтении. Пишет ORM, `updated_by_account_id` и
-    `updated_at` ставятся ЯВНО (`onupdate` модели не используется). Пара с прежним
-    значением не пишется и автора/время не трогает. Коммитит сервис: составлять эту запись
-    не с чем, транзакция кончается записью параметров (в `balances` наоборот - там только
-    `flush`, начальные остатки пишутся одной транзакцией с карточкой сотрудника)."""
+    `value_type` из строки таблицы, как при чтении (расхождение типа строки с реестром
+    даёт отказ, а не молчаливую запись). Пишет ORM; `updated_by_account_id` и `updated_at`
+    ставятся ЯВНО и вместе - это единственный механизм (у колонки нет `onupdate`, см.
+    модель). Время - часы ПРИЛОЖЕНИЯ, начальное значение при сидировании - часы БД: при
+    расхождении часов сравнение «позже» между ними может нарушиться.
+
+    «Пара равна текущему» сравнивается по РАЗОБРАННЫМ значениям: `"028"` поверх `"28"` не
+    пишется и автора/время не трогает. Записывается каноническая форма (`"29"`, не `"029"`).
+
+    Блокировка строк (`FOR UPDATE`, по порядку ключей): два одновременных `PUT` не должны
+    оба прочитать старое значение и записать каждый своё поверх друг друга молча, а порядок
+    по ключу исключает взаимную блокировку при пересекающихся наборах. «Последняя запись
+    побеждает» - ОСОЗНАННОЕ решение: устаревшая форма второго администратора затрёт чужую
+    правку; кто и когда изменил, видно в ответе `GET`, аудит - `T-M6-02`; проверки версии
+    нет.
+
+    Коммитит сервис: составлять эту запись не с чем, транзакция кончается записью
+    параметров (в `balances` наоборот - там только `flush`, начальные остатки пишутся одной
+    транзакцией с карточкой сотрудника)."""
     result = await session.execute(
         select(BusinessRuleConfig)
         .where(BusinessRuleConfig.key.in_(list(values)))
+        .order_by(BusinessRuleConfig.key)
         .with_for_update()
     )
     rows = {row.key: row for row in result.scalars()}
@@ -326,19 +350,24 @@ async def update_rules(
         raise RuleKeysNotFoundError(unknown)
 
     problems: dict[str, str] = {}
+    parsed: dict[str, RuleValue] = {}
     for key, value in values.items():
         try:
-            parse_stored_value(key, value, rows[key].value_type)
+            parsed[key] = parse_stored_value(key, value, rows[key].value_type)
         except BusinessRuleError:
             problems[key] = _invalid_value_text(RULES[key])
     if problems:
         raise RuleValuesInvalidError(problems)
 
     now = utcnow()
-    for key, value in values.items():
+    for key, new_value in parsed.items():
         row = rows[key]
-        if row.value != value:
-            row.value = value
+        try:
+            unchanged = parse_stored_value(key, row.value, row.value_type) == new_value
+        except BusinessRuleError:
+            unchanged = False  # в таблице негодное значение: запись его чинит
+        if not unchanged:
+            row.value = _canonical(new_value)
             row.updated_by_account_id = actor_account_id
             row.updated_at = now
     await session.commit()

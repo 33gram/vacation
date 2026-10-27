@@ -38,15 +38,24 @@ function mockBackend(
     if (method === "GET" && pathname === "/api/auth/me") {
       return { status: 200, body: meResponse({ employee_id: EMPLOYEE_ID, ...me }) };
     }
-    // Считаются обращения к остатку ЛЮБОГО сотрудника (в том числе `/api/employees/0/...`,
+    // Считаются обращения к остатку ЛЮБОГО сотрудника (в том числе `/api/employees/null/...`,
     // который ушёл бы без карточки), а не только своего.
-    if (method === "GET" && /^\/api\/employees\/\d+\/balances$/.test(pathname)) {
+    if (method === "GET" && /^\/api\/employees\/[^/]+\/balances$/.test(pathname)) {
       calls.balances += 1;
       return onBalances();
     }
     return null;
   });
   return calls;
+}
+
+/** Детерминированное «больше запросов не будет»: ни один запрос не в полёте, включая паузы
+ * между автоповторами. Запрос, который вызвало действие теста (монтирование, фокус, сеть,
+ * нажатие), начинается СИНХРОННО внутри этого действия, поэтому после возврата из него он уже
+ * виден в `isFetching()`; ожидание его конца заменяет ожидание «на всякий случай» по таймеру,
+ * которое на медленном раннере могло бы пройти на сломанном коде. */
+async function settled(queryClient: QueryClient) {
+  await waitFor(() => expect(queryClient.isFetching()).toBe(0));
 }
 
 /** Страница НАПРЯМУЮ, без маршрутизатора приложения и без `RoleGuard`: нужна там, где проверяется
@@ -254,7 +263,7 @@ describe("my leave (T-M2-13, FR-BAL-002)", () => {
         onlineManager.setOnline(false);
         onlineManager.setOnline(true);
       });
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      await settled(page.queryClient);
 
       expect(calls.balances).toBe(1);
     });
@@ -270,18 +279,18 @@ describe("my leave (T-M2-13, FR-BAL-002)", () => {
       first.unmount();
       renderPage({ role: "employee" }, { queryClient: first.queryClient });
 
-      await waitFor(() => expect(calls.balances).toBe(2));
-      await new Promise((resolve) => setTimeout(resolve, 50));
-      expect(calls.balances).toBe(2);
       await screen.findByLabelText("Ежегодный оплачиваемый отпуск");
+      await settled(first.queryClient);
+      expect(calls.balances).toBe(2);
     });
 
     it("sends NO request without an employee card, even with the route guard out of the way", async () => {
       const calls = mockBackend({ role: "hr_admin", employee_id: null });
 
-      renderPage({ role: "hr_admin", employee_id: null });
+      const page = renderPage({ role: "hr_admin", employee_id: null });
       await screen.findByText("Доступ запрещён. Обратитесь к HR-администратору.");
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      // Запрос, не отключённый хуком, начался бы при монтировании и был бы в полёте здесь.
+      await settled(page.queryClient);
 
       expect(calls.balances).toBe(0);
     });
@@ -289,9 +298,9 @@ describe("my leave (T-M2-13, FR-BAL-002)", () => {
     it("sends ONE request for a mount in React's development double mount (StrictMode)", async () => {
       const calls = mockBackend({ role: "employee" });
 
-      renderApp("/my-leave", { strictMode: true });
+      const { queryClient } = renderApp("/my-leave", { strictMode: true });
       await screen.findByLabelText("Ежегодный оплачиваемый отпуск");
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      await settled(queryClient);
 
       expect(calls.balances).toBe(1);
     });
@@ -300,9 +309,10 @@ describe("my leave (T-M2-13, FR-BAL-002)", () => {
       const calls = mockBackend({ role: "employee" }, () => ({ status: 500, body: { detail: "x" } }));
 
       // Промышленное умолчание `QueryClient` (3 повтора): запрос обязан его переопределить.
-      renderApp("/my-leave", { retry: 3 });
+      const { queryClient } = renderApp("/my-leave", { retry: 3 });
+      // Ошибка показывается после ПОСЛЕДНЕЙ попытки: при трёх автоповторах их бы уже посчитали.
       await screen.findByText("Не удалось загрузить данные");
-      await new Promise((resolve) => setTimeout(resolve, 100));
+      await settled(queryClient);
 
       expect(calls.balances).toBe(1);
     });
@@ -315,21 +325,20 @@ describe("my leave (T-M2-13, FR-BAL-002)", () => {
         return attempt === 1 ? { status: 500, body: { detail: "x" } } : retryGate.promise;
       });
 
-      renderApp("/my-leave");
+      const { queryClient } = renderApp("/my-leave");
       const button = await screen.findByRole("button", { name: "Повторить" });
       expect(calls.balances).toBe(1);
 
       fireEvent.click(button);
       fireEvent.click(button);
       fireEvent.click(button);
-      await waitFor(() => expect(calls.balances).toBe(2));
-      await new Promise((resolve) => setTimeout(resolve, 50));
-      expect(calls.balances).toBe(2);
-
+      // Все запросы от нажатий уже начались (синхронно) и висят на шлюзе: отпускаем его и
+      // считаем после того, как больше ничего не в полёте.
       await act(async () => {
         retryGate.resolve({ status: 200, body: balancesResponse() });
       });
       await screen.findByLabelText("Ежегодный оплачиваемый отпуск");
+      await settled(queryClient);
       expect(calls.balances).toBe(2);
     });
   });

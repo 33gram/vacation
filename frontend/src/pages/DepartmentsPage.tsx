@@ -15,6 +15,9 @@ import type { EmployeeOut } from "../entities/employee";
 import { useDepartmentsQuery } from "../entities/useDepartmentsQuery";
 import { useAllEmployeesQuery } from "../entities/useEmployeesQuery";
 
+// Оценка числа узлов дерева для каркаса загрузки (данных ещё нет, постраничной выдачи у дерева нет).
+const DEPARTMENTS_SKELETON_ROWS = 8;
+
 /** Состояние открытого модального окна «Название»: `create` — новое
  * подразделение под `parentId` (`null` — в корне), `rename` — правка
  * уже существующего. `null` — окно закрыто. Одно состояние на оба
@@ -184,7 +187,11 @@ export function DepartmentsPage() {
   });
 
   if (departmentsQuery.isLoading || employeesQuery.isLoading) {
-    return <LoadingState />;
+    // Дерево подразделений не входит ни в один из четырёх типов экранов; ближайшая форма - список
+    // из одной колонки (узел = строка). Число строк зависит от данных (подразделений до загрузки
+    // не знаем) - это оценка, а не гарантия совпадения: `ui.md` §4 для такого экрана выполнима
+    // только приближённо.
+    return <LoadingState shape={{ kind: "table", rows: DEPARTMENTS_SKELETON_ROWS, columns: 1 }} />;
   }
   if (departmentsQuery.isError) {
     return <ErrorLoadingState onRetry={() => departmentsQuery.refetch()} />;

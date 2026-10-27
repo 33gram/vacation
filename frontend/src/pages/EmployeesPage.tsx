@@ -20,6 +20,9 @@ import { useAllEmployeesQuery } from "../entities/useEmployeesQuery";
 // Стабильные ссылки на пустой массив для состояния "данные ещё не пришли" —
 // инлайновое `?? []` создавало бы новый массив на каждый рендер и срывало
 // мемоизацию `useMemo` ниже (react-hooks/exhaustive-deps).
+// Размер страницы выдачи - ОДНО число и для таблицы, и для каркаса загрузки (`ui.md` §4).
+const EMPLOYEES_PAGE_SIZE = 10;
+
 const NO_DEPARTMENTS: DepartmentOut[] = [];
 const NO_EMPLOYEES: EmployeeOut[] = [];
 
@@ -93,16 +96,6 @@ export function EmployeesPage() {
     setShowTerminated(true);
   };
 
-  if (employeesQuery.isLoading || departmentsQuery.isLoading) {
-    return <LoadingState />;
-  }
-  if (employeesQuery.isError) {
-    return <ErrorLoadingState onRetry={() => employeesQuery.refetch()} />;
-  }
-  if (departmentsQuery.isError) {
-    return <ErrorLoadingState onRetry={() => departmentsQuery.refetch()} />;
-  }
-
   const columns: ColumnsType<EmployeeOut> = [
     {
       title: "ФИО",
@@ -153,6 +146,17 @@ export function EmployeesPage() {
       render: (status: string) => EMPLOYMENT_STATUS_LABELS[status] ?? status,
     },
   ];
+
+  if (employeesQuery.isLoading || departmentsQuery.isLoading) {
+    // Каркас по форме таблицы ниже: страница выдачи целиком и столько колонок, сколько в ней есть.
+    return <LoadingState shape={{ kind: "table", rows: EMPLOYEES_PAGE_SIZE, columns: columns.length }} />;
+  }
+  if (employeesQuery.isError) {
+    return <ErrorLoadingState onRetry={() => employeesQuery.refetch()} />;
+  }
+  if (departmentsQuery.isError) {
+    return <ErrorLoadingState onRetry={() => departmentsQuery.refetch()} />;
+  }
 
   return (
     <Space direction="vertical" size="large" style={{ width: "100%" }}>
@@ -224,7 +228,7 @@ export function EmployeesPage() {
           rowKey="id"
           columns={columns}
           dataSource={filteredEmployees}
-          pagination={{ position: ["bottomCenter"] }}
+          pagination={{ position: ["bottomCenter"], pageSize: EMPLOYEES_PAGE_SIZE }}
         />
       )}
     </Space>

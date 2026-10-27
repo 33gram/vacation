@@ -22,7 +22,10 @@ export function SessionGate() {
   const location = useLocation();
 
   if (isLoading) {
-    return <LoadingState />;
+    // Закрывает ВСЁ приложение, а не раздел: «реальные данные» - первая страница после входа, а
+    // какая она (и есть ли оболочка с меню), зависит от роли, которую сессия ещё не назвала.
+    // Поэтому - минимальная форма, один блок содержимого; совпадения с итогом не обещаем.
+    return <LoadingState shape={{ kind: "card", blocks: 1 }} />;
   }
 
   if (isError || !me) {

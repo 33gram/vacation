@@ -4,6 +4,9 @@ type MeResponse = components["schemas"]["MeResponse"];
 type EmployeeOut = components["schemas"]["EmployeeOut"];
 type DepartmentOut = components["schemas"]["DepartmentOut"];
 type LdapSettingsOut = components["schemas"]["LdapSettingsOut"];
+type EmployeeBalancesOut = components["schemas"]["EmployeeBalancesOut"];
+type LeaveTypeBalanceOut = components["schemas"]["LeaveTypeBalanceOut"];
+type BalanceEntryOut = components["schemas"]["BalanceEntryOut"];
 
 export function meResponse(overrides: Partial<MeResponse> = {}): MeResponse {
   return {
@@ -71,4 +74,42 @@ export function ldapSettingsResponse(overrides: Partial<LdapSettingsOut> = {}): 
     last_test_status: null,
     ...overrides,
   };
+}
+
+export function balanceEntryResponse(overrides: Partial<BalanceEntryOut> = {}): BalanceEntryOut {
+  return {
+    id: 1,
+    entry_type: "accrual",
+    quantity: "18.67",
+    entry_date: "2026-10-24",
+    working_year_start: "2026-03-10",
+    working_year_end: "2027-03-09",
+    reason: null,
+    actor_name: "Система",
+    ...overrides,
+  };
+}
+
+export function leaveTypeBalanceResponse(
+  overrides: Partial<LeaveTypeBalanceOut> = {},
+): LeaveTypeBalanceOut {
+  return {
+    leave_type_id: 1,
+    code: "annual_paid",
+    name: "Ежегодный оплачиваемый отпуск",
+    unit: "calendar_days",
+    working_year_start: "2026-03-10",
+    working_year_end: "2027-03-09",
+    balance: "18.67",
+    total_balance: "18.67",
+    history: [balanceEntryResponse()],
+    ...overrides,
+  };
+}
+
+export function balancesResponse(
+  balances: LeaveTypeBalanceOut[] = [leaveTypeBalanceResponse()],
+  overrides: Partial<EmployeeBalancesOut> = {},
+): EmployeeBalancesOut {
+  return { employee_id: 7, as_of: "2026-10-26", balances, ...overrides };
 }

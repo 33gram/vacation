@@ -8,6 +8,7 @@ import { EmployeeCreatePage } from "../pages/EmployeeCreatePage";
 import { EmployeeImportPage } from "../pages/EmployeeImportPage";
 import { EmployeesPage } from "../pages/EmployeesPage";
 import { LoginPage } from "../pages/LoginPage";
+import { MyLeavePage } from "../pages/MyLeavePage";
 import { LdapSettingsPage } from "../pages/admin/LdapSettingsPage";
 import { ProductionCalendarPage } from "../pages/admin/ProductionCalendarPage";
 import { AppShell } from "./AppShell";
@@ -43,6 +44,14 @@ export const routes: RouteObject[] = [
             element: <AppShell />,
             children: [
               { index: true, element: <HomeRedirect /> },
+              {
+                path: "my-leave",
+                element: (
+                  <RoleGuard path="/my-leave">
+                    <MyLeavePage />
+                  </RoleGuard>
+                ),
+              },
               {
                 path: "employees",
                 element: (

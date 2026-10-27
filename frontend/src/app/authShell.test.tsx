@@ -196,7 +196,7 @@ describe("menu composition by role (ui.md §2.1/§2.2)", () => {
     cleanup();
     setFetchHandler((method, pathname) => {
       if (method === "GET" && pathname === "/api/auth/me") {
-        return { status: 200, body: meResponse({ role: "employee", must_change_password: false }) };
+        return { status: 200, body: meResponse({ role: "employee", employee_id: null, must_change_password: false }) };
       }
       return null;
     });
@@ -266,7 +266,7 @@ describe("logout clears the session cache (PR #144 review)", () => {
         }
         return meGate.then(() => ({
           status: 200,
-          body: meResponse({ role: "employee", must_change_password: false }),
+          body: meResponse({ role: "employee", employee_id: null, must_change_password: false }),
         }));
       }
       return null;
@@ -306,7 +306,7 @@ describe("embedded-mode banner (ui.md §4)", () => {
       if (method === "GET" && pathname === "/api/auth/me") {
         return {
           status: 200,
-          body: meResponse({ role: "employee", must_change_password: false, embedded_mode: true }),
+          body: meResponse({ role: "employee", employee_id: null, must_change_password: false, embedded_mode: true }),
         };
       }
       return null;

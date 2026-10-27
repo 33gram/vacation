@@ -1,5 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render } from "@testing-library/react";
+import { StrictMode } from "react";
 import { ConfigProvider } from "antd";
 import ruRU from "antd/locale/ru_RU";
 import { createMemoryRouter, RouterProvider } from "react-router-dom";
@@ -15,20 +16,27 @@ import { routes } from "../app/router";
  * запросы одного теста утекали бы в следующий. `registerNavigate`
  * перерегистрируется на КАЖДЫЙ рендер — иначе 401-мидлварь клиента
  * (`api/client.ts`) продолжала бы звать роутер предыдущего теста. */
-export function renderApp(initialPath = "/") {
+export function renderApp(
+  initialPath = "/",
+  { strictMode = false, retry = false }: { strictMode?: boolean; retry?: boolean | number } = {},
+) {
   const queryClient = new QueryClient({
-    defaultOptions: { queries: { retry: false } },
+    // `retry` - для теста, которому нужен промышленный умолчательный повтор `QueryClient`
+    // (он повторяет упавший запрос трижды): по умолчанию в тестах повторов нет.
+    defaultOptions: { queries: { retry, retryDelay: 1 } },
   });
   const testRouter = createMemoryRouter(routes, { initialEntries: [initialPath] });
   registerNavigate((path) => testRouter.navigate(path));
 
-  const result = render(
+  const tree = (
     <QueryClientProvider client={queryClient}>
       <ConfigProvider locale={ruRU}>
         <RouterProvider router={testRouter} />
       </ConfigProvider>
-    </QueryClientProvider>,
+    </QueryClientProvider>
   );
+  // `strictMode` - как в `main.tsx`: в режиме разработки React монтирует компонент дважды.
+  const result = render(strictMode ? <StrictMode>{tree}</StrictMode> : tree);
 
   return { ...result, router: testRouter, queryClient };
 }

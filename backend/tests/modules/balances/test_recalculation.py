@@ -102,7 +102,7 @@ async def _balance(db_session, ctx: Context, year_start: datetime.date) -> Decim
     return await get_balance(db_session, ctx.employee_id, ctx.leave_type_id, year_start)
 
 
-# --- FR-BAL-003: исходы единственного WHEN ----------------------------------
+# --- FR-BAL-003/1: исходы единственного WHEN ----------------------------------
 
 
 async def test_fr_bal_003_a_nonzero_difference_writes_one_event_with_reason_and_author(

@@ -1,9 +1,8 @@
 import type { ReactElement } from "react";
-import { useNavigate } from "react-router-dom";
-
-import { asRole, defaultPathForRole, isPathAllowedForRole } from "./roles";
+import { NO_ACCESS_MESSAGE } from "./accessMessage";
+import { isPathAllowedForRole } from "./roles";
 import { NoAccessState } from "./states";
-import { useSession } from "./useSession";
+import { useAccess, useGoHome } from "./useAccess";
 
 /** Прямой переход на маршрут, не входящий в меню роли (`ui.md` §2.1: «в
  * запрещённый раздел из интерфейса не попасть» — меню его и не показывает,
@@ -19,17 +18,12 @@ export function RoleGuard({
   path: string;
   children: ReactElement;
 }): ReactElement {
-  const me = useSession();
-  const navigate = useNavigate();
-  const role = asRole(me.role);
+  const { role, hasEmployeeCard } = useAccess();
+  const goHome = useGoHome();
 
-  if (!isPathAllowedForRole(role, path)) {
-    const homePath = defaultPathForRole(role) ?? "/";
+  if (!isPathAllowedForRole(role, path, hasEmployeeCard)) {
     return (
-      <NoAccessState
-        message="Доступ запрещён. Обратитесь к HR-администратору."
-        onGoHome={() => navigate(homePath, { replace: true })}
-      />
+      <NoAccessState message={NO_ACCESS_MESSAGE} onGoHome={goHome} />
     );
   }
 

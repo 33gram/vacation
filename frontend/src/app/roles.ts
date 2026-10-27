@@ -1,3 +1,5 @@
+import type { components } from "../api/generated/schema";
+
 // Единый источник состава пунктов меню и того, кому какой раздел доступен
 // (`ui.md` §2.1–2.3) — используется и для рендера бокового меню
 // (`AppShell`), и для guard'а маршрутов (`RoleGuard`), чтобы эти два места
@@ -19,13 +21,28 @@ export interface MenuItemConfig {
   path: string;
   label: string;
   roles: readonly Role[];
-  group: "Справочники" | "Администрирование";
+  /** `null` - личный раздел: сверху, без заголовка группы (`ui.md` §2.2). */
+  group: "Справочники" | "Администрирование" | null;
+  /** Раздел самообслуживания: определяется НАЛИЧИЕМ КАРТОЧКИ сотрудника, а не ролью
+   * (`requirements.md` §7 «Правило самообслуживания», §13 п. 22). У учётной записи без
+   * карточки (`employee_id = null`, например bootstrap-администратор, `FR-AUTH-005`) пункта
+   * нет вовсе. */
+  requiresEmployeeCard?: boolean;
 }
 
 // Состав и порядок — таблица `ui.md` §2.2, строки со стадией M1. Остальные
 // разделы таблицы (M2–M6) здесь не появляются вовсе — они не реализованы,
 // а не просто скрыты (`ui.md` §2.1).
 export const MENU_ITEMS: readonly MenuItemConfig[] = [
+  {
+    key: "my-leave",
+    path: "/my-leave",
+    label: "Мой отпуск",
+    // Колонки таблицы `ui.md` §2.2 - роль ПРИ НАЛИЧИИ карточки: все четыре роли.
+    roles: ["employee", "hr_admin", "accountant", "system_admin"],
+    group: null,
+    requiresEmployeeCard: true,
+  },
   {
     key: "employees",
     path: "/employees",
@@ -65,8 +82,12 @@ export const MENU_ITEMS: readonly MenuItemConfig[] = [
   },
 ];
 
-export function menuItemsForRole(role: Role): MenuItemConfig[] {
-  return MENU_ITEMS.filter((item) => item.roles.includes(role));
+function isAvailable(item: MenuItemConfig, role: Role, hasEmployeeCard: boolean): boolean {
+  return item.roles.includes(role) && (hasEmployeeCard || !item.requiresEmployeeCard);
+}
+
+export function menuItemsForRole(role: Role, hasEmployeeCard: boolean): MenuItemConfig[] {
+  return MENU_ITEMS.filter((item) => isAvailable(item, role, hasEmployeeCard));
 }
 
 // T-M1-19: маршруты, доступные роли, но не являющиеся пунктом меню —
@@ -88,26 +109,19 @@ export const NON_MENU_ROUTES: readonly NonMenuRouteConfig[] = [
   { path: "/employees/:id", roles: ["hr_admin", "system_admin"] },
 ];
 
-export function isPathAllowedForRole(role: Role, path: string): boolean {
-  const item =
-    MENU_ITEMS.find((candidate) => candidate.path === path) ??
-    NON_MENU_ROUTES.find((candidate) => candidate.path === path);
+export function isPathAllowedForRole(role: Role, path: string, hasEmployeeCard: boolean): boolean {
+  const menuItem = MENU_ITEMS.find((candidate) => candidate.path === path);
+  if (menuItem) {
+    return isAvailable(menuItem, role, hasEmployeeCard);
+  }
   // Путь вне обоих реестров — запрет, не разрешение: правильная сторона
   // умолчания для проверки доступа — новый маршрут ОБЯЗАН явно объявить
   // свои роли в одном из них, а не получить доступ молча тем, что забыли
   // его туда добавить.
-  if (!item) {
-    return false;
-  }
-  return item.roles.includes(role);
+  const nonMenuRoute = NON_MENU_ROUTES.find((candidate) => candidate.path === path);
+  return nonMenuRoute ? nonMenuRoute.roles.includes(role) : false;
 }
 
-/** Стартовая страница роли (`ui.md` §2.3). `system_admin`'s дефолт
- * («Администрирование → LDAP») уже существует в M1 — используется как
- * есть. У `hr_admin` дефолт («Мой отпуск») ещё не существует — берётся
- * первый доступный роли пункт меню (`ui.md` §2.2, порядок таблицы:
- * «Сотрудники»). У `employee`/`accountant` в M1 нет ни одного пункта —
- * `null` означает страницу-заглушку (`ui.md` §2.3, правка `T-M1-18`). */
 const ROLE_LABELS: Record<Role, string> = {
   employee: "Сотрудник",
   hr_admin: "HR-администратор",
@@ -121,10 +135,30 @@ export function roleLabel(role: Role): string {
   return ROLE_LABELS[role];
 }
 
-export function defaultPathForRole(role: Role): string | null {
+/** Доступ учётной записи, выведенный из сессии (`/api/auth/me`): роль, наличие карточки
+ * сотрудника и стартовая страница. ОДНА формула на всё приложение (`AppShell`, `RoleGuard`,
+ * `HomeRedirect`, `SessionGate`, страницы) - раньше `me.employee_id !== null` и вывод
+ * стартовой страницы повторялись в пяти местах. `homePath === null` - доступных разделов нет
+ * (страница-заглушка); места, которым нужен адрес, подставляют `"/"` сами. */
+export function accessOf(me: components["schemas"]["MeResponse"]): {
+  role: Role;
+  hasEmployeeCard: boolean;
+  homePath: string | null;
+} {
+  const role = asRole(me.role);
+  const hasEmployeeCard = me.employee_id !== null;
+  return { role, hasEmployeeCard, homePath: defaultPathForRole(role, hasEmployeeCard) };
+}
+
+/** Стартовая страница (`ui.md` §2.3): `system_admin` - «Администрирование → LDAP»
+ * (доступен всегда); остальным - первый доступный пункт меню: «Мой отпуск» при наличии
+ * карточки (он первый в `MENU_ITEMS`), иначе первый из остальных (HR без карточки -
+ * «Сотрудники»). `null` - доступных разделов нет вовсе (`employee`/`accountant` без
+ * карточки), это страница-заглушка. */
+export function defaultPathForRole(role: Role, hasEmployeeCard: boolean): string | null {
   if (role === "system_admin") {
     return "/admin/ldap-settings";
   }
-  const items = menuItemsForRole(role);
+  const items = menuItemsForRole(role, hasEmployeeCard);
   return items.length > 0 ? items[0].path : null;
 }

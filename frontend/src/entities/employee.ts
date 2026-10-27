@@ -2,6 +2,12 @@ import type { components } from "../api/generated/schema";
 
 export type EmployeeOut = components["schemas"]["EmployeeOut"];
 
+// Размеры экранов сотрудника для каркаса загрузки (`ui.md` §4): полей формы (в режиме
+// создания по умолчанию, без поля пароля) и блоков карточки. Сверяются с отрисованным экраном
+// тестом `app/loadingShapeParity.test.tsx`.
+export const EMPLOYEE_FORM_FIELD_COUNT = 10;
+export const EMPLOYEE_CARD_BLOCKS = 2;
+
 // Единственное место для подписей значений `EmployeeOut` — были
 // продублированы дословно в `EmployeesPage`/`EmployeeCardPage`
 // (PR #153 review, п. 3).

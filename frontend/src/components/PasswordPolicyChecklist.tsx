@@ -3,6 +3,8 @@ import { List, Typography } from "antd";
 import { usePasswordPolicyQuery } from "../app/passwordPolicy";
 import { ErrorLoadingState, LoadingState } from "../app/states";
 
+const PASSWORD_POLICY_HINTS_ESTIMATE = 7;
+
 /** Чек-лист требований к паролю: клиент не вычисляет выполнение правил
  * сам и не хардкодит ни одного параметра политики (минимальная длина —
  * бизнес-правило, `T-M2-09`) — состав и формулировки приходят с сервера.
@@ -16,7 +18,12 @@ export function PasswordPolicyChecklist({
   const policyQuery = usePasswordPolicyQuery();
 
   if (policyQuery.isLoading) {
-    return <LoadingState />;
+    // Список правил приходит с сервера; 7 - число кодов `PASSWORD_POLICY_VIOLATION_CODES`, то
+    // есть ВТОРОЕ место того же числа. Оно не сверяется с отрисовкой, но охраняется backend-тестом
+    // `test_password_policy_skeleton_count.py` (сравнивает с перечнем кодов и отдаваемыми
+    // подсказками; выполняется в CI, в dev-контейнере пропускается): новое правило политики
+    // покраснит его, а не разойдётся молча.
+    return <LoadingState shape={{ kind: "table", rows: PASSWORD_POLICY_HINTS_ESTIMATE, columns: 1 }} />;
   }
   if (policyQuery.isError) {
     return <ErrorLoadingState onRetry={() => policyQuery.refetch()} />;

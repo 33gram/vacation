@@ -7,6 +7,7 @@ import { stringDetail } from "../../api/errors";
 import { formatDateTime } from "../../app/format";
 import { EmptyState, ErrorLoadingState, LoadingState } from "../../app/states";
 import {
+  LDAP_FORM_FIELD_COUNT,
   defaultFormValues,
   formValuesFromSaved,
   hasUnsavedChanges,
@@ -330,7 +331,7 @@ export function LdapSettingsPage() {
   const [started, setStarted] = useState(false);
 
   if (query.isLoading) {
-    return <LoadingState />;
+    return <LoadingState shape={{ kind: "form", fields: LDAP_FORM_FIELD_COUNT }} />;
   }
   if (query.isError) {
     return <ErrorLoadingState onRetry={() => query.refetch()} />;

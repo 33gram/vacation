@@ -15,6 +15,7 @@ import type { EmployeeFormSubmitError } from "../components/employeeFormError";
 import { departmentNameById } from "../entities/department";
 import {
   AUTH_TYPE_LABELS,
+  EMPLOYEE_CARD_BLOCKS,
   EMPLOYMENT_STATUS_LABELS,
   WORK_SCHEDULE_LABELS,
   employeeNameById,
@@ -70,7 +71,7 @@ export function EmployeeCardPage() {
   );
 
   if (employeeQuery.isLoading || employeesQuery.isLoading || departmentsQuery.isLoading) {
-    return <LoadingState />;
+    return <LoadingState shape={{ kind: "card", blocks: EMPLOYEE_CARD_BLOCKS }} />;
   }
   if (employeeQuery.isError) {
     return <ErrorLoadingState onRetry={() => employeeQuery.refetch()} />;

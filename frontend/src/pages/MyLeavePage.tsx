@@ -1,4 +1,5 @@
 import { Card, Descriptions, Space, Table, Typography } from "antd";
+import type { ColumnsType } from "antd/es/table";
 
 import { NO_ACCESS_MESSAGE } from "../app/accessMessage";
 import { formatDate } from "../app/format";
@@ -12,6 +13,24 @@ import {
   type LeaveTypeBalance,
 } from "../entities/balance";
 import { BalancesLoadError, useMyBalancesQuery } from "../entities/useMyBalancesQuery";
+
+// Размер страницы истории - ОДНО число и для таблицы, и для каркаса загрузки (`ui.md` §4).
+const HISTORY_PAGE_SIZE = 10;
+
+function historyColumns(unit: string): ColumnsType<BalanceEntry> {
+  return [
+    { title: "Дата", dataIndex: "entry_date", render: (value: string) => formatDate(value) },
+    { title: "Тип", dataIndex: "entry_type", render: (value: string) => entryTypeLabel(value) },
+    {
+      title: "Количество",
+      dataIndex: "quantity",
+      align: "right",
+      render: (value: string) => formatAmount(value, unit, { signed: true }),
+    },
+    { title: "Причина", dataIndex: "reason", render: (value: string | null) => value ?? "—" },
+    { title: "Кто", dataIndex: "actor_name" },
+  ];
+}
 
 /** «Мой отпуск» (`FR-BAL-002`, `T-M2-13`). Тип экрана по `ui.md` §3 - «Карточка записи»:
  * шапка с названием раздела и датой, под ней блок на каждый вид отпуска (остаток и границы
@@ -35,7 +54,20 @@ export function MyLeavePage() {
     return <NoAccessState message={NO_ACCESS_MESSAGE} onGoHome={goHome} />;
   }
   if (query.isLoading) {
-    return <LoadingState />;
+    // Каркас из ДВУХ вызовов одного компонента: блок вида (остаток и границы года) и таблица
+    // истории под ним, как у каждого вида после загрузки. Таблица истории сверяется с итогом для
+    // одного вида (`app/loadingShapeParity.test.tsx`). ОЦЕНКА: число блоков (видов отпуска)
+    // приходит с ответом - основной вид есть всегда (защищён, `T-M2-10`), остальные добавятся
+    // после загрузки; число строк истории тоже неизвестно - взята полная страница, у короткой
+    // истории экран после загрузки будет ниже.
+    return (
+      <>
+        <LoadingState shape={{ kind: "card", blocks: 1 }} />
+        <LoadingState
+          shape={{ kind: "table", rows: HISTORY_PAGE_SIZE, columns: historyColumns("").length }}
+        />
+      </>
+    );
   }
   if (query.isError) {
     const error = query.error;
@@ -103,24 +135,9 @@ function LeaveTypeCard({ balance }: { balance: LeaveTypeBalance }) {
         size="small"
         rowKey="id"
         dataSource={balance.history}
-        pagination={{ pageSize: 10, hideOnSinglePage: true }}
+        pagination={{ pageSize: HISTORY_PAGE_SIZE, hideOnSinglePage: true }}
         locale={{ emptyText: "Событий пока нет" }}
-        columns={[
-          { title: "Дата", dataIndex: "entry_date", render: (value: string) => formatDate(value) },
-          {
-            title: "Тип",
-            dataIndex: "entry_type",
-            render: (value: string) => entryTypeLabel(value),
-          },
-          {
-            title: "Количество",
-            dataIndex: "quantity",
-            align: "right",
-            render: (value: string) => formatAmount(value, balance.unit, { signed: true }),
-          },
-          { title: "Причина", dataIndex: "reason", render: (value: string | null) => value ?? "—" },
-          { title: "Кто", dataIndex: "actor_name" },
-        ]}
+        columns={historyColumns(balance.unit)}
       />
     </Card>
   );

@@ -8,6 +8,7 @@ import { EmployeeForm } from "../components/EmployeeForm";
 import type { EmployeeFormValues } from "../components/EmployeeForm";
 import { parseEmployeeFormError } from "../components/employeeFormError";
 import type { EmployeeFormSubmitError } from "../components/employeeFormError";
+import { EMPLOYEE_FORM_FIELD_COUNT } from "../entities/employee";
 import { useDepartmentsQuery } from "../entities/useDepartmentsQuery";
 import { useAllEmployeesQuery } from "../entities/useEmployeesQuery";
 
@@ -20,7 +21,7 @@ export function EmployeeCreatePage() {
   const employeesQuery = useAllEmployeesQuery();
 
   if (departmentsQuery.isLoading || employeesQuery.isLoading) {
-    return <LoadingState />;
+    return <LoadingState shape={{ kind: "form", fields: EMPLOYEE_FORM_FIELD_COUNT }} />;
   }
   if (departmentsQuery.isError) {
     return <ErrorLoadingState onRetry={() => departmentsQuery.refetch()} />;

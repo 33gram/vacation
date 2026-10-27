@@ -177,7 +177,9 @@ function ProductionCalendarYearView({ year }: { year: number }) {
   });
 
   if (query.isLoading) {
-    return <LoadingState />;
+    // Экран - сетка из 12 месяцев (`ui.md` §3, вне четырёх типов); ближайшая форма - блоки, по
+    // одному на месяц.
+    return <LoadingState shape={{ kind: "card", blocks: MONTH_NAMES.length }} />;
   }
   if (query.isError) {
     return <ErrorLoadingState onRetry={() => query.refetch()} />;

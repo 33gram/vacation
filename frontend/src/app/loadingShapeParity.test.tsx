@@ -1,6 +1,7 @@
 import { act, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
+import { daysInYear, isWeekendDate } from "../entities/productionCalendar";
 import { setFetchHandler } from "../test-utils/fetchMock";
 import {
   departmentResponse,
@@ -142,5 +143,40 @@ describe("the loading skeleton has the shape of what the page draws after loadin
 
     expect(skeletonBlocks).toBeGreaterThan(0);
     expect(skeletonBlocks).toBe(renderedBlocks);
+  });
+});
+
+describe("the calendar skeleton (the number is known before loading: one block per month)", () => {
+  it("draws as many blocks as the loaded page has month grids", async () => {
+    const year = new Date().getFullYear();
+    const days = daysInYear(year).map((date) => ({
+      date,
+      day_type: isWeekendDate(date) ? "weekend" : "working",
+    }));
+    const gate = deferred();
+    setAccessToken("token");
+    setFetchHandler((method, pathname) => {
+      if (method === "GET" && pathname === "/api/auth/me") {
+        return { status: 200, body: meResponse({ role: "system_admin", must_change_password: false }) };
+      }
+      if (method === "GET" && pathname.startsWith("/api/admin/production-calendar/")) {
+        return gate.promise.then(() => ({ status: 200, body: { year, days } }));
+      }
+      return null;
+    });
+
+    const { container } = renderApp("/admin/production-calendar");
+    await skeletonOfPage(container);
+    const skeletonBlocks = countIn(container, "[data-skeleton-block]");
+
+    await act(async () => {
+      gate.resolve();
+    });
+    await screen.findByText("Январь");
+    // Заголовок месяца - единственный `strong` Typography.Text в сетке года.
+    const renderedMonths = countIn(container, ".ant-typography strong");
+
+    expect(skeletonBlocks).toBeGreaterThan(0);
+    expect(renderedMonths).toBe(skeletonBlocks);
   });
 });

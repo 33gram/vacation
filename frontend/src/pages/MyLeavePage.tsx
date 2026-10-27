@@ -35,8 +35,8 @@ export function MyLeavePage() {
     return <NoAccessState message={NO_ACCESS_MESSAGE} onGoHome={goHome} />;
   }
   if (query.isLoading) {
-    // Блоков по видам отпуска до ответа не знаем; основной вид есть всегда (защищён, `T-M2-10`),
-    // остальные добавятся после загрузки - оценка, а не гарантия.
+    // ОЦЕНКА, не сверяется с итогом: число блоков (видов отпуска) приходит с ответом; основной
+    // вид есть всегда (защищён, `T-M2-10`), остальные добавятся после загрузки.
     return <LoadingState shape={{ kind: "card", blocks: 1 }} />;
   }
   if (query.isError) {

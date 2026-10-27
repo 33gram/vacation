@@ -3,6 +3,8 @@ FR-ADMIN-003)."""
 
 from __future__ import annotations
 
+import pytest
+
 from tests.modules.auth.factories import bearer_header, make_account, make_employee
 
 
@@ -20,14 +22,39 @@ async def _make_employee_account(db_session):
     )
 
 
-async def test_requires_system_admin_role(db_session, api_client) -> None:
-    account = await _make_employee_account(db_session)
+async def _make_account(db_session, role: str):
+    employee = await make_employee(db_session, email=f"{role}{id(object())}@company.local")
+    return await make_account(db_session, employee_id=employee.id, auth_type="local", role=role)
 
-    response = await api_client.get(
-        "/api/admin/production-calendar/2027", headers=bearer_header(account)
-    )
 
-    assert response.status_code == 403
+_URL = "/api/admin/production-calendar/2027"
+_BODY = {"days": [{"date": "2027-01-01", "day_type": "holiday"}]}
+
+
+@pytest.mark.parametrize("role", ["hr_admin", "system_admin"])
+async def test_hr_and_system_admin_read_and_write_the_calendar(
+    db_session, api_client, role
+) -> None:
+    # T-M2-23: строка матрицы «Ведение справочников (…, календарь)» - HR и Админ.
+    account = await _make_account(db_session, role)
+
+    put_response = await api_client.put(_URL, json=_BODY, headers=bearer_header(account))
+    get_response = await api_client.get(_URL, headers=bearer_header(account))
+
+    assert (put_response.status_code, get_response.status_code) == (200, 200)
+    assert len(get_response.json()["days"]) == 1
+
+
+@pytest.mark.parametrize("role", ["employee", "accountant"])
+async def test_other_roles_can_neither_read_nor_write_the_calendar(
+    db_session, api_client, role
+) -> None:
+    account = await _make_account(db_session, role)
+
+    get_response = await api_client.get(_URL, headers=bearer_header(account))
+    put_response = await api_client.put(_URL, json=_BODY, headers=bearer_header(account))
+
+    assert (get_response.status_code, put_response.status_code) == (403, 403)
 
 
 async def test_get_empty_year_returns_empty_list(db_session, api_client) -> None:

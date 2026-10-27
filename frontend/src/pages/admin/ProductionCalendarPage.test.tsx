@@ -139,41 +139,51 @@ describe("production calendar, read only (T-M1-22, FR-ADMIN-003)", () => {
   });
 });
 
-describe("production calendar is restricted to system_admin (T-M1-22 review)", () => {
-  it("does not show the menu item to hr_admin", async () => {
+describe("production calendar access: HR and system administrator (T-M2-23)", () => {
+  function mockRole(role: string) {
     setAccessToken("token");
     setFetchHandler((method, pathname) => {
       if (method === "GET" && pathname === "/api/auth/me") {
-        return { status: 200, body: meResponse({ role: "hr_admin", must_change_password: false }) };
+        return { status: 200, body: meResponse({ role, must_change_password: false }) };
+      }
+      if (method === "GET" && pathname.startsWith("/api/admin/production-calendar/")) {
+        return { status: 200, body: { year: CURRENT_YEAR, days: fullYearFixture(CURRENT_YEAR) } };
       }
       return null;
     });
+  }
 
-    renderApp("/");
-
-    await screen.findByText("Сотрудники");
-    expect(screen.queryByText("Производственный календарь")).not.toBeInTheDocument();
-  });
-
-  it("denies hr_admin direct navigation to the calendar with 'Доступ запрещён', the same mechanism as other routes", async () => {
-    setAccessToken("token");
-    setFetchHandler((method, pathname) => {
-      if (method === "GET" && pathname === "/api/auth/me") {
-        return { status: 200, body: meResponse({ role: "hr_admin", must_change_password: false }) };
-      }
-      return null;
-    });
+  it.each(["hr_admin", "system_admin"])("shows the menu item to %s and opens the screen", async (role) => {
+    mockRole(role);
 
     renderApp("/admin/production-calendar");
 
-    expect(
-      await screen.findByText("Доступ запрещён. Обратитесь к HR-администратору."),
-    ).toBeInTheDocument();
-    // Отрицательный контроль: экран календаря не пытается ничего
-    // запросить у сервера для запрещённой роли — до `GET` дело не
-    // доходит (мок вернул бы `null` и тест упал бы явной ошибкой из
-    // `fetchMock.ts`, если бы дошло).
+    expect(await screen.findByRole("heading", { name: "Производственный календарь" })).toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: "Производственный календарь" })).toBeInTheDocument();
   });
+
+  it.each(["employee", "accountant"])("hides the menu item from %s", async (role) => {
+    mockRole(role);
+
+    renderApp("/");
+
+    await screen.findByRole("button", { name: "Выйти" });
+    expect(screen.queryByRole("menuitem", { name: "Производственный календарь" })).not.toBeInTheDocument();
+  });
+
+  it.each(["employee", "accountant"])(
+    "denies %s direct navigation with 'Доступ запрещён', the same mechanism as other routes",
+    async (role) => {
+      mockRole(role);
+
+      renderApp("/admin/production-calendar");
+
+      expect(
+        await screen.findByText("Доступ запрещён. Обратитесь к HR-администратору."),
+      ).toBeInTheDocument();
+      // Экран календаря для запрещённой роли ничего не запрашивает у сервера.
+    },
+  );
 });
 
 describe("production calendar editing and saving (T-M1-22, FR-ADMIN-003)", () => {

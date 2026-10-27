@@ -135,11 +135,6 @@ export function roleLabel(role: Role): string {
   return ROLE_LABELS[role];
 }
 
-/** Стартовая страница (`ui.md` §2.3): `system_admin` - «Администрирование → LDAP»
- * (доступен всегда); остальным - первый доступный пункт меню: «Мой отпуск» при наличии
- * карточки (он первый в `MENU_ITEMS`), иначе первый из остальных (HR без карточки -
- * «Сотрудники»). `null` - доступных разделов нет вовсе (`employee`/`accountant` без
- * карточки), это страница-заглушка. */
 /** Доступ учётной записи, выведенный из сессии (`/api/auth/me`): роль, наличие карточки
  * сотрудника и стартовая страница. ОДНА формула на всё приложение (`AppShell`, `RoleGuard`,
  * `HomeRedirect`, `SessionGate`, страницы) - раньше `me.employee_id !== null` и вывод
@@ -155,6 +150,11 @@ export function accessOf(me: components["schemas"]["MeResponse"]): {
   return { role, hasEmployeeCard, homePath: defaultPathForRole(role, hasEmployeeCard) };
 }
 
+/** Стартовая страница (`ui.md` §2.3): `system_admin` - «Администрирование → LDAP»
+ * (доступен всегда); остальным - первый доступный пункт меню: «Мой отпуск» при наличии
+ * карточки (он первый в `MENU_ITEMS`), иначе первый из остальных (HR без карточки -
+ * «Сотрудники»). `null` - доступных разделов нет вовсе (`employee`/`accountant` без
+ * карточки), это страница-заглушка. */
 export function defaultPathForRole(role: Role, hasEmployeeCard: boolean): string | null {
   if (role === "system_admin") {
     return "/admin/ldap-settings";

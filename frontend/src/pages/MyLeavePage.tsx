@@ -1,5 +1,6 @@
 import { Card, Descriptions, Space, Table, Typography } from "antd";
 
+import { NO_ACCESS_MESSAGE } from "../app/accessMessage";
 import { formatDate } from "../app/format";
 import { EmptyState, ErrorLoadingState, LoadingState, NoAccessState } from "../app/states";
 import { useAccess, useGoHome } from "../app/useAccess";
@@ -25,15 +26,13 @@ export function MyLeavePage() {
   const me = useSession();
   const { hasEmployeeCard } = useAccess();
   const goHome = useGoHome();
-  // Страница открывается только при наличии карточки (`RoleGuard`), но запрос не зависит от
-  // этого: без карточки `employeeId = 0` и хук запроса не посылает (`enabled`).
-  const employeeId = me.employee_id ?? 0;
-  const query = useMyBalancesQuery(employeeId);
+  const query = useMyBalancesQuery(me.employee_id);
 
+  // ОСОЗНАННЫЙ второй рубеж (защита в глубину), а не забытая проверка: основная защита -
+  // `RoleGuard` на маршруте, вторая - `enabled` в хуке запроса (без карточки он не уходит);
+  // эта ветка нужна, чтобы страница без карточки показала «Нет доступа», а не «Остатков нет».
   if (!hasEmployeeCard) {
-    return (
-      <NoAccessState message="Доступ запрещён. Обратитесь к HR-администратору." onGoHome={goHome} />
-    );
+    return <NoAccessState message={NO_ACCESS_MESSAGE} onGoHome={goHome} />;
   }
   if (query.isLoading) {
     return <LoadingState />;
@@ -43,7 +42,7 @@ export function MyLeavePage() {
     if (error instanceof BalancesLoadError && error.status === 403) {
       return (
         <NoAccessState
-          message={error.detail ?? "Доступ запрещён. Обратитесь к HR-администратору."}
+          message={error.detail ?? NO_ACCESS_MESSAGE}
           onGoHome={goHome}
         />
       );

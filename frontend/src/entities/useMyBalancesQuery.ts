@@ -23,7 +23,7 @@ export class BalancesLoadError extends Error {
  * запрос трижды; в тестах - нет, поэтому умолчание тест не видит).
  *   - `retry: false` - упавший запрос повторяет только кнопка «Повторить»;
  *   - `refetchOnWindowFocus`/`refetchOnReconnect: false` - возврат на вкладку не пишет в журнал;
- *   - `enabled: employeeId > 0` - без карточки (`employee_id = null`) запрос не уходит сам по
+ *   - `enabled: employeeId !== null` - без карточки (`employee_id = null`) запрос не уходит сам по
  *     себе, а не потому что соседний компонент (`RoleGuard`) не пустил на страницу;
  *   - один запрос на МОНТИРОВАНИЕ: хук вызывается из одного места страницы, а два наблюдателя
  *     за одним ключом (React в режиме разработки монтирует компонент дважды) разделяют один
@@ -31,14 +31,17 @@ export class BalancesLoadError extends Error {
  * Уход в другой раздел и возврат - это новое монтирование и ВТОРОЙ пишущий запрос. Вреда
  * нет: повторное начисление ничего не пишет (свойство `accrue_leave`, `T-M2-19`, проверено
  * backend-тестами, не этим файлом), поэтому второй ответ только обновляет показанное. */
-export function useMyBalancesQuery(employeeId: number) {
+export function useMyBalancesQuery(employeeId: number | null) {
   return useQuery({
     queryKey: ["balances", employeeId],
-    enabled: employeeId > 0,
+    enabled: employeeId !== null,
     retry: false,
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
     queryFn: async () => {
+      if (employeeId === null) {
+        throw new Error("GET /api/employees/{id}/balances: нет карточки сотрудника");
+      }
       const { data, error, response } = await apiClient.GET("/api/employees/{employee_id}/balances", {
         params: { path: { employee_id: employeeId } },
       });

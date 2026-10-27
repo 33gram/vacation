@@ -1,4 +1,5 @@
 import type { ReactElement } from "react";
+import { NO_ACCESS_MESSAGE } from "./accessMessage";
 import { isPathAllowedForRole } from "./roles";
 import { NoAccessState } from "./states";
 import { useAccess, useGoHome } from "./useAccess";
@@ -22,10 +23,7 @@ export function RoleGuard({
 
   if (!isPathAllowedForRole(role, path, hasEmployeeCard)) {
     return (
-      <NoAccessState
-        message="Доступ запрещён. Обратитесь к HR-администратору."
-        onGoHome={goHome}
-      />
+      <NoAccessState message={NO_ACCESS_MESSAGE} onGoHome={goHome} />
     );
   }
 

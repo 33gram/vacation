@@ -43,8 +43,7 @@ export function optionsOf<T extends string>(labels: Record<T, string>): { value:
 export const YES_NO = (value: boolean): string => (value ? "Да" : "Нет");
 
 // Размеры экранов для каркаса загрузки (`ui.md` §4); сверяются с отрисованным экраном тестом
-// `app/loadingShapeParity.test.tsx`. Полей формы 12: код и все одиннадцать атрибутов раздела 6
-// (в режиме правки код показывается, но не меняется).
+// `app/loadingShapeParity.test.tsx`. У формы создания состояния «Загрузка» нет (данных она не
+// грузит), поэтому числа полей для каркаса нет.
 export const LEAVE_TYPES_PAGE_SIZE = 10;
-export const LEAVE_TYPE_FORM_FIELD_COUNT = 12;
 export const LEAVE_TYPE_CARD_BLOCKS = 2;

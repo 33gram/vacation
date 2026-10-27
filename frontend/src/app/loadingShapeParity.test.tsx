@@ -10,6 +10,7 @@ import {
   employeeResponse,
   ldapSettingsResponse,
   leaveTypeBalanceResponse,
+  leaveTypeResponse,
   meResponse,
 } from "../test-utils/fixtures";
 import { renderApp } from "../test-utils/renderApp";
@@ -238,5 +239,48 @@ describe("the \"My leave\" skeleton: a block plus the history table", () => {
     expect(skeletonRows.length).toBe(countIn(container, "tbody .ant-table-row"));
     expect(skeletonColumns).toBe(countIn(container, "thead th"));
     expect(skeletonRows.length).toBe(10);
+  });
+});
+
+describe("the leave types section skeletons (T-M2-14)", () => {
+  const types = Array.from({ length: 12 }, (_, index) =>
+    leaveTypeResponse({ id: index + 1, code: `type_${index + 1}`, name: `Вид ${index + 1}` }),
+  );
+
+  it("list (table): a full page of rows and as many columns as the table has", async () => {
+    const gate = mockGated("hr_admin", { "/api/leave-types": types });
+
+    const { container } = renderApp("/admin/leave-types");
+    await waitForShell();
+    const skeletonRows = container.querySelectorAll("[data-skeleton-row]");
+    const skeletonColumns = skeletonRows[0]?.querySelectorAll("[data-skeleton-cell]").length;
+    expect(skeletonKinds(container)).toEqual(["table"]);
+
+    await act(async () => {
+      gate.resolve();
+    });
+    await screen.findByRole("heading", { name: /Виды отсутствий/ });
+
+    expect(skeletonRows.length).toBeGreaterThan(0);
+    expect(skeletonRows.length).toBe(countIn(container, "tbody .ant-table-row"));
+    expect(skeletonColumns).toBe(countIn(container, "thead th"));
+  });
+
+  it("record card: as many blocks as the loaded card has", async () => {
+    // Форма создания данных не грузит - состояния «Загрузка» у неё нет; каркас виден у карточки.
+    const gate = mockGated("hr_admin", { "/api/leave-types": types });
+
+    const { container } = renderApp("/admin/leave-types/1");
+    await waitForShell();
+    const skeletonBlocks = countIn(container, "[data-skeleton-block]");
+    expect(skeletonKinds(container)).toEqual(["card"]);
+
+    await act(async () => {
+      gate.resolve();
+    });
+    await screen.findByRole("heading", { name: "Вид 1" });
+
+    expect(skeletonBlocks).toBeGreaterThan(0);
+    expect(skeletonBlocks).toBe(countIn(container, ".ant-descriptions"));
   });
 });

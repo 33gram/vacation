@@ -1,8 +1,10 @@
-import { focusManager, onlineManager } from "@tanstack/react-query";
-import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { QueryClient, QueryClientProvider, focusManager, onlineManager } from "@tanstack/react-query";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { MemoryRouter } from "react-router-dom";
 import { describe, expect, it } from "vitest";
 
 import { setAccessToken } from "../app/auth";
+import { SessionProvider } from "../app/SessionContext";
 import { setFetchHandler } from "../test-utils/fetchMock";
 import {
   balanceEntryResponse,
@@ -11,9 +13,9 @@ import {
   meResponse,
 } from "../test-utils/fixtures";
 import { renderApp } from "../test-utils/renderApp";
+import { MyLeavePage } from "./MyLeavePage";
 
 const EMPLOYEE_ID = 7;
-const BALANCES_PATH = `/api/employees/${EMPLOYEE_ID}/balances`;
 
 type Reply = { status: number; body?: unknown };
 
@@ -36,7 +38,9 @@ function mockBackend(
     if (method === "GET" && pathname === "/api/auth/me") {
       return { status: 200, body: meResponse({ employee_id: EMPLOYEE_ID, ...me }) };
     }
-    if (method === "GET" && pathname === BALANCES_PATH) {
+    // Считаются обращения к остатку ЛЮБОГО сотрудника (в том числе `/api/employees/0/...`,
+    // который ушёл бы без карточки), а не только своего.
+    if (method === "GET" && /^\/api\/employees\/\d+\/balances$/.test(pathname)) {
       calls.balances += 1;
       return onBalances();
     }
@@ -45,8 +49,33 @@ function mockBackend(
   return calls;
 }
 
+/** Страница НАПРЯМУЮ, без маршрутизатора приложения и без `RoleGuard`: нужна там, где проверяется
+ * сама страница и хук запроса (перерисовка родителем, размонтирование, учётная запись без
+ * карточки), а не защита маршрута. */
+function renderPage(
+  me: Parameters<typeof meResponse>[0],
+  { queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } }) } = {},
+) {
+  const Harness = ({ tick }: { tick: number }) => (
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter>
+        <SessionProvider value={meResponse({ employee_id: EMPLOYEE_ID, ...me })}>
+          <span data-testid="tick">{tick}</span>
+          <MyLeavePage />
+        </SessionProvider>
+      </MemoryRouter>
+    </QueryClientProvider>
+  );
+  const result = render(<Harness tick={1} />);
+  return {
+    queryClient,
+    unmount: result.unmount,
+    rerenderParent: (tick: number) => result.rerender(<Harness tick={tick} />),
+  };
+}
+
 describe("my leave (T-M2-13, FR-BAL-002)", () => {
-  it("FR-BAL-002: shows per leave type the balance of the current working year, its bounds, the total over all years and the event history", async () => {
+  it("FR-BAL-002/1: shows per leave type the balance of the current working year, its bounds, the total over all years and the event history", async () => {
     // Числа НЕ сходятся арифметически (итог не равен сумме событий): страница обязана
     // показать то, что прислал сервер, а не пересчитать.
     mockBackend(
@@ -190,29 +219,35 @@ describe("my leave (T-M2-13, FR-BAL-002)", () => {
       await screen.findByLabelText("Ежегодный оплачиваемый отпуск");
     });
 
-    it("no access: the server's text and a way out to an available page", async () => {
-      mockBackend({ role: "employee" }, () => ({
+    it("no access: the server's text, and the button leads to the role's start page", async () => {
+      // Администратор С карточкой: «Мой отпуск» ему доступен, стартовая страница - другая,
+      // поэтому переход по кнопке отличим от перезагрузки той же страницы.
+      mockBackend({ role: "system_admin" }, () => ({
         status: 403,
         body: { detail: "Недостаточно прав для просмотра остатка сотрудника" },
       }));
 
-      renderApp("/my-leave");
+      const { router } = renderApp("/my-leave");
 
       expect(
         await screen.findByText("Недостаточно прав для просмотра остатка сотрудника"),
       ).toBeInTheDocument();
-      expect(screen.getByRole("button", { name: "На доступную страницу" })).toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: "На доступную страницу" }));
+      await waitFor(() => expect(router.state.location.pathname).toBe("/admin/ldap-settings"));
     });
   });
 
   describe("requests: this GET writes to the journal (T-M2-19), so they are counted", () => {
-    it("sends exactly ONE request for a mount, and none for re-renders, focus or reconnect", async () => {
+    it("sends exactly ONE request for a mount, and none for a parent re-render, focus or reconnect", async () => {
       const calls = mockBackend({ role: "employee" });
-
-      renderApp("/my-leave");
+      const page = renderPage({ role: "employee" });
       await screen.findByLabelText("Ежегодный оплачиваемый отпуск");
 
-      // Перерисовка страницы без размонтирования, возврат на вкладку, возврат сети.
+      // Перерисовка РОДИТЕЛЕМ без размонтирования страницы - на живой странице случается чаще всего.
+      page.rerenderParent(2);
+      page.rerenderParent(3);
+      expect(screen.getByTestId("tick")).toHaveTextContent("3");
+      // Возврат на вкладку и возврат сети.
       await act(async () => {
         focusManager.setFocused(false);
         focusManager.setFocused(true);
@@ -222,6 +257,33 @@ describe("my leave (T-M2-13, FR-BAL-002)", () => {
       await new Promise((resolve) => setTimeout(resolve, 50));
 
       expect(calls.balances).toBe(1);
+    });
+
+    it("leaving the page and coming back is a NEW mount: a second request (harmless, T-M2-19)", async () => {
+      // Это не дефект, а названное свойство: повторное начисление ничего не пишет (проверено
+      // backend-тестами `accrue_leave`), второй ответ только обновляет показанное.
+      const calls = mockBackend({ role: "employee" });
+      const first = renderPage({ role: "employee" });
+      await screen.findByLabelText("Ежегодный оплачиваемый отпуск");
+      expect(calls.balances).toBe(1);
+
+      first.unmount();
+      renderPage({ role: "employee" }, { queryClient: first.queryClient });
+
+      await waitFor(() => expect(calls.balances).toBe(2));
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(calls.balances).toBe(2);
+      await screen.findByLabelText("Ежегодный оплачиваемый отпуск");
+    });
+
+    it("sends NO request without an employee card, even with the route guard out of the way", async () => {
+      const calls = mockBackend({ role: "hr_admin", employee_id: null });
+
+      renderPage({ role: "hr_admin", employee_id: null });
+      await screen.findByText("Доступ запрещён. Обратитесь к HR-администратору.");
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      expect(calls.balances).toBe(0);
     });
 
     it("sends ONE request for a mount in React's development double mount (StrictMode)", async () => {
@@ -245,7 +307,7 @@ describe("my leave (T-M2-13, FR-BAL-002)", () => {
       expect(calls.balances).toBe(1);
     });
 
-    it("sends ONE more request per click on the retry button, however fast it is clicked", async () => {
+    it("a burst of clicks on the retry button sends one request (the button's behaviour, not a check of the cancelRefetch flag)", async () => {
       const retryGate = deferred<Reply>();
       let attempt = 0;
       const calls = mockBackend({ role: "employee" }, () => {

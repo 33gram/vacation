@@ -28,6 +28,9 @@ const UNPAID = leaveTypeResponse({
 
 type Reply = { status: number; body?: unknown };
 
+/** Число обращений к `GET /api/leave-types` за прогон теста. */
+const reads = { count: 0 };
+
 function mockBackend(
   role: string,
   leaveTypes: unknown[],
@@ -35,12 +38,14 @@ function mockBackend(
   listStatus = 200,
 ) {
   setAccessToken("token");
+  reads.count = 0;
   const writes: { method: string; pathname: string; body: Record<string, unknown> }[] = [];
   setFetchHandler((method, pathname, init) => {
     if (method === "GET" && pathname === "/api/auth/me") {
       return { status: 200, body: meResponse({ role, must_change_password: false }) };
     }
     if (method === "GET" && pathname === "/api/leave-types") {
+      reads.count += 1;
       return listStatus === 200
         ? { status: 200, body: leaveTypes }
         : { status: listStatus, body: { detail: "internal" } };
@@ -122,7 +127,7 @@ describe("leave types section (T-M2-14, FR-ADMIN-001)", () => {
   });
 
   it.each(["employee", "accountant"])(
-    "no access for %s: no menu item, and a direct URL is denied without asking the server",
+    "no access for %s: no menu item, a direct URL is denied, and the server is asked for NOTHING (neither reads nor writes)",
     async (role) => {
       const writes = mockBackend(role, [ANNUAL]);
 
@@ -132,6 +137,7 @@ describe("leave types section (T-M2-14, FR-ADMIN-001)", () => {
         await screen.findByText("Доступ запрещён. Обратитесь к HR-администратору."),
       ).toBeInTheDocument();
       expect(screen.queryByRole("menuitem", { name: "Виды отсутствий" })).not.toBeInTheDocument();
+      expect(reads.count).toBe(0);
       expect(writes).toHaveLength(0);
     },
   );
@@ -210,6 +216,27 @@ describe("leave type card and form (FR-ADMIN-001/1: all attributes of section 6)
     expect(Object.keys(writes[0].body).sort()).toEqual(ALL_ATTRIBUTES);
     expect(writes[0].body.balance_tracked).toBe(false);
     expect(writes[0].body.annual_limit).toBe("5.00");
+  });
+});
+
+describe("the card takes its record from the list (there is no GET for one leave type)", () => {
+  it("a direct URL of a non-existent leave type shows «not found» with a way back", async () => {
+    mockBackend("hr_admin", [ANNUAL, TIME_OFF]);
+
+    const { router } = renderApp("/admin/leave-types/999");
+
+    expect(await screen.findByText("Вид не найден")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "К списку видов" }));
+    await waitFor(() => expect(router.state.location.pathname).toBe("/admin/leave-types"));
+  });
+
+  it("a page reload on the card (mounting with no list loaded before) loads the list once and shows the card", async () => {
+    mockBackend("hr_admin", [ANNUAL, TIME_OFF]);
+
+    renderApp("/admin/leave-types/2");
+
+    expect(await screen.findByRole("heading", { name: "Отгул" })).toBeInTheDocument();
+    expect(reads.count).toBe(1);
   });
 });
 

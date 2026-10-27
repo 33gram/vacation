@@ -7,7 +7,7 @@ import {
   IS_PAID_LABELS,
   LEAVE_TYPES_PAGE_SIZE,
   UNIT_LABELS,
-  YES_NO,
+  yesNo,
 } from "../../entities/leaveType";
 import type { LeaveTypeOut } from "../../entities/leaveType";
 import { useLeaveTypesQuery } from "../../entities/useLeaveTypesQuery";
@@ -46,13 +46,13 @@ export function LeaveTypesPage() {
       title: "Ведётся остаток",
       dataIndex: "balance_tracked",
       key: "balance_tracked",
-      render: (value: boolean) => YES_NO(value),
+      render: (value: boolean) => yesNo(value),
     },
     {
       title: "Используется",
       dataIndex: "is_active",
       key: "is_active",
-      render: (value: boolean) => YES_NO(value),
+      render: (value: boolean) => yesNo(value),
     },
   ];
 

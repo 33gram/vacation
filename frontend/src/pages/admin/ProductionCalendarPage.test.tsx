@@ -140,26 +140,33 @@ describe("production calendar, read only (T-M1-22, FR-ADMIN-003)", () => {
 });
 
 describe("production calendar access: HR and system administrator (T-M2-23)", () => {
+  /** `calendarReads` - число обращений к `GET` календаря: для запрещённой роли оно должно быть
+   * НУЛЕВЫМ, а не просто «экран отказа показан» (мок отвечает 200 любой роли, поэтому только
+   * счётчик отличает «защита сработала до запроса» от «запрос ушёл, потом показали отказ»). */
   function mockRole(role: string) {
+    const calls = { calendarReads: 0 };
     setAccessToken("token");
     setFetchHandler((method, pathname) => {
       if (method === "GET" && pathname === "/api/auth/me") {
         return { status: 200, body: meResponse({ role, must_change_password: false }) };
       }
       if (method === "GET" && pathname.startsWith("/api/admin/production-calendar/")) {
+        calls.calendarReads += 1;
         return { status: 200, body: { year: CURRENT_YEAR, days: fullYearFixture(CURRENT_YEAR) } };
       }
       return null;
     });
+    return calls;
   }
 
   it.each(["hr_admin", "system_admin"])("shows the menu item to %s and opens the screen", async (role) => {
-    mockRole(role);
+    const calls = mockRole(role);
 
     renderApp("/admin/production-calendar");
 
     expect(await screen.findByRole("heading", { name: "Производственный календарь" })).toBeInTheDocument();
     expect(screen.getByRole("menuitem", { name: "Производственный календарь" })).toBeInTheDocument();
+    expect(calls.calendarReads).toBeGreaterThan(0);
   });
 
   it.each(["employee", "accountant"])("hides the menu item from %s", async (role) => {
@@ -172,16 +179,16 @@ describe("production calendar access: HR and system administrator (T-M2-23)", ()
   });
 
   it.each(["employee", "accountant"])(
-    "denies %s direct navigation with 'Доступ запрещён', the same mechanism as other routes",
+    "denies %s direct navigation with 'Доступ запрещён' and sends NO request for the calendar",
     async (role) => {
-      mockRole(role);
+      const calls = mockRole(role);
 
       renderApp("/admin/production-calendar");
 
       expect(
         await screen.findByText("Доступ запрещён. Обратитесь к HR-администратору."),
       ).toBeInTheDocument();
-      // Экран календаря для запрещённой роли ничего не запрашивает у сервера.
+      expect(calls.calendarReads).toBe(0);
     },
   );
 });

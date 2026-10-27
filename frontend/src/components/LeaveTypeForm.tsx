@@ -4,6 +4,7 @@ import { useState } from "react";
 import {
   CARRY_OVER_LABELS,
   COUNTED_NON_WORKING_DAYS_LABELS,
+  FIELD_LABELS,
   IS_PAID_LABELS,
   UNIT_LABELS,
   optionsOf,
@@ -114,61 +115,61 @@ export function LeaveTypeForm({
       }
     >
       <Form.Item
-        label="Код"
+        label={FIELD_LABELS.code}
         name="code"
         rules={[{ required: true }]}
         extra={mode === "edit" ? "Код вида не меняется." : "Латиницей, строчными буквами, цифрами и «_»."}
       >
         <Input disabled={mode === "edit"} />
       </Form.Item>
-      <Form.Item label="Название" name="name" rules={[{ required: true }]}>
+      <Form.Item label={FIELD_LABELS.name} name="name" rules={[{ required: true }]}>
         <Input />
       </Form.Item>
-      <Form.Item label="Оплачиваемость" name="is_paid" rules={[{ required: true }]}>
+      <Form.Item label={FIELD_LABELS.is_paid} name="is_paid" rules={[{ required: true }]}>
         <Select options={optionsOf(IS_PAID_LABELS)} />
       </Form.Item>
-      <Form.Item label="Единица учёта" name="unit" rules={[{ required: true }]}>
+      <Form.Item label={FIELD_LABELS.unit} name="unit" rules={[{ required: true }]}>
         <Select options={optionsOf(UNIT_LABELS)} />
       </Form.Item>
       <Form.Item
-        label="Уменьшает остаток основного отпуска"
+        label={FIELD_LABELS.reduces_main_balance}
         name="reduces_main_balance"
         valuePropName="checked"
       >
         <Switch />
       </Form.Item>
       <Form.Item
-        label="По виду ведётся остаток"
+        label={FIELD_LABELS.balance_tracked}
         name="balance_tracked"
         valuePropName="checked"
         extra="Система ведёт остаток по этому виду и показывает его в разделе «Мой отпуск»."
       >
         <Switch />
       </Form.Item>
-      <Form.Item label="Требует подтверждающий документ" name="requires_document" valuePropName="checked">
+      <Form.Item label={FIELD_LABELS.requires_document} name="requires_document" valuePropName="checked">
         <Switch />
       </Form.Item>
-      <Form.Item label="Требует согласования" name="requires_approval" valuePropName="checked">
+      <Form.Item label={FIELD_LABELS.requires_approval} name="requires_approval" valuePropName="checked">
         <Switch />
       </Form.Item>
       <Form.Item
-        label="Годовой лимит"
+        label={FIELD_LABELS.annual_limit}
         name="annual_limit"
         extra="Число в год; пусто, если лимита нет."
       >
         <InputNumber<string> stringMode min="0" step="0.5" style={{ width: "100%" }} />
       </Form.Item>
-      <Form.Item label="Перенос неиспользованного остатка" name="carry_over_policy" rules={[{ required: true }]}>
+      <Form.Item label={FIELD_LABELS.carry_over_policy} name="carry_over_policy" rules={[{ required: true }]}>
         <Select options={optionsOf(CARRY_OVER_LABELS)} />
       </Form.Item>
       <Form.Item
-        label="Выходные и праздники внутри периода"
+        label={FIELD_LABELS.counted_non_working_days}
         name="counted_non_working_days"
         rules={[{ required: true }]}
       >
         <Select options={optionsOf(COUNTED_NON_WORKING_DAYS_LABELS)} />
       </Form.Item>
-      <Form.Item label="Вид используется" name="is_active" valuePropName="checked">
+      <Form.Item label={FIELD_LABELS.is_active} name="is_active" valuePropName="checked">
         <Switch />
       </Form.Item>
 

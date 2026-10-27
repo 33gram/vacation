@@ -1,4 +1,5 @@
 import type { components } from "../api/generated/schema";
+import type { LeaveTypeOut } from "../entities/leaveType";
 
 type MeResponse = components["schemas"]["MeResponse"];
 type EmployeeOut = components["schemas"]["EmployeeOut"];
@@ -114,7 +115,6 @@ export function balancesResponse(
   return { employee_id: 7, as_of: "2026-10-26", balances, ...overrides };
 }
 
-type LeaveTypeOut = components["schemas"]["LeaveTypeOut"];
 
 export function leaveTypeResponse(overrides: Partial<LeaveTypeOut> = {}): LeaveTypeOut {
   return {

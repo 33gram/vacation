@@ -4,7 +4,7 @@ export type EmployeeOut = components["schemas"]["EmployeeOut"];
 
 // Размеры экранов сотрудника для каркаса загрузки (`ui.md` §4): полей формы (в режиме
 // создания по умолчанию, без поля пароля) и блоков карточки. Сверяются с отрисованным экраном
-// тестами `EmployeeCreatePage.test.tsx`/`EmployeeCardPage.test.tsx`.
+// тестом `app/loadingShapeParity.test.tsx`.
 export const EMPLOYEE_FORM_FIELD_COUNT = 10;
 export const EMPLOYEE_CARD_BLOCKS = 2;
 

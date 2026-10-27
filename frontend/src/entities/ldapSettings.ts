@@ -7,7 +7,7 @@ export type LdapTestResponse = components["schemas"]["LdapTestResponse"];
 
 // `backend/app/core/ldap_client.py`: DEFAULT_LDAP_PORT, DEFAULT_USER_MATCH_ATTRIBUTE.
 // Число полей формы настроек для каркаса загрузки (`ui.md` §4). Сверяется с отрисованной формой
-// тестом `LdapSettingsPage.test.tsx` - второе место с тем же числом не разойдётся молча.
+// тестом `app/loadingShapeParity.test.tsx` - второе место с тем же числом не разойдётся молча.
 export const LDAP_FORM_FIELD_COUNT = 7;
 
 export const DEFAULT_LDAP_PORT = 389;

@@ -4,9 +4,12 @@ import { describe, expect, it } from "vitest";
 import { daysInYear, isWeekendDate } from "../entities/productionCalendar";
 import { setFetchHandler } from "../test-utils/fetchMock";
 import {
+  balanceEntryResponse,
+  balancesResponse,
   departmentResponse,
   employeeResponse,
   ldapSettingsResponse,
+  leaveTypeBalanceResponse,
   meResponse,
 } from "../test-utils/fixtures";
 import { renderApp } from "../test-utils/renderApp";
@@ -15,7 +18,14 @@ import { setAccessToken } from "./auth";
 // `ui.md` §4: каркас «той же высоты, что и реальные данные». Высота в пикселях в jsdom не
 // проверяется (нет раскладки); проверяется то, что можно: число строк/колонок/полей/блоков
 // каркаса РАВНО числу, которое та же страница рисует после загрузки. Каркас и итог считаются в
-// одном тесте рядом - это проверка смысла правила, а не формы вызова.
+// одном тесте рядом - это проверка смысла правила, а не формы вызова. Заодно проверяется сама
+// ФОРМА каркаса (`data-skeleton` = table/card/form).
+//
+// ГРАНИЦА: итог считается по разметке antd (`.ant-form-item-label`, `.ant-descriptions`,
+// `.ant-typography strong`, `tbody .ant-table-row`, `thead th`). Ломается она в БЕЗОПАСНУЮ
+// сторону: поле без подписи или переименованный класс дают КРАСНЫЙ тест (счёт итога меняется,
+// каркас - нет), а не тихо занижают обе стороны. Красный тест после правки разметки - это
+// «не узнал поле», а не флак: поправить селектор или число, не гасить тест.
 
 function deferred() {
   let resolve!: () => void;
@@ -41,14 +51,17 @@ function mockGated(role: string, responses: Record<string, unknown>) {
   return gate;
 }
 
-/** Дожидается оболочки (значит, `SessionGate` позади и каркас - страницы), возвращает ключи
- * каркаса. */
-async function skeletonOfPage(container: HTMLElement) {
+/** Дожидается оболочки: значит, `SessionGate` позади и каркас на экране - каркас страницы. */
+async function waitForShell() {
   await screen.findByRole("button", { name: "Выйти" });
-  return container;
 }
 
 const countIn = (root: ParentNode, selector: string) => root.querySelectorAll(selector).length;
+
+const skeletonKinds = (root: ParentNode) =>
+  Array.from(root.querySelectorAll("[data-skeleton]")).map((node) =>
+    node.getAttribute("data-skeleton"),
+  );
 
 describe("the loading skeleton has the shape of what the page draws after loading (ui.md §4)", () => {
   it("list (table): a full page of rows and as many columns as the table has", async () => {
@@ -66,9 +79,10 @@ describe("the loading skeleton has the shape of what the page draws after loadin
     });
 
     const { container } = renderApp("/employees");
-    await skeletonOfPage(container);
+    await waitForShell();
     const skeletonRows = container.querySelectorAll("[data-skeleton-row]");
     const skeletonColumns = skeletonRows[0]?.querySelectorAll("[data-skeleton-cell]").length;
+    expect(skeletonKinds(container)).toEqual(["table"]);
 
     await act(async () => {
       gate.resolve();
@@ -90,8 +104,9 @@ describe("the loading skeleton has the shape of what the page draws after loadin
     });
 
     const { container } = renderApp("/admin/ldap-settings");
-    await skeletonOfPage(container);
+    await waitForShell();
     const skeletonFields = countIn(container, "[data-skeleton-field]");
+    expect(skeletonKinds(container)).toEqual(["form"]);
 
     await act(async () => {
       gate.resolve();
@@ -110,8 +125,9 @@ describe("the loading skeleton has the shape of what the page draws after loadin
     });
 
     const { container } = renderApp("/employees/new");
-    await skeletonOfPage(container);
+    await waitForShell();
     const skeletonFields = countIn(container, "[data-skeleton-field]");
+    expect(skeletonKinds(container)).toEqual(["form"]);
 
     await act(async () => {
       gate.resolve();
@@ -132,8 +148,9 @@ describe("the loading skeleton has the shape of what the page draws after loadin
     });
 
     const { container } = renderApp("/employees/2");
-    await skeletonOfPage(container);
+    await waitForShell();
     const skeletonBlocks = countIn(container, "[data-skeleton-block]");
+    expect(skeletonKinds(container)).toEqual(["card"]);
 
     await act(async () => {
       gate.resolve();
@@ -166,8 +183,9 @@ describe("the calendar skeleton (the number is known before loading: one block p
     });
 
     const { container } = renderApp("/admin/production-calendar");
-    await skeletonOfPage(container);
+    await waitForShell();
     const skeletonBlocks = countIn(container, "[data-skeleton-block]");
+    expect(skeletonKinds(container)).toEqual(["card"]);
 
     await act(async () => {
       gate.resolve();
@@ -178,5 +196,47 @@ describe("the calendar skeleton (the number is known before loading: one block p
 
     expect(skeletonBlocks).toBeGreaterThan(0);
     expect(renderedMonths).toBe(skeletonBlocks);
+  });
+});
+
+describe("the \"My leave\" skeleton: a block plus the history table", () => {
+  it("for one leave type, matches the block and the full page of history the page draws", async () => {
+    const history = Array.from({ length: 12 }, (_, index) =>
+      balanceEntryResponse({ id: index + 1, entry_date: "2026-03-10", quantity: "1.00" }),
+    );
+    const gate = deferred();
+    setAccessToken("token");
+    setFetchHandler((method, pathname) => {
+      if (method === "GET" && pathname === "/api/auth/me") {
+        return {
+          status: 200,
+          body: meResponse({ role: "employee", employee_id: 7, must_change_password: false }),
+        };
+      }
+      if (method === "GET" && pathname === "/api/employees/7/balances") {
+        return gate.promise.then(() => ({
+          status: 200,
+          body: balancesResponse([leaveTypeBalanceResponse({ history })]),
+        }));
+      }
+      return null;
+    });
+
+    const { container } = renderApp("/my-leave");
+    await waitForShell();
+    const skeletonBlocks = countIn(container, "[data-skeleton-block]");
+    const skeletonRows = container.querySelectorAll("[data-skeleton-row]");
+    const skeletonColumns = skeletonRows[0]?.querySelectorAll("[data-skeleton-cell]").length;
+    expect(skeletonKinds(container)).toEqual(["card", "table"]);
+
+    await act(async () => {
+      gate.resolve();
+    });
+    await screen.findByLabelText("Ежегодный оплачиваемый отпуск");
+    // Один вид: один блок, 12 записей истории, страница истории - 10 строк, 5 колонок.
+    expect(skeletonBlocks).toBe(countIn(container, ".ant-card"));
+    expect(skeletonRows.length).toBe(countIn(container, "tbody .ant-table-row"));
+    expect(skeletonColumns).toBe(countIn(container, "thead th"));
+    expect(skeletonRows.length).toBe(10);
   });
 });

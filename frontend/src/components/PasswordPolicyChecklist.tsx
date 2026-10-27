@@ -18,9 +18,11 @@ export function PasswordPolicyChecklist({
   const policyQuery = usePasswordPolicyQuery();
 
   if (policyQuery.isLoading) {
-    // ОЦЕНКА, не сверяется с итогом: список правил приходит с сервера. 7 - число кодов
-    // `PASSWORD_POLICY_VIOLATION_CODES` на момент написания, то есть ВТОРОЕ место того же числа:
-    // при новом правиле политики оно разойдётся молча.
+    // Список правил приходит с сервера; 7 - число кодов `PASSWORD_POLICY_VIOLATION_CODES`, то
+    // есть ВТОРОЕ место того же числа. Оно не сверяется с отрисовкой, но охраняется backend-тестом
+    // `test_password_policy_skeleton_count.py` (сравнивает с перечнем кодов и отдаваемыми
+    // подсказками; выполняется в CI, в dev-контейнере пропускается): новое правило политики
+    // покраснит его, а не разойдётся молча.
     return <LoadingState shape={{ kind: "table", rows: PASSWORD_POLICY_HINTS_ESTIMATE, columns: 1 }} />;
   }
   if (policyQuery.isError) {

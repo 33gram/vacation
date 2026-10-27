@@ -17,12 +17,12 @@ import type { EmployeeOut } from "../entities/employee";
 import { useDepartmentsQuery } from "../entities/useDepartmentsQuery";
 import { useAllEmployeesQuery } from "../entities/useEmployeesQuery";
 
-// Стабильные ссылки на пустой массив для состояния "данные ещё не пришли" —
-// инлайновое `?? []` создавало бы новый массив на каждый рендер и срывало
-// мемоизацию `useMemo` ниже (react-hooks/exhaustive-deps).
 // Размер страницы выдачи - ОДНО число и для таблицы, и для каркаса загрузки (`ui.md` §4).
 const EMPLOYEES_PAGE_SIZE = 10;
 
+// Стабильные ссылки на пустой массив для состояния "данные ещё не пришли" —
+// инлайновое `?? []` создавало бы новый массив на каждый рендер и срывало
+// мемоизацию `useMemo` ниже (react-hooks/exhaustive-deps).
 const NO_DEPARTMENTS: DepartmentOut[] = [];
 const NO_EMPLOYEES: EmployeeOut[] = [];
 

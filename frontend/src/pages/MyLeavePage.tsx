@@ -1,9 +1,8 @@
 import { Card, Descriptions, Space, Table, Typography } from "antd";
-import { useNavigate } from "react-router-dom";
 
-import { asRole, defaultPathForRole } from "../app/roles";
 import { formatDate } from "../app/format";
 import { EmptyState, ErrorLoadingState, LoadingState, NoAccessState } from "../app/states";
+import { useAccess, useGoHome } from "../app/useAccess";
 import { useSession } from "../app/useSession";
 import {
   entryTypeLabel,
@@ -24,13 +23,18 @@ import { BalancesLoadError, useMyBalancesQuery } from "../entities/useMyBalances
  * `T-M2-21`, остаток на дату внутри текущего рабочего года занижен. */
 export function MyLeavePage() {
   const me = useSession();
-  const navigate = useNavigate();
-  // Страница открывается только при наличии карточки (`RoleGuard`, `roles.ts`); `0` ниже -
-  // недостижимая подстраховка типа, запрос без карточки не уходит (`enabled` нет, потому что
-  // защита выше по дереву, а не здесь).
+  const { hasEmployeeCard } = useAccess();
+  const goHome = useGoHome();
+  // Страница открывается только при наличии карточки (`RoleGuard`), но запрос не зависит от
+  // этого: без карточки `employeeId = 0` и хук запроса не посылает (`enabled`).
   const employeeId = me.employee_id ?? 0;
   const query = useMyBalancesQuery(employeeId);
 
+  if (!hasEmployeeCard) {
+    return (
+      <NoAccessState message="Доступ запрещён. Обратитесь к HR-администратору." onGoHome={goHome} />
+    );
+  }
   if (query.isLoading) {
     return <LoadingState />;
   }
@@ -40,11 +44,7 @@ export function MyLeavePage() {
       return (
         <NoAccessState
           message={error.detail ?? "Доступ запрещён. Обратитесь к HR-администратору."}
-          onGoHome={() =>
-            navigate(defaultPathForRole(asRole(me.role), me.employee_id !== null) ?? "/", {
-              replace: true,
-            })
-          }
+          onGoHome={goHome}
         />
       );
     }

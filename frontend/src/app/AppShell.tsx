@@ -4,7 +4,8 @@ import { useState } from "react";
 import { Outlet, useLocation, useNavigate } from "react-router-dom";
 
 import { EmbeddedModeBanner } from "./EmbeddedModeBanner";
-import { menuItemsForRole, roleLabel, type MenuItemConfig, asRole } from "./roles";
+import { menuItemsForRole, roleLabel, type MenuItemConfig } from "./roles";
+import { useAccess } from "./useAccess";
 import { useLogout } from "./useLogout";
 import { useSession } from "./useSession";
 
@@ -48,7 +49,7 @@ function buildMenuItems(items: MenuItemConfig[]): MenuProps["items"] {
  * `SessionGate` — сюда приложение попадает только с готовой сессией. */
 export function AppShell() {
   const me = useSession();
-  const role = asRole(me.role);
+  const { role, hasEmployeeCard } = useAccess();
   const navigate = useNavigate();
   const location = useLocation();
   // `ui.md` §5: «на узком экране боковое меню уезжает в выдвижную панель,
@@ -60,7 +61,7 @@ export function AppShell() {
   // что вручную на широком экране (PR #144 review).
   const [siderCollapsed, setSiderCollapsed] = useState(false);
 
-  const items = menuItemsForRole(role, me.employee_id !== null);
+  const items = menuItemsForRole(role, hasEmployeeCard);
   const currentItem = items.find((item) => item.path === location.pathname);
 
   const handleLogout = useLogout();

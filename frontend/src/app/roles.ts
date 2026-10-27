@@ -1,3 +1,5 @@
+import type { components } from "../api/generated/schema";
+
 // Единый источник состава пунктов меню и того, кому какой раздел доступен
 // (`ui.md` §2.1–2.3) — используется и для рендера бокового меню
 // (`AppShell`), и для guard'а маршрутов (`RoleGuard`), чтобы эти два места
@@ -138,6 +140,21 @@ export function roleLabel(role: Role): string {
  * карточки (он первый в `MENU_ITEMS`), иначе первый из остальных (HR без карточки -
  * «Сотрудники»). `null` - доступных разделов нет вовсе (`employee`/`accountant` без
  * карточки), это страница-заглушка. */
+/** Доступ учётной записи, выведенный из сессии (`/api/auth/me`): роль, наличие карточки
+ * сотрудника и стартовая страница. ОДНА формула на всё приложение (`AppShell`, `RoleGuard`,
+ * `HomeRedirect`, `SessionGate`, страницы) - раньше `me.employee_id !== null` и вывод
+ * стартовой страницы повторялись в пяти местах. `homePath === null` - доступных разделов нет
+ * (страница-заглушка); места, которым нужен адрес, подставляют `"/"` сами. */
+export function accessOf(me: components["schemas"]["MeResponse"]): {
+  role: Role;
+  hasEmployeeCard: boolean;
+  homePath: string | null;
+} {
+  const role = asRole(me.role);
+  const hasEmployeeCard = me.employee_id !== null;
+  return { role, hasEmployeeCard, homePath: defaultPathForRole(role, hasEmployeeCard) };
+}
+
 export function defaultPathForRole(role: Role, hasEmployeeCard: boolean): string | null {
   if (role === "system_admin") {
     return "/admin/ldap-settings";

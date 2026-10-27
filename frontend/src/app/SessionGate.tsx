@@ -1,6 +1,6 @@
 import { Navigate, Outlet, useLocation } from "react-router-dom";
 
-import { asRole, defaultPathForRole } from "./roles";
+import { accessOf } from "./roles";
 import { useMe } from "./session";
 import { SessionProvider } from "./SessionContext";
 import { ErrorLoadingState, LoadingState } from "./states";
@@ -39,7 +39,7 @@ export function SessionGate() {
     // Пароль уже сменён (например, вернулись назад после успешной смены,
     // или обновили страницу) — незачем оставаться на экране, которого
     // больше не требует состояние сессии.
-    const target = defaultPathForRole(asRole(me.role), me.employee_id !== null) ?? "/";
+    const target = accessOf(me).homePath ?? "/";
     return <Navigate to={target} replace />;
   }
 

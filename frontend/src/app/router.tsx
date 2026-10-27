@@ -10,6 +10,9 @@ import { EmployeesPage } from "../pages/EmployeesPage";
 import { LoginPage } from "../pages/LoginPage";
 import { MyLeavePage } from "../pages/MyLeavePage";
 import { LdapSettingsPage } from "../pages/admin/LdapSettingsPage";
+import { LeaveTypeCardPage } from "../pages/admin/LeaveTypeCardPage";
+import { LeaveTypeCreatePage } from "../pages/admin/LeaveTypeCreatePage";
+import { LeaveTypesPage } from "../pages/admin/LeaveTypesPage";
 import { ProductionCalendarPage } from "../pages/admin/ProductionCalendarPage";
 import { AppShell } from "./AppShell";
 import { AuthGuard } from "./AuthGuard";
@@ -115,6 +118,30 @@ export const routes: RouteObject[] = [
                 element: (
                   <RoleGuard path="/admin/production-calendar">
                     <ProductionCalendarPage />
+                  </RoleGuard>
+                ),
+              },
+              {
+                path: "admin/leave-types",
+                element: (
+                  <RoleGuard path="/admin/leave-types">
+                    <LeaveTypesPage />
+                  </RoleGuard>
+                ),
+              },
+              {
+                path: "admin/leave-types/new",
+                element: (
+                  <RoleGuard path="/admin/leave-types/new">
+                    <LeaveTypeCreatePage />
+                  </RoleGuard>
+                ),
+              },
+              {
+                path: "admin/leave-types/:id",
+                element: (
+                  <RoleGuard path="/admin/leave-types/:id">
+                    <LeaveTypeCardPage />
                   </RoleGuard>
                 ),
               },

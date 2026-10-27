@@ -77,6 +77,15 @@ export const MENU_ITEMS: readonly MenuItemConfig[] = [
     roles: ["hr_admin", "system_admin"],
     group: "Администрирование",
   },
+  {
+    key: "admin-leave-types",
+    path: "/admin/leave-types",
+    label: "Виды отсутствий",
+    // Строка матрицы раздела 7 «Ведение справочников» - HR и Админ; раздел администраторский,
+    // хотя `GET /api/leave-types` отдаёт справочник любому аутентифицированному.
+    roles: ["hr_admin", "system_admin"],
+    group: "Администрирование",
+  },
 ];
 
 function isAvailable(item: MenuItemConfig, role: Role, hasEmployeeCard: boolean): boolean {
@@ -104,6 +113,8 @@ export const NON_MENU_ROUTES: readonly NonMenuRouteConfig[] = [
   { path: "/employees/new", roles: ["hr_admin", "system_admin"] },
   { path: "/employees/import", roles: ["hr_admin", "system_admin"] },
   { path: "/employees/:id", roles: ["hr_admin", "system_admin"] },
+  { path: "/admin/leave-types/new", roles: ["hr_admin", "system_admin"] },
+  { path: "/admin/leave-types/:id", roles: ["hr_admin", "system_admin"] },
 ];
 
 export function isPathAllowedForRole(role: Role, path: string, hasEmployeeCard: boolean): boolean {

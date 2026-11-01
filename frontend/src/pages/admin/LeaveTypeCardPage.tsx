@@ -54,7 +54,6 @@ export function LeaveTypeCardPage() {
     values: LeaveTypeFormValues,
   ): Promise<LeaveTypeFormSubmitError | null> => {
     // Код не отправляется: сервер отказывает в его смене, форма показывает его отключённым.
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars -- `code` выделяется ради `rest`
     const { code, ...rest } = values;
     const { data, error, response } = await apiClient.PUT("/api/leave-types/{leave_type_id}", {
       params: { path: { leave_type_id: leaveType.id } },

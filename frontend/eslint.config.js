@@ -19,6 +19,14 @@ export default tseslint.config(
     },
     rules: {
       ...reactHooks.configs.recommended.rules,
+      // PR #186: a variable destructured NEXT TO a rest property (`const { code,
+      // ...rest } = values`) is how a field is left out of a copy; it is not
+      // "unused". Only that case: checked with a probe, an ordinary unused
+      // variable and an unused import stay errors with this flag on.
+      '@typescript-eslint/no-unused-vars': [
+        'error',
+        { ignoreRestSiblings: true },
+      ],
       'react-refresh/only-export-components': [
         'warn',
         { allowConstantExport: true },

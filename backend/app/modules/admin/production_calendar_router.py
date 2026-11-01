@@ -1,5 +1,8 @@
 """`/api/admin/production-calendar/{year}` (T-M1-17, FR-ADMIN-003) —
-доступ только `system_admin`."""
+доступ `hr_admin` и `system_admin` (T-M2-23): строка матрицы раздела 7 требований «Ведение
+справочников (виды отпусков, подразделения, календарь)» даёт календарь HR и Админу, `ui.md`
+§2.2 - тоже. Прежде код запирал его на `system_admin` (решение заказчика - равнять КОД по
+документам, документы не менялись)."""
 
 from __future__ import annotations
 
@@ -19,14 +22,14 @@ from app.schemas.production_calendar import (
 
 router = APIRouter(prefix="/api/admin", tags=["admin"], responses=AUTH_RESPONSES)
 
-_require_system_admin = require_roles("system_admin")
+_require_calendar_admin = require_roles("hr_admin", "system_admin")
 
 
 @router.get("/production-calendar/{year}", response_model=ProductionCalendarYearOut)
 async def get_production_calendar(
     year: int,
     session: AsyncSession = Depends(get_db_session),
-    _: Account = Depends(_require_system_admin),
+    _: Account = Depends(_require_calendar_admin),
 ) -> ProductionCalendarYearOut:
     days = await production_calendar_service.get_year(session, year)
     return ProductionCalendarYearOut(
@@ -43,7 +46,7 @@ async def put_production_calendar(
     year: int,
     payload: ProductionCalendarYearIn,
     session: AsyncSession = Depends(get_db_session),
-    _: Account = Depends(_require_system_admin),
+    _: Account = Depends(_require_calendar_admin),
 ) -> ProductionCalendarYearOut:
     try:
         days = await production_calendar_service.replace_year(session, year, payload.days)

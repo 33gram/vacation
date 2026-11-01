@@ -1,4 +1,5 @@
 import type { components } from "../api/generated/schema";
+import type { LeaveTypeOut } from "../entities/leaveType";
 
 type MeResponse = components["schemas"]["MeResponse"];
 type EmployeeOut = components["schemas"]["EmployeeOut"];
@@ -112,4 +113,24 @@ export function balancesResponse(
   overrides: Partial<EmployeeBalancesOut> = {},
 ): EmployeeBalancesOut {
   return { employee_id: 7, as_of: "2026-10-26", balances, ...overrides };
+}
+
+
+export function leaveTypeResponse(overrides: Partial<LeaveTypeOut> = {}): LeaveTypeOut {
+  return {
+    id: 1,
+    code: "annual_paid",
+    name: "Основной оплачиваемый отпуск",
+    is_paid: "full",
+    unit: "calendar_days",
+    reduces_main_balance: true,
+    balance_tracked: true,
+    requires_document: false,
+    requires_approval: true,
+    annual_limit: null,
+    carry_over_policy: "unlimited",
+    counted_non_working_days: "weekends_only",
+    is_active: true,
+    ...overrides,
+  };
 }

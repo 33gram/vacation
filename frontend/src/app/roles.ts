@@ -68,16 +68,22 @@ export const MENU_ITEMS: readonly MenuItemConfig[] = [
     key: "admin-production-calendar",
     path: "/admin/production-calendar",
     label: "Производственный календарь",
-    // T-M1-22 review: было ["hr_admin", "system_admin"], хотя оба
-    // эндпоинта (`GET`/`PUT /api/admin/production-calendar/{year}`)
-    // требуют `system_admin` (`require_roles("system_admin")`,
-    // `production_calendar_router.py`) — hr_admin видел пункт меню,
-    // открывал экран и получал 403 на первом же `GET`, попадая в
-    // состояние «Ошибка загрузки» с бесполезной кнопкой «Повторить».
-    // Меню приведено в соответствие с сервером, а не наоборот: если
-    // календарь должен вести и HR, это решение про права на сервере,
-    // не про то, кому показать пункт меню на клиенте.
-    roles: ["system_admin"],
+    // HR и Админ (T-M2-23). Основание - строка матрицы доступа раздела 7 требований «Ведение
+    // справочников (виды отпусков, подразделения, календарь)» и `ui.md` §2.2. Решение заказчика:
+    // КОД равняется по документам, а не документы по коду. Оба эндпоинта
+    // (`GET`/`PUT /api/admin/production-calendar/{year}`) пускают тех же двух ролей
+    // (`production_calendar_router.py`); меню и сервер должны совпадать - пункт, на который
+    // сервер отвечает 403, дал бы «Ошибку загрузки» с бесполезной «Повторить» (T-M1-22 review).
+    roles: ["hr_admin", "system_admin"],
+    group: "Администрирование",
+  },
+  {
+    key: "admin-leave-types",
+    path: "/admin/leave-types",
+    label: "Виды отсутствий",
+    // Строка матрицы раздела 7 «Ведение справочников» - HR и Админ; раздел администраторский,
+    // хотя `GET /api/leave-types` отдаёт справочник любому аутентифицированному.
+    roles: ["hr_admin", "system_admin"],
     group: "Администрирование",
   },
 ];
@@ -107,6 +113,8 @@ export const NON_MENU_ROUTES: readonly NonMenuRouteConfig[] = [
   { path: "/employees/new", roles: ["hr_admin", "system_admin"] },
   { path: "/employees/import", roles: ["hr_admin", "system_admin"] },
   { path: "/employees/:id", roles: ["hr_admin", "system_admin"] },
+  { path: "/admin/leave-types/new", roles: ["hr_admin", "system_admin"] },
+  { path: "/admin/leave-types/:id", roles: ["hr_admin", "system_admin"] },
 ];
 
 export function isPathAllowedForRole(role: Role, path: string, hasEmployeeCard: boolean): boolean {

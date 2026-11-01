@@ -178,15 +178,11 @@ describe("menu composition by role (ui.md §2.1/§2.2)", () => {
     // проверяется отдельно — остальные три пункта меню на "/employees" не
     // повторяются нигде, кроме сайдбара, и однозначно проверяют его состав.
     await screen.findByText("Подразделения");
-    // hr_admin не получает ни "Администрирование → LDAP", ни
-    // "Производственный календарь" — оба эндпоинта бэкенда
-    // (`production_calendar_router.py`, `ldap_settings_router.py`)
-    // требуют `system_admin`, только он. Прежде этот тест ожидал
-    // обратное для календаря — `roles.ts` ошибочно открывал его и
-    // `hr_admin`, хотя `GET`/`PUT` отвечали 403 (найдено и исправлено
-    // при реализации `T-M1-22`).
+    // hr_admin не получает "Администрирование → LDAP" (`ldap_settings_router.py` пускает только
+    // `system_admin`), но получает "Производственный календарь" (T-M2-23: строка матрицы
+    // «Ведение справочников (…, календарь)» - HR и Админ, сервер и меню равны документам).
     expect(screen.queryByText("LDAP")).not.toBeInTheDocument();
-    expect(screen.queryByText("Производственный календарь")).not.toBeInTheDocument();
+    expect(screen.getByText("Производственный календарь")).toBeInTheDocument();
 
     // Второй рендер того же теста — не автоматически изолирован от первого
     // (`render()` из testing-library добавляет в тот же `document.body`,

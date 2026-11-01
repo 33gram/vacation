@@ -1,4 +1,5 @@
 import type { components } from "../api/generated/schema";
+import type { BusinessRuleOut } from "../entities/businessRules";
 import type { LeaveTypeOut } from "../entities/leaveType";
 
 type MeResponse = components["schemas"]["MeResponse"];
@@ -131,6 +132,20 @@ export function leaveTypeResponse(overrides: Partial<LeaveTypeOut> = {}): LeaveT
     carry_over_policy: "unlimited",
     counted_non_working_days: "weekends_only",
     is_active: true,
+    ...overrides,
+  };
+}
+
+export function businessRuleResponse(overrides: Partial<BusinessRuleOut> = {}): BusinessRuleOut {
+  return {
+    key: "annual_leave_days",
+    value: "28",
+    value_type: "integer",
+    description: "Длительность основного отпуска по умолчанию, календарных дней.",
+    minimum: 1,
+    maximum: 366,
+    updated_at: "2026-10-20T09:30:00",
+    updated_by_name: null,
     ...overrides,
   };
 }

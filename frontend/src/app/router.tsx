@@ -10,6 +10,7 @@ import { EmployeesPage } from "../pages/EmployeesPage";
 import { LoginPage } from "../pages/LoginPage";
 import { MyLeavePage } from "../pages/MyLeavePage";
 import { LdapSettingsPage } from "../pages/admin/LdapSettingsPage";
+import { BusinessRulesPage } from "../pages/admin/BusinessRulesPage";
 import { LeaveTypeCardPage } from "../pages/admin/LeaveTypeCardPage";
 import { LeaveTypeCreatePage } from "../pages/admin/LeaveTypeCreatePage";
 import { LeaveTypesPage } from "../pages/admin/LeaveTypesPage";
@@ -118,6 +119,14 @@ export const routes: RouteObject[] = [
                 element: (
                   <RoleGuard path="/admin/production-calendar">
                     <ProductionCalendarPage />
+                  </RoleGuard>
+                ),
+              },
+              {
+                path: "admin/business-rules",
+                element: (
+                  <RoleGuard path="/admin/business-rules">
+                    <BusinessRulesPage />
                   </RoleGuard>
                 ),
               },

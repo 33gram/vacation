@@ -32,7 +32,8 @@ const range = (count: number) => Array.from({ length: count }, (_, index) => ind
  * загрузки: таблица сотрудников, формы сотрудника и LDAP, карточка сотрудника, календарь
  * (`app/loadingShapeParity.test.tsx`).
  * ОЦЕНКА, без сверки: где число зависит от данных или сессии - `DepartmentsPage`, число видов и
- * строк истории у `MyLeavePage` (блок и таблица для одного вида сверяются), `SessionGate`; в
+ * строк истории у `MyLeavePage` (блок и таблица для одного вида сверяются), `SessionGate`,
+ * `BusinessRulesPage` (число полей = число ключей реестра, приходит с ответом); в
  * месте вызова каждого стоит комментарий «ОЦЕНКА», перечень и причины - `T-M2-24` в
  * `docs/tasks.md`. Число правил у `PasswordPolicyChecklist` приходит с сервера и охраняется
  * backend-тестом `test_password_policy_skeleton_count.py`, а не сверкой с отрисовкой.

@@ -6,9 +6,8 @@
 сторожа, а не теряется. Явный здесь только словарь «атрибут → колонки» —
 правка видна в дифе, по образцу `_KNOWN_GAPS`
 (`test_ears_criteria_coverage.py`). Путь к `docs/` резолвится тем же
-способом и по той же причине, что там: compose монтирует в dev-контейнер только
-`backend/app`, `backend/alembic`, `backend/tests`, `backend/openapi.json`, `docs/` там нет, пока
-его не скопировали вручную (`docker cp`; тогда сторож выполняется), в CI — весь чекаут.
+способом и по той же причине, что там; что видно в dev-контейнере - `tests/dev_container.py`,
+в CI — весь чекаут.
 
 Граница (правило 8): сторож подтверждает, что КОЛОНКА с названным именем
 существует, а не что она выражает атрибут верно (тип, набор значений,
@@ -23,6 +22,7 @@ from pathlib import Path
 import pytest
 
 from app.models.leave_type import LeaveType
+from tests.dev_container import DEV_CONTAINER_MOUNTS
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _REQUIREMENTS_PATH = _REPO_ROOT / "docs" / "requirements.md"
@@ -30,12 +30,10 @@ _REQUIREMENTS_PATH = _REPO_ROOT / "docs" / "requirements.md"
 pytestmark = pytest.mark.skipif(
     not _REQUIREMENTS_PATH.is_file(),
     reason=(
-        "docs/requirements.md не резолвится по вычисленному пути "
-        "(parents[2] от backend/tests) - та же причина, что у "
-        "test_ears_criteria_coverage.py: compose монтирует в dev-контейнер "
-        "backend только backend/app, alembic, tests и openapi.json; docs/ в "
-        "контейнере есть, только если его скопировали вручную (docker cp); "
-        "в CI путь резолвится верно"
+        "docs/requirements.md не резолвится по вычисленному пути (parents[2] от "
+        "backend/tests), та же причина, что у test_ears_criteria_coverage.py: "
+        + DEV_CONTAINER_MOUNTS
+        + "; в CI путь резолвится верно"
     ),
 )
 

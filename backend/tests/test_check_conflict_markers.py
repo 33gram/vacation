@@ -22,10 +22,9 @@ python`, не в Docker) и каким его видит человек, зап�
 себя на машине. Внутри dev-контейнера `backend` (`python:3.12-slim`,
 собран из `backend/Dockerfile`) НЕ верно ни то, ни другое: образ не
 содержит `git` вовсе (`git`/подобных пакетов в базовом слое нет), а
-compose монтирует в контейнер только `backend/app`, `backend/alembic`,
-`backend/tests` и `backend/openapi.json`, поэтому «два родителя вверх»
+что смонтировано в контейнер - см. `tests/dev_container.py`; «два родителя вверх»
 от `/app/tests` ведут в корень файловой системы контейнера, где `scripts/`
-нет (кроме случая, когда его скопировали вручную `docker cp`). Оба условия
+нет (кроме случая, когда его скопировали вручную). Оба условия
 проверяются, и модуль целиком пропускается, а
 не падает, если хотя бы одно не выполнено — `make test-backend`
 (единственный способ прогнать backend-тесты локально в этом проекте)
@@ -41,16 +40,16 @@ from pathlib import Path
 
 import pytest
 
+from tests.dev_container import DEV_CONTAINER_MOUNTS
+
 _SCRIPT_PATH = Path(__file__).resolve().parents[2] / "scripts" / "check_conflict_markers.py"
 
 pytestmark = pytest.mark.skipif(
     shutil.which("git") is None or not _SCRIPT_PATH.is_file(),
     reason=(
-        "нужен git и scripts/ двумя уровнями выше backend/tests/: в образе "
-        "backend (python:3.12-slim) git нет (измерено: git не найден), а "
-        "scripts/ compose не монтирует - он есть в контейнере, только если его "
-        "скопировали вручную (docker cp); реально прогоняется в CI, где "
-        "backend-tests запускает pytest напрямую на раннере, а не в этом образе"
+        "нужен git и scripts/ двумя уровнями выше backend/tests/. В образе backend "
+        "(python:3.12-slim) git нет (измерено: git не найден); " + DEV_CONTAINER_MOUNTS + "; "
+        "реально прогоняется в CI, где backend-tests запускает pytest напрямую на раннере"
     ),
 )
 

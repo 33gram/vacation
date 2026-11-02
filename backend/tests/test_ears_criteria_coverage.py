@@ -20,15 +20,23 @@ it, exactly the false positive the next paragraph warns about. Caught
 by running this check against itself before writing _KNOWN_GAPS below -
 see the commit message.)
 
-Honest boundary (rule 8, CLAUDE.md): this confirms a criterion's ID is
-MENTIONED somewhere in a test file - a substring match against the
-raw file text, nothing more. It does not and cannot confirm that any
-test actually exercises the behaviour the criterion describes; a test
-could cite an ID in a comment next to an assertion about something
-else entirely, and this check would still call it covered. Catching
-"cited but not actually tested" is a review-round job, not something
-this script can do mechanically - it is named explicitly so nobody
-mistakes a green run here for proof of real coverage.
+Two directions (PR #187 review, Ст-1/Ст-2). (1) Every numbered criterion of the document
+is cited by some test. A citation is a whole ID: the number must not be followed by another
+digit, so a citation of a criterion numbered 13 does not count for the one numbered 1 (the
+earlier substring match let it). (2) Every ID cited by a test exists in the document - this
+catches a typo and a citation of a criterion that was renumbered or removed (the preamble of
+section 8 of requirements.md warns about exactly that). The one citation that is deliberately
+dangling is listed in `_KNOWN_DANGLING` with the reason, like `_KNOWN_GAPS`.
+
+Honest boundary (rule 8, CLAUDE.md): this confirms a criterion's ID is MENTIONED somewhere in
+a test file as a whole ID, and that every cited ID exists in the document - nothing more. It does
+not and cannot confirm that any test actually exercises the behaviour the criterion describes; a
+test could cite an ID in a comment next to an assertion about something else entirely, and this
+check would still call it covered. It also does not see a citation written in a form other than
+the whole ID (a loop over a range, `f"FR-AUTH-002/{n}"`, shorthand like `002/003`): such a
+criterion needs an entry in `_KNOWN_GAPS` or a whole-ID citation. Catching "cited but not
+actually tested" is a review-round job, not something this script can do mechanically - it is
+named explicitly so nobody mistakes a green run here for proof of real coverage.
 """
 
 from __future__ import annotations
@@ -38,24 +46,29 @@ from pathlib import Path
 
 import pytest
 
+from tests.dev_container import DEV_CONTAINER_MOUNTS
+
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _REQUIREMENTS_PATH = _REPO_ROOT / "docs" / "requirements.md"
 
-pytestmark = pytest.mark.skipif(
+# Пропуск - у тестов, которым нужен `docs/requirements.md`, а не у всего модуля: проверка
+# `test_guard_file_names_no_criterion_literally` документ не читает и выполняется всегда.
+_needs_docs = pytest.mark.skipif(
     not _REQUIREMENTS_PATH.is_file(),
     reason=(
-        "docs/requirements.md не резолвится по вычисленному пути "
-        "(parents[2] от backend/tests) - та же причина, что и у "
-        "test_check_conflict_markers.py/test_task_checkbox_check.py: "
-        "compose монтирует в dev-контейнер backend только backend/app, "
-        "alembic, tests и openapi.json, docs/ там есть, только если его "
-        "скопировали вручную (docker cp); в CI backend-tests запускает "
-        "pytest напрямую на раннере с полным чекаутом, и путь резолвится "
-        "верно"
+        "docs/requirements.md не резолвится по вычисленному пути (parents[2] от "
+        "backend/tests), та же причина, что у test_check_conflict_markers.py и "
+        "test_task_checkbox_check.py: "
+        + DEV_CONTAINER_MOUNTS
+        + "; в CI backend-tests запускает pytest напрямую на раннере с полным чекаутом, "
+        "и путь резолвится верно"
     ),
 )
 
 _CRITERION_ID = re.compile(r"`(FR-[A-Z]+-\d+/\d{1,2})`")
+# Цитата в тестах: ID целиком. Цифры после слэша жадные, поэтому «граница после номера - не
+# цифра» выполняется сама: цитата с номером 13 даёт ровно 13, а не 1.
+_CITED_ID = re.compile(r"FR-[A-Z]+-\d+/\d+")
 
 
 def _numbered_criteria() -> set[str]:
@@ -154,12 +167,24 @@ _KNOWN_GAPS: dict[tuple[str, int], str] = {
 }
 
 
+# Цитаты в тестах, которых НЕТ в документе, и это намеренно. Правка списка видна в дифе.
+_KNOWN_DANGLING: dict[tuple[str, int], str] = {
+    ("FR-AUTH-002", 20): (
+        "намеренный отрицательный контроль в test_business_rules_section5_guard.py: проверка "
+        "того, что более длинный номер не считается упоминанием более короткого "
+        "(критерия с таким номером в документе нет, и быть не должно - иначе проверка "
+        "теряет смысл)"
+    ),
+}
+
+
+@_needs_docs
 def test_every_numbered_ears_criterion_is_mentioned_in_at_least_one_test() -> None:
     all_ids = _numbered_criteria()
     assert all_ids, "в requirements.md не нашлось ни одного пронумерованного критерия"
 
     sources = _concatenated_test_sources()
-    uncovered = {criterion_id for criterion_id in all_ids if criterion_id not in sources}
+    uncovered = all_ids - set(_CITED_ID.findall(sources))
 
     known = {_gap_id(*key) for key in _KNOWN_GAPS}
     unexplained_gaps = uncovered - known
@@ -171,6 +196,25 @@ def test_every_numbered_ears_criterion_is_mentioned_in_at_least_one_test() -> No
     assert not stale_entries, (
         f"запись(и) в _KNOWN_GAPS устарели - критерий уже упомянут тестом, "
         f"исключение больше не нужно: {sorted(stale_entries)}"
+    )
+
+
+@_needs_docs
+def test_every_cited_criterion_exists_in_requirements() -> None:
+    cited = set(_CITED_ID.findall(_concatenated_test_sources()))
+    dangling = cited - _numbered_criteria()
+
+    known = {_gap_id(*key) for key in _KNOWN_DANGLING}
+    unexplained = dangling - known
+    assert not unexplained, (
+        f"тесты цитируют критерии, которых нет в requirements.md (опечатка или критерий "
+        f"перенумерован/убран): {sorted(unexplained)}"
+    )
+
+    stale = known - dangling
+    assert not stale, (
+        f"запись(и) в _KNOWN_DANGLING устарели - цитаты больше нет или критерий уже есть "
+        f"в документе: {sorted(stale)}"
     )
 
 

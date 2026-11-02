@@ -7,8 +7,9 @@ export type BusinessRuleOut = components["schemas"]["BusinessRuleOut"];
  * число - второе место числа ключей, и его охраняет backend-тест
  * `test_business_rules_skeleton_count.py` (сверка с `len(RULES)`; как у
  * `PASSWORD_POLICY_HINTS_ESTIMATE`). Имя `..._ESTIMATE` осталось по образцу той константы.
- * ГРАНИЦА: сверяется число в этом исходнике, а не отрисовка страницы; в dev-контейнере тест
- * пропускается (`frontend/` не смонтирован), выполняется в CI. */
+ * ГРАНИЦА: сверяется число в этом исходнике, а не отрисовка страницы; в dev-контейнере `backend` тест
+ * пропускается, пока `frontend/src` не скопирован туда вручную (compose его не монтирует),
+ * выполняется в CI. */
 export const BUSINESS_RULES_FIELD_COUNT_ESTIMATE = 13;
 
 /** Как вводить значение: по `value_type` из ответа, а не по имени ключа. Тип, которого клиент не

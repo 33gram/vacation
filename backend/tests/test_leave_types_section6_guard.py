@@ -6,8 +6,9 @@
 сторожа, а не теряется. Явный здесь только словарь «атрибут → колонки» —
 правка видна в дифе, по образцу `_KNOWN_GAPS`
 (`test_ears_criteria_coverage.py`). Путь к `docs/` резолвится тем же
-способом и по той же причине, что там: в dev-контейнере смонтирован
-только `backend/`, в CI — весь чекаут.
+способом и по той же причине, что там: compose монтирует в dev-контейнер только
+`backend/app`, `backend/alembic`, `backend/tests`, `backend/openapi.json`, `docs/` там нет, пока
+его не скопировали вручную (`docker cp`; тогда сторож выполняется), в CI — весь чекаут.
 
 Граница (правило 8): сторож подтверждает, что КОЛОНКА с названным именем
 существует, а не что она выражает атрибут верно (тип, набор значений,
@@ -31,8 +32,10 @@ pytestmark = pytest.mark.skipif(
     reason=(
         "docs/requirements.md не резолвится по вычисленному пути "
         "(parents[2] от backend/tests) - та же причина, что у "
-        "test_ears_criteria_coverage.py: внутри dev-контейнера backend "
-        "смонтировано только поддерево backend/; в CI путь резолвится верно"
+        "test_ears_criteria_coverage.py: compose монтирует в dev-контейнер "
+        "backend только backend/app, alembic, tests и openapi.json; docs/ в "
+        "контейнере есть, только если его скопировали вручную (docker cp); "
+        "в CI путь резолвится верно"
     ),
 )
 

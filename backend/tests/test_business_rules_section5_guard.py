@@ -59,8 +59,9 @@ _needs_docs = pytest.mark.skipif(
     reason=(
         "docs/requirements.md не резолвится по вычисленному пути "
         "(parents[2] от backend/tests) - та же причина, что у "
-        "test_leave_types_section6_guard.py: внутри dev-контейнера backend "
-        "смонтировано только поддерево backend/; в CI путь резолвится верно"
+        "test_leave_types_section6_guard.py: compose монтирует в dev-контейнер backend "
+        "только backend/app, alembic, tests и openapi.json, docs/ там есть, только если "
+        "его скопировали вручную (docker cp); в CI путь резолвится верно"
     ),
 )
 

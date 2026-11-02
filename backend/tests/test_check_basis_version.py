@@ -25,8 +25,9 @@
 
 1. Модульный `pytestmark`: скрипт недоступен по вычисленному пути
    («два родителя вверх» от `backend/tests` не ведёт в корень
-   репозитория внутри dev-контейнера `backend`, где смонтирован только
-   `backend/`, — см. `test_check_conflict_markers.py` за тем же
+   репозитория внутри dev-контейнера `backend`, куда compose монтирует только
+   `backend/app`, `alembic`, `tests` и `openapi.json`, — см.
+   `test_check_conflict_markers.py` за тем же
    рассуждением). Пропускает ВСЕ тесты файла, включая синтетические
    (все вызывают `find_violations`, импортированную из скрипта).
 2. Точечный `@_needs_real_history` — только на тестах с префиксом
@@ -65,8 +66,9 @@ pytestmark = pytest.mark.skipif(
     reason=(
         "scripts/check_basis_version.py не резолвится по вычисленному пути "
         "(parents[2] от backend/tests) - внутри dev-контейнера backend это "
-        "корень файловой системы контейнера, не корень репозитория, потому "
-        "что смонтировано только поддерево backend/ (см. "
+        "корень файловой системы контейнера, не корень репозитория: compose "
+        "монтирует только backend/app, alembic, tests и openapi.json, scripts/ "
+        "там есть, только если его скопировали вручную (docker cp; см. "
         "test_check_conflict_markers.py, та же причина); в CI backend-tests "
         "чекаутит весь репозиторий и путь резолвится верно"
     ),

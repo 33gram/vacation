@@ -241,8 +241,9 @@ _skip_without_full_checkout = pytest.mark.skipif(
     reason=(
         ".github/workflows/ не резолвится по вычисленному пути "
         "(parents[2] от backend/tests) - та же причина, что и у "
-        "test_ears_criteria_coverage.py: внутри dev-контейнера backend "
-        "смонтировано только поддерево backend/, а не весь репозиторий; "
+        "test_ears_criteria_coverage.py: compose монтирует в dev-контейнер "
+        "backend только backend/app, alembic, tests и openapi.json, а .github/ "
+        "там нет (нет и в копиях, сделанных вручную); "
         "в CI backend-tests запускает pytest напрямую на раннере с полным "
         "чекаутом, и путь резолвится верно"
     ),

@@ -5,12 +5,13 @@ export type BusinessRuleOut = components["schemas"]["BusinessRuleOut"];
 /** Число полей для каркаса «Загрузки». Не зависит от данных: `GET /api/admin/business-rules`
  * отдаёт ровно ключи реестра `RULES` (`backend/app/modules/business_rules/service.py`), поэтому
  * число - второе место числа ключей, и его охраняет backend-тест
- * `test_business_rules_skeleton_count.py` (сверка с `len(RULES)`; как у
- * `PASSWORD_POLICY_HINTS_ESTIMATE`). Имя `..._ESTIMATE` осталось по образцу той константы.
- * ГРАНИЦА: сверяется число в этом исходнике, а не отрисовка страницы; в dev-контейнере `backend` тест
- * пропускается, пока `frontend/src` не скопирован туда вручную (compose его не монтирует),
+ * `test_business_rules_skeleton_count.py` (сверка с `len(RULES)`). Это не оценка, поэтому в
+ * имени нет `..._ESTIMATE`; приём сверки заимствован у `PASSWORD_POLICY_HINTS_ESTIMATE`
+ * (`test_password_policy_skeleton_count.py`), имя того образца здесь не цитируется как образец имени.
+ * ГРАНИЦА: сверяется число в этом исходнике, а не отрисовка страницы; в dev-контейнере `backend`
+ * тест пропускается, пока `frontend/src` не скопирован туда вручную (compose его не монтирует),
  * выполняется в CI. */
-export const BUSINESS_RULES_FIELD_COUNT_ESTIMATE = 13;
+export const BUSINESS_RULES_FIELD_COUNT = 13;
 
 /** Как вводить значение: по `value_type` из ответа, а не по имени ключа. Тип, которого клиент не
  * знает, вводится текстом как есть - решает сервер. */

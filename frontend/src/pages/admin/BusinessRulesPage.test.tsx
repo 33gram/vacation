@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 
 import { setAccessToken } from "../../app/auth";
-import { BUSINESS_RULES_FIELD_COUNT_ESTIMATE } from "../../entities/businessRules";
+import { BUSINESS_RULES_FIELD_COUNT } from "../../entities/businessRules";
 import { setFetchHandler } from "../../test-utils/fetchMock";
 import { businessRuleResponse, meResponse } from "../../test-utils/fixtures";
 import { renderApp } from "../../test-utils/renderApp";
@@ -259,7 +259,7 @@ describe("business rules section (T-M2-15, FR-ADMIN-004)", () => {
     expect(await screen.findByText("Не удалось сохранить параметры.")).toBeInTheDocument();
   });
 
-  it("loading: a form skeleton of BUSINESS_RULES_FIELD_COUNT_ESTIMATE fields (the number is guarded by a backend test against the registry, not by the rendered form)", async () => {
+  it("loading: a form skeleton of BUSINESS_RULES_FIELD_COUNT fields (the number is guarded by a backend test against the registry, not by the rendered form)", async () => {
     setAccessToken("token");
     let release: () => void = () => undefined;
     const gate = new Promise<void>((resolve) => {
@@ -279,7 +279,7 @@ describe("business rules section (T-M2-15, FR-ADMIN-004)", () => {
     await screen.findByRole("button", { name: "Выйти" });
 
     expect(container.querySelector('[data-skeleton="form"]')).not.toBeNull();
-    expect(container.querySelectorAll("[data-skeleton-field]")).toHaveLength(BUSINESS_RULES_FIELD_COUNT_ESTIMATE);
+    expect(container.querySelectorAll("[data-skeleton-field]")).toHaveLength(BUSINESS_RULES_FIELD_COUNT);
     await act(async () => {
       release();
     });

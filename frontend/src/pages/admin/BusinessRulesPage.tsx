@@ -7,7 +7,7 @@ import { stringDetail } from "../../api/errors";
 import { formatDateTime } from "../../app/format";
 import { EmptyState, ErrorLoadingState, LoadingState } from "../../app/states";
 import {
-  BUSINESS_RULES_FIELD_COUNT_ESTIMATE,
+  BUSINESS_RULES_FIELD_COUNT,
   changedPairs,
   checkBeforeSend,
   inputKindOf,
@@ -44,7 +44,7 @@ function BusinessRulesForm({ rules }: { rules: readonly BusinessRuleOut[] }) {
         body: { values },
       });
       if (error) {
-        return { rules: null, status: response.status, detail: error.detail as unknown };
+        return { rules: null, status: response.status, detail: error.detail };
       }
       return { rules: data, status: response.status, detail: null };
     },
@@ -158,7 +158,7 @@ export function BusinessRulesPage() {
     // Число полей равно числу ключей реестра и от данных не зависит: константа охраняется
     // backend-тестом `test_business_rules_skeleton_count.py` (сверка с `len(RULES)`), как число у
     // `PasswordPolicyChecklist`. С отрисованной формой (две колонки, подписи) она не сверяется.
-    return <LoadingState shape={{ kind: "form", fields: BUSINESS_RULES_FIELD_COUNT_ESTIMATE }} />;
+    return <LoadingState shape={{ kind: "form", fields: BUSINESS_RULES_FIELD_COUNT }} />;
   }
   if (query.isError) {
     return <ErrorLoadingState onRetry={() => query.refetch()} />;

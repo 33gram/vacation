@@ -9,9 +9,8 @@
 перестанут.
 
 Граница (правило 8): проверяется число в исходнике фронтенда по регулярному выражению, а не
-поведение отрисовки; compose не монтирует `frontend/src` в dev-контейнер `backend`
-(монтируются `backend/app`, `backend/alembic`, `backend/tests`, `backend/openapi.json`) - тест
-пропускается, пока каталог не скопирован туда вручную (`docker cp`), в CI (полный чекаут)
+поведение отрисовки; что смонтировано в dev-контейнер `backend` -
+`tests/dev_container.py`: `frontend/src` там нет, тест пропускается, в CI (полный чекаут)
 выполняется, как `test_ears_criteria_coverage.py`.
 """
 
@@ -26,6 +25,7 @@ from app.modules.auth.password_policy import (
     PASSWORD_POLICY_VIOLATION_CODES,
     get_password_policy_hints,
 )
+from tests.dev_container import DEV_CONTAINER_MOUNTS
 
 _COMPONENT = (
     Path(__file__).resolve().parents[2]
@@ -38,9 +38,9 @@ _COMPONENT = (
 pytestmark = pytest.mark.skipif(
     not _COMPONENT.is_file(),
     reason=(
-        "frontend/src не смонтирован compose-файлом в dev-контейнер backend "
-        "(только backend/app, alembic, tests, openapi.json) и есть там, только если "
-        "скопирован вручную (docker cp); в CI путь резолвится"
+        "frontend/src не резолвится по вычисленному пути: "
+        + DEV_CONTAINER_MOUNTS
+        + "; в CI путь резолвится"
     ),
 )
 

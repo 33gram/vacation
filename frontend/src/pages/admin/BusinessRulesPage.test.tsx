@@ -60,7 +60,9 @@ function mockBackend(role: string, rules: unknown[], onPut?: (values: Record<str
   return writes;
 }
 
-const input = (key: string) => screen.getByLabelText(key) as HTMLInputElement;
+/** Поле ищется по РУССКОЙ подписи (`description` из ответа), как его ищет пользователь. */
+const LABEL: Record<string, string> = Object.fromEntries(REGISTRY.map((rule) => [rule.key, rule.description]));
+const input = (key: string) => screen.getByLabelText(LABEL[key]) as HTMLInputElement;
 
 /** Кнопка сохранения; пока запрос идёт, у неё в имени ещё «loading». */
 const saveButton = () => screen.getByRole("button", { name: /Сохранить$/ });
@@ -94,6 +96,23 @@ describe("business rules section (T-M2-15, FR-ADMIN-004)", () => {
     expect(screen.getByText("Обновлён: 05.01.2026 00:00, автор не указан")).toBeInTheDocument();
   });
 
+  it("labels the fields in Russian (the description from the response) and still shows the key under each field", async () => {
+    mockBackend("hr_admin", REGISTRY);
+
+    renderApp("/admin/business-rules");
+
+    await screen.findByLabelText(ANNUAL.description);
+    for (const rule of REGISTRY) {
+      const item = input(rule.key).closest(".ant-form-item") as HTMLElement;
+      // Подпись - description, и только она: под полем тот же текст не повторяется.
+      expect(within(item).getAllByText(rule.description)).toHaveLength(1);
+      expect(item.querySelector("label")).toHaveTextContent(rule.description);
+      // Ключ - отдельной строкой под полем, в <code>; английского идентификатора в подписи нет.
+      expect(item.querySelector("label")).not.toHaveTextContent(rule.key);
+      expect(within(item).getByText(rule.key).tagName).toBe("CODE");
+    }
+  });
+
   it("FR-ADMIN-004/1: saving sends ONLY the changed pairs", async () => {
     const writes = mockBackend("hr_admin", REGISTRY, () => ({
       status: 200,
@@ -102,7 +121,7 @@ describe("business rules section (T-M2-15, FR-ADMIN-004)", () => {
     const user = userEvent.setup();
 
     renderApp("/admin/business-rules");
-    await screen.findByLabelText("annual_leave_days");
+    await screen.findByLabelText(LABEL.annual_leave_days);
     expect(saveButton()).toBeDisabled();
 
     await user.clear(input("annual_leave_days"));
@@ -124,7 +143,7 @@ describe("business rules section (T-M2-15, FR-ADMIN-004)", () => {
     const user = userEvent.setup();
 
     renderApp("/admin/business-rules");
-    await screen.findByLabelText("annual_leave_days");
+    await screen.findByLabelText(LABEL.annual_leave_days);
     await user.clear(input("annual_leave_days"));
     await user.type(input("annual_leave_days"), "029");
     await user.click(saveButton());
@@ -147,7 +166,7 @@ describe("business rules section (T-M2-15, FR-ADMIN-004)", () => {
     const user = userEvent.setup();
 
     renderApp("/admin/business-rules");
-    await screen.findByLabelText("annual_leave_days");
+    await screen.findByLabelText(LABEL.annual_leave_days);
     await user.clear(input("annual_leave_days"));
     await user.type(input("annual_leave_days"), "300");
     await user.clear(input("schedule_approval_deadline"));
@@ -181,7 +200,7 @@ describe("business rules section (T-M2-15, FR-ADMIN-004)", () => {
     const user = userEvent.setup();
 
     renderApp("/admin/business-rules");
-    await screen.findByLabelText("annual_leave_days");
+    await screen.findByLabelText(LABEL.annual_leave_days);
     await user.clear(input("annual_leave_days"));
     await user.type(input("annual_leave_days"), "400");
     await user.click(saveButton());
@@ -198,7 +217,7 @@ describe("business rules section (T-M2-15, FR-ADMIN-004)", () => {
     const user = userEvent.setup();
 
     renderApp("/admin/business-rules");
-    await screen.findByLabelText("schedule_approval_deadline");
+    await screen.findByLabelText(LABEL.schedule_approval_deadline);
     await user.clear(input("schedule_approval_deadline"));
     await user.type(input("schedule_approval_deadline"), "13-45");
     await user.click(saveButton());
@@ -215,7 +234,7 @@ describe("business rules section (T-M2-15, FR-ADMIN-004)", () => {
     const user = userEvent.setup();
 
     renderApp("/admin/business-rules");
-    await screen.findByLabelText("annual_leave_days");
+    await screen.findByLabelText(LABEL.annual_leave_days);
     await user.clear(input("annual_leave_days"));
     await user.type(input("annual_leave_days"), "30");
     await user.click(saveButton());
@@ -232,7 +251,7 @@ describe("business rules section (T-M2-15, FR-ADMIN-004)", () => {
     const user = userEvent.setup();
 
     renderApp("/admin/business-rules");
-    await screen.findByLabelText("annual_leave_days");
+    await screen.findByLabelText(LABEL.annual_leave_days);
     await user.clear(input("annual_leave_days"));
     await user.type(input("annual_leave_days"), "30");
     await user.click(saveButton());
@@ -240,7 +259,7 @@ describe("business rules section (T-M2-15, FR-ADMIN-004)", () => {
     expect(await screen.findByText("Не удалось сохранить параметры.")).toBeInTheDocument();
   });
 
-  it("loading: a form skeleton of the ESTIMATED size (not checked against the loaded form, T-M2-24)", async () => {
+  it("loading: a form skeleton of BUSINESS_RULES_FIELD_COUNT_ESTIMATE fields (the number is guarded by a backend test against the registry, not by the rendered form)", async () => {
     setAccessToken("token");
     let release: () => void = () => undefined;
     const gate = new Promise<void>((resolve) => {
@@ -264,7 +283,7 @@ describe("business rules section (T-M2-15, FR-ADMIN-004)", () => {
     await act(async () => {
       release();
     });
-    expect(await screen.findByLabelText("annual_leave_days")).toBeInTheDocument();
+    expect(await screen.findByLabelText(LABEL.annual_leave_days)).toBeInTheDocument();
   });
 
   it("empty: an empty registry", async () => {
@@ -292,7 +311,7 @@ describe("business rules section (T-M2-15, FR-ADMIN-004)", () => {
     renderApp("/admin/business-rules");
 
     fireEvent.click(await screen.findByRole("button", { name: "Повторить" }));
-    expect(await screen.findByLabelText("annual_leave_days")).toBeInTheDocument();
+    expect(await screen.findByLabelText(LABEL.annual_leave_days)).toBeInTheDocument();
   });
 
   it.each(["hr_admin", "system_admin"])("shows the menu item to %s in the Administration group", async (role) => {
@@ -300,7 +319,7 @@ describe("business rules section (T-M2-15, FR-ADMIN-004)", () => {
 
     renderApp("/admin/business-rules");
 
-    await screen.findByLabelText("annual_leave_days");
+    await screen.findByLabelText(LABEL.annual_leave_days);
     expect(screen.getByRole("menuitem", { name: "Параметры бизнес-правил" })).toBeInTheDocument();
   });
 

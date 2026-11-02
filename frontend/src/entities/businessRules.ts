@@ -2,10 +2,13 @@ import type { components } from "../api/generated/schema";
 
 export type BusinessRuleOut = components["schemas"]["BusinessRuleOut"];
 
-/** Число полей для каркаса «Загрузки». ОЦЕНКА, не сверка: число ключей реестра приходит с
- * ответом `GET /api/admin/business-rules`, до загрузки его нет. Взято по числу ключей реестра на
- * момент `T-M2-15` (`backend/app/modules/business_rules/service.py`, `RULES`); при добавлении
- * ключа число не обязано меняться вместе с ним - оно не гарантирует равенства (`T-M2-24`). */
+/** Число полей для каркаса «Загрузки». Не зависит от данных: `GET /api/admin/business-rules`
+ * отдаёт ровно ключи реестра `RULES` (`backend/app/modules/business_rules/service.py`), поэтому
+ * число - второе место числа ключей, и его охраняет backend-тест
+ * `test_business_rules_skeleton_count.py` (сверка с `len(RULES)`; как у
+ * `PASSWORD_POLICY_HINTS_ESTIMATE`). Имя `..._ESTIMATE` осталось по образцу той константы.
+ * ГРАНИЦА: сверяется число в этом исходнике, а не отрисовка страницы; в dev-контейнере тест
+ * пропускается (`frontend/` не смонтирован), выполняется в CI. */
 export const BUSINESS_RULES_FIELD_COUNT_ESTIMATE = 13;
 
 /** Как вводить значение: по `value_type` из ответа, а не по имени ключа. Тип, которого клиент не

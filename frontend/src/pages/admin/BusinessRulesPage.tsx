@@ -99,7 +99,7 @@ function BusinessRulesForm({ rules }: { rules: readonly BusinessRuleOut[] }) {
           return (
             <Col span={12} key={rule.key}>
               <Form.Item
-                label={<code>{rule.key}</code>}
+                label={rule.description}
                 name={rule.key}
                 rules={[
                   {
@@ -113,7 +113,9 @@ function BusinessRulesForm({ rules }: { rules: readonly BusinessRuleOut[] }) {
                 ]}
                 extra={
                   <>
-                    <div>{rule.description}</div>
+                    <div>
+                      <code>{rule.key}</code>
+                    </div>
                     {hint && <div>{hint}</div>}
                     <div>{changedBy(rule)}</div>
                   </>
@@ -144,14 +146,18 @@ function BusinessRulesForm({ rules }: { rules: readonly BusinessRuleOut[] }) {
  * `ui.md` §3 - «Форма настроек»: поля в две колонки (в порядке ответа `GET`, слева направо), пояснение
  * под полем, действие внизу слева; ложится без пятого типа. Источник - только
  * `GET/PUT /api/admin/business-rules`; описание, границы, автор и время приходят из ответа, своих
- * текстов нет. Подпись поля - ключ параметра: человекочитаемого названия в ответе нет, а схема в этой
- * задаче не меняется. Доступ - HR и Админ (`roles.ts`, строка матрицы раздела 7). */
+ * текстов нет. Подпись поля - `description` из ответа (он русский): интерфейс на русском языке
+ * (`NFR-LOC-001`, `ui.md` §6), решение заказчика; подпись связана с полем (`label`, `ui.md` §9).
+ * Ключ параметра показан второй строкой ПОД полем (`<code>`): он нужен поддержке и совпадает с
+ * ключом в ответах сервера об ошибке. `description` стоит только в подписи, под полем его нет.
+ * Доступ - HR и Админ (`roles.ts`, строка матрицы раздела 7). */
 export function BusinessRulesPage() {
   const query = useBusinessRulesQuery();
 
   if (query.isLoading) {
-    // ОЦЕНКА, не сверяется с итогом: число полей равно числу ключей реестра, а оно приходит с
-    // ответом и до загрузки неизвестно (`T-M2-24`); константа - число ключей на момент `T-M2-15`.
+    // Число полей равно числу ключей реестра и от данных не зависит: константа охраняется
+    // backend-тестом `test_business_rules_skeleton_count.py` (сверка с `len(RULES)`), как число у
+    // `PasswordPolicyChecklist`. С отрисованной формой (две колонки, подписи) она не сверяется.
     return <LoadingState shape={{ kind: "form", fields: BUSINESS_RULES_FIELD_COUNT_ESTIMATE }} />;
   }
   if (query.isError) {

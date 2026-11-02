@@ -85,7 +85,8 @@ export const MENU_ITEMS: readonly MenuItemConfig[] = [
     // хотя `GET /api/leave-types` отдаёт справочник любому аутентифицированному.
     roles: ["hr_admin", "system_admin"],
     group: "Администрирование",
-  },  {
+  },
+  {
     key: "admin-business-rules",
     path: "/admin/business-rules",
     label: "Параметры бизнес-правил",
@@ -94,7 +95,6 @@ export const MENU_ITEMS: readonly MenuItemConfig[] = [
     roles: ["hr_admin", "system_admin"],
     group: "Администрирование",
   },
-
 ];
 
 function isAvailable(item: MenuItemConfig, role: Role, hasEmployeeCard: boolean): boolean {

@@ -3,7 +3,7 @@ import { Alert, Button, Col, Form, Input, Row, Space, Typography } from "antd";
 import { useState } from "react";
 
 import { apiClient } from "../../api/client";
-import { stringDetail } from "../../api/errors";
+import { formValidation, stringDetail } from "../../api/errors";
 import { formatDateTime } from "../../app/format";
 import { EmptyState, ErrorLoadingState, LoadingState } from "../../app/states";
 import {
@@ -51,14 +51,24 @@ function BusinessRulesForm({ rules }: { rules: readonly BusinessRuleOut[] }) {
     onSuccess: async (result) => {
       if (result.rules === null) {
         // 400 несёт ВСЕ негодные ключи строкой `ключ: текст; ключ: текст` - каждый под своё поле.
-        // Не в этой форме (в том числе 422 - негодное тело, `T-M2-28`) - общим текстом сервера.
+        // 422 - ошибки тела: каждая под своё поле по последнему элементу `loc` (`T-M2-28`, ключ
+        // параметра), остальное - общим текстом. Не в этих формах - общим текстом сервера.
         // 404 (неизвестный ключ) из формы недостижим: ключи пришли из `GET`; если он всё же
         // пришёл (реестр изменился под открытой формой) - текст сервера общей ошибкой, а форма
         // и набранное остаются, чтобы правки не терялись.
         const byKey = result.status === 400 ? rulesErrorsByKey(result.detail, rules.map((r) => r.key)) : null;
+        const validation =
+          result.status === 422
+            ? formValidation(result.detail, rules.map((r) => r.key))
+            : null;
         if (byKey) {
           setGeneralError(null);
           form.setFields(Object.entries(byKey).map(([name, message]) => ({ name, errors: [message] })));
+        } else if (validation) {
+          setGeneralError(validation.generalError);
+          form.setFields(
+            validation.fieldErrors.map(({ field, message }) => ({ name: field, errors: [message] })),
+          );
         } else {
           setGeneralError(stringDetail(result.detail) ?? SAVE_FAILED);
         }

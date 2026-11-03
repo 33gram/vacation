@@ -125,9 +125,9 @@ export function validationIssues(detail: unknown): ValidationIssue[] | null {
   });
 }
 
-export interface ValidationLayout {
+export interface ValidationLayout<F extends string = string> {
   /** По одной записи на поле формы; несколько нарушений одного поля идут одним текстом. */
-  fieldErrors: { field: string; message: string }[];
+  fieldErrors: { field: F; message: string }[];
   /** Всё, что не легло под поле: ошибка на всём теле, ошибка пути/запроса и ошибка поля, которого
    * в форме нет. Показывается общим текстом над кнопками (`ui.md` §7). `null` - нечего показывать. */
   generalError: string | null;
@@ -137,17 +137,17 @@ export interface ValidationLayout {
  * `aliases` - когда поле формы называется иначе, чем поле тела (`initial_password` -> `password`).
  * Ошибка поля, которого в форме нет, не кладётся под случайное поле: она идёт в общий текст с
  * именем поля. */
-export function layoutValidation(
+export function layoutValidation<F extends string>(
   issues: readonly ValidationIssue[],
-  knownFields: readonly string[],
-  aliases: Readonly<Record<string, string>> = {},
-): ValidationLayout {
-  const byField = new Map<string, string[]>();
+  knownFields: readonly F[],
+  aliases: Readonly<Record<string, F>> = {},
+): ValidationLayout<F> {
+  const byField = new Map<F, string[]>();
   const general: string[] = [];
   for (const issue of issues) {
     const field = issue.field === null ? null : (aliases[issue.field] ?? issue.field);
-    if (field !== null && knownFields.includes(field)) {
-      byField.set(field, [...(byField.get(field) ?? []), issue.message]);
+    if (field !== null && (knownFields as readonly string[]).includes(field)) {
+      byField.set(field as F, [...(byField.get(field as F) ?? []), issue.message]);
     } else if (issue.field === null && issue.name !== null) {
       // Ошибка пути/запроса: имя параметра нужно, иначе «Значение должно быть целым числом.»
       // не говорит, о чём речь.
@@ -166,11 +166,11 @@ export function layoutValidation(
 
 /** `detail` -> раскладка, если это ошибки валидации, иначе `null` (вызывающий разбирает строку
  * или запасное сообщение, как делал раньше). */
-export function formValidation(
+export function formValidation<F extends string>(
   detail: unknown,
-  knownFields: readonly string[],
-  aliases: Readonly<Record<string, string>> = {},
-): ValidationLayout | null {
+  knownFields: readonly F[],
+  aliases: Readonly<Record<string, F>> = {},
+): ValidationLayout<F> | null {
   const issues = validationIssues(detail);
   return issues === null ? null : layoutValidation(issues, knownFields, aliases);
 }
@@ -183,4 +183,28 @@ export function detailText(detail: unknown): string | null {
     return text;
   }
   return formValidation(detail, [])?.generalError ?? null;
+}
+
+/** Для мест с ОДНИМ полем ввода (модальные окна «Подразделение»: имя, руководитель): текст ошибок
+ * этого поля, а если в ответе есть и другие - они в конце тем же текстом; `null` - не ошибки
+ * валидации. */
+export function singleFieldValidationText(detail: unknown, field: string): string | null {
+  const layout = formValidation(detail, [field]);
+  if (layout === null) {
+    return null;
+  }
+  return [...layout.fieldErrors.map((item) => item.message), layout.generalError]
+    .filter((text): text is string => text !== null)
+    .join(" ");
+}
+
+/** Исключение для `mutationFn`, которые бросают ошибку наружу: несёт раскладку по полям, чтобы
+ * `onError` мог положить её под поля, а не только показать текстом. `message` - общий текст. */
+export class ValidationFailure extends Error {
+  readonly layout: ValidationLayout;
+
+  constructor(layout: ValidationLayout) {
+    super(layout.generalError ?? "");
+    this.layout = layout;
+  }
 }

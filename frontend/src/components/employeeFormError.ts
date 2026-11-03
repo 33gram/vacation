@@ -1,4 +1,21 @@
-import { fieldError, stringDetail, violationList } from "../api/errors";
+import { fieldError, formValidation, stringDetail, violationList } from "../api/errors";
+
+// Поля формы сотрудника (имена `Form.Item` в `EmployeeForm`); поле «Пароль» в теле запроса называется
+// `initial_password` (создание) и `new_password` (правка) - `aliases` ниже.
+const EMPLOYEE_FORM_FIELDS = [
+  "full_name",
+  "personnel_number",
+  "department_id",
+  "position",
+  "hire_date",
+  "manager_id",
+  "email",
+  "work_schedule_type",
+  "leave_category",
+  "auth_type",
+  "password",
+] as const;
+const PASSWORD_ALIASES = { initial_password: "password", new_password: "password" } as const;
 
 export interface EmployeeFormSubmitError {
   fieldErrors: { field: string; message: string }[];
@@ -22,6 +39,15 @@ export function parseEmployeeFormError(
   detail: unknown,
   fallbackMessage: string,
 ): EmployeeFormSubmitError {
+  // 422 (`T-M2-28`): ВСЕ ошибки тела - под своими полями, остальное - общим текстом над кнопками.
+  const validation = formValidation(detail, EMPLOYEE_FORM_FIELDS, PASSWORD_ALIASES);
+  if (validation) {
+    return {
+      fieldErrors: validation.fieldErrors,
+      violatedCodes: null,
+      generalError: validation.generalError,
+    };
+  }
   const matchedFieldError = fieldError(detail);
   const violations = violationList(detail);
   return {

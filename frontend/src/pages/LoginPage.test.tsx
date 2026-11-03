@@ -110,3 +110,31 @@ describe("LoginPage (PR #144 review)", () => {
     });
   });
 });
+
+describe("422 validation errors (T-M2-28)", () => {
+  it("puts the error of the password field under that field, not into a generic text", async () => {
+    setFetchHandler((method, pathname) => {
+      if (method === "POST" && pathname === "/api/auth/login") {
+        return {
+          status: 422,
+          body: {
+            detail: [
+              { loc: ["body", "password"], msg: "Слишком длинное значение: не более 128 символов.", type: "string_too_long" },
+            ],
+          },
+        };
+      }
+      return null;
+    });
+
+    renderApp("/login");
+    const user = userEvent.setup();
+    await user.type(screen.getByLabelText("Логин или e-mail"), "admin");
+    await user.type(screen.getByLabelText("Пароль"), "x");
+    await user.click(screen.getByRole("button", { name: "Войти" }));
+
+    const message = await screen.findByText("Слишком длинное значение: не более 128 символов.");
+    expect(screen.getByLabelText("Пароль").closest(".ant-form-item")).toContainElement(message);
+    expect(screen.queryByText("Не удалось войти. Попробуйте ещё раз.")).not.toBeInTheDocument();
+  });
+});

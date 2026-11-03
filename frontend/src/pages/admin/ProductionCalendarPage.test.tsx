@@ -395,3 +395,40 @@ describe("production calendar default fill (T-M1-22, commit 4)", () => {
     ).not.toBeInTheDocument();
   });
 });
+
+describe("422 validation errors (T-M2-28)", () => {
+  it("save: the texts of the validation errors above the action, not the generic fallback", async () => {
+    const year = CURRENT_YEAR;
+    setAccessToken("token");
+    setFetchHandler((method, pathname) => {
+      if (method === "GET" && pathname === "/api/auth/me") {
+        return { status: 200, body: meResponse({ role: "system_admin", must_change_password: false }) };
+      }
+      if (method === "GET" && pathname === `/api/admin/production-calendar/${year}`) {
+        return { status: 200, body: { year, days: fullYearFixture(year) } };
+      }
+      if (method === "PUT" && pathname === `/api/admin/production-calendar/${year}`) {
+        return {
+          status: 422,
+          body: {
+            detail: [
+              { loc: ["body", "days", 0, "date"], msg: "Неверная дата, нужен формат ГГГГ-ММ-ДД.", type: "date_parsing" },
+              { loc: ["body", "days", 1, "day_type"], msg: "Недопустимое значение.", type: "literal_error" },
+            ],
+          },
+        };
+      }
+      return null;
+    });
+
+    renderApp("/admin/production-calendar");
+    const user = userEvent.setup();
+    await screen.findByTitle(new RegExp(`01\\.01\\.${year} — `));
+    await user.click(screen.getByRole("button", { name: "Сохранить" }));
+
+    expect(
+      await screen.findByText("date: Неверная дата, нужен формат ГГГГ-ММ-ДД. day_type: Недопустимое значение."),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Не удалось сохранить календарь.")).not.toBeInTheDocument();
+  });
+});

@@ -5,7 +5,7 @@ import { useMemo, useState } from "react";
 import { useParams } from "react-router-dom";
 
 import { apiClient } from "../api/client";
-import { stringDetail } from "../api/errors";
+import { detailText } from "../api/errors";
 import { formatDate } from "../app/format";
 import { ErrorLoadingState, LoadingState } from "../app/states";
 import { EmployeeForm } from "../components/EmployeeForm";
@@ -139,7 +139,7 @@ export function EmployeeCardPage() {
     setDeactivating(false);
 
     if (error) {
-      setDeactivateError(stringDetail(error.detail) ?? "Не удалось деактивировать сотрудника.");
+      setDeactivateError(detailText(error.detail) ?? "Не удалось деактивировать сотрудника.");
       return;
     }
 

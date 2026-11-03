@@ -2,7 +2,7 @@ import { Alert, Button, Card, Form, Input } from "antd";
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 
-import { stringDetail } from "../api/errors";
+import { formValidation, stringDetail } from "../api/errors";
 import { apiClient } from "../api/client";
 import { setAccessToken } from "../app/auth";
 
@@ -28,11 +28,16 @@ interface LoginFormValues {
 // увёл бы такую запись в LDAP, в коде диспетчера нет.
 export function LoginPage() {
   const navigate = useNavigate();
+  const [form] = Form.useForm<LoginFormValues>();
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
   const handleFinish = async (values: LoginFormValues) => {
     setErrorMessage(null);
+    form.setFields([
+      { name: "login", errors: [] },
+      { name: "password", errors: [] },
+    ]);
     setSubmitting(true);
     const { data, error } = await apiClient.POST("/api/auth/login", {
       body: { login: values.login, password: values.password },
@@ -43,6 +48,15 @@ export function LoginPage() {
       // ui.md §7: текст ошибки от сервера показывается как есть, уже
       // по-русски («Неверный логин или пароль», «Доступ запрещён.
       // Обратитесь к HR-администратору.») — не переписывается на клиенте.
+      // 422 (`T-M2-28`): ошибки полей - под полями, остальное - общим текстом.
+      const validation = formValidation(error.detail, ["login", "password"]);
+      if (validation) {
+        form.setFields(
+          validation.fieldErrors.map(({ field, message }) => ({ name: field, errors: [message] })),
+        );
+        setErrorMessage(validation.generalError);
+        return;
+      }
       setErrorMessage(stringDetail(error.detail) ?? "Не удалось войти. Попробуйте ещё раз.");
       return;
     }
@@ -62,7 +76,7 @@ export function LoginPage() {
             style={{ marginBottom: 16 }}
           />
         )}
-        <Form<LoginFormValues> layout="vertical" onFinish={handleFinish}>
+        <Form<LoginFormValues> form={form} layout="vertical" onFinish={handleFinish}>
           <Form.Item
             label="Логин или e-mail"
             name="login"

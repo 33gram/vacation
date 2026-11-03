@@ -3,7 +3,7 @@ import { Alert, Button, Select, Space, Typography } from "antd";
 import { useMemo, useState } from "react";
 
 import { apiClient } from "../../api/client";
-import { stringDetail } from "../../api/errors";
+import { detailText } from "../../api/errors";
 import { formatDate } from "../../app/format";
 import { EmptyState, ErrorLoadingState, LoadingState } from "../../app/states";
 import {
@@ -159,7 +159,7 @@ function ProductionCalendarYearView({ year }: { year: number }) {
         body: { days: toDaysIn(days) },
       });
       if (error) {
-        throw new Error(stringDetail(error.detail) ?? "Не удалось сохранить календарь.");
+        throw new Error(detailText(error.detail) ?? "Не удалось сохранить календарь.");
       }
     },
     onSuccess: async () => {

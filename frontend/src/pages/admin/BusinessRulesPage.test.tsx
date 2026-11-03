@@ -243,10 +243,16 @@ describe("business rules section (T-M2-15, FR-ADMIN-004)", () => {
     expect(input("annual_leave_days").value).toBe("30");
   });
 
-  it("a 422 (malformed body) is a generic text: the known limitation of all forms (T-M2-28)", async () => {
+  it("a 422 puts every error under its own field by the last loc element, the rest is one general text (T-M2-28)", async () => {
     mockBackend("hr_admin", REGISTRY, () => ({
       status: 422,
-      body: { detail: [{ loc: ["body", "values"], msg: "x", type: "y" }] },
+      body: {
+        detail: [
+          { loc: ["body", "values", "annual_leave_days"], msg: "Значение должно быть строкой.", type: "string_type" },
+          { loc: ["body", "values", "password_min_length"], msg: "Значение должно быть строкой.", type: "string_type" },
+          { loc: ["body"], msg: "Тело запроса должно быть объектом.", type: "model_attributes_type" },
+        ],
+      },
     }));
     const user = userEvent.setup();
 
@@ -256,7 +262,28 @@ describe("business rules section (T-M2-15, FR-ADMIN-004)", () => {
     await user.type(input("annual_leave_days"), "30");
     await user.click(saveButton());
 
-    expect(await screen.findByText("Не удалось сохранить параметры.")).toBeInTheDocument();
+    const itemOf = (key: string) => input(key).closest(".ant-form-item") as HTMLElement;
+    expect(
+      await within(itemOf("annual_leave_days")).findByText("Значение должно быть строкой."),
+    ).toBeInTheDocument();
+    expect(within(itemOf("password_min_length")).getByText("Значение должно быть строкой.")).toBeInTheDocument();
+    expect(visibleErrors(itemOf("schedule_approval_deadline"))).toHaveLength(0);
+    // Ошибка на всём теле - общим текстом над кнопками, не под случайным полем; запасного текста нет.
+    expect(screen.getByRole("alert")).toHaveTextContent("Тело запроса должно быть объектом.");
+    expect(screen.queryByText("Не удалось сохранить параметры.")).not.toBeInTheDocument();
+  });
+
+  it("a 422 whose detail is a plain string is shown as the server sent it", async () => {
+    mockBackend("hr_admin", REGISTRY, () => ({ status: 422, body: { detail: "что-то иное" } }));
+    const user = userEvent.setup();
+
+    renderApp("/admin/business-rules");
+    await screen.findByLabelText(LABEL.annual_leave_days);
+    await user.clear(input("annual_leave_days"));
+    await user.type(input("annual_leave_days"), "30");
+    await user.click(saveButton());
+
+    expect(await screen.findByText("что-то иное")).toBeInTheDocument();
   });
 
   it("loading: a form skeleton of BUSINESS_RULES_FIELD_COUNT fields (the number is guarded by a backend test against the registry, not by the rendered form)", async () => {

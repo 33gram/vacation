@@ -527,3 +527,69 @@ describe("testing the connection without saving (T-M1-21, commit 3)", () => {
     ).toBeInTheDocument();
   });
 });
+
+describe("422 validation errors (T-M2-28)", () => {
+  it("save: errors under their fields, the rest above the button", async () => {
+    setAccessToken("token");
+    setFetchHandler((method, pathname) => {
+      if (method === "GET" && pathname === "/api/auth/me") {
+        return { status: 200, body: meResponse({ role: "system_admin", must_change_password: false }) };
+      }
+      if (method === "GET" && pathname === "/api/admin/ldap-settings") {
+        return { status: 200, body: ldapSettingsResponse({ last_tested_at: "2026-09-01T10:00:00", last_test_status: "success" }) };
+      }
+      if (method === "PUT" && pathname === "/api/admin/ldap-settings") {
+        return {
+          status: 422,
+          body: {
+            detail: [
+              { loc: ["body", "server_url"], msg: "Значение должно быть строкой.", type: "string_type" },
+              { loc: ["body", "port"], msg: "Значение должно быть целым числом.", type: "int_parsing" },
+              { loc: ["body"], msg: "Тело запроса должно быть объектом.", type: "model_attributes_type" },
+            ],
+          },
+        };
+      }
+      return null;
+    });
+
+    renderApp("/admin/ldap-settings");
+    await screen.findByLabelText("Адрес сервера");
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: /Сохранить/ }));
+
+    expect(screen.getByLabelText("Адрес сервера").closest(".ant-form-item")).toContainElement(
+      await screen.findByText("Значение должно быть строкой."),
+    );
+    expect(screen.getByLabelText("Порт").closest(".ant-form-item")).toContainElement(
+      screen.getByText("Значение должно быть целым числом."),
+    );
+    expect(screen.getByText("Тело запроса должно быть объектом.").closest(".ant-form-item")).toBeNull();
+  });
+
+  it("connection test: validation errors are one general text", async () => {
+    setAccessToken("token");
+    setFetchHandler((method, pathname) => {
+      if (method === "GET" && pathname === "/api/auth/me") {
+        return { status: 200, body: meResponse({ role: "system_admin", must_change_password: false }) };
+      }
+      if (method === "GET" && pathname === "/api/admin/ldap-settings") {
+        return { status: 200, body: ldapSettingsResponse({ last_tested_at: "2026-09-01T10:00:00", last_test_status: "success" }) };
+      }
+      if (method === "POST" && pathname === "/api/admin/ldap-settings/test") {
+        return {
+          status: 422,
+          body: { detail: [{ loc: ["body", "port"], msg: "Значение должно быть целым числом.", type: "int_parsing" }] },
+        };
+      }
+      return null;
+    });
+
+    renderApp("/admin/ldap-settings");
+    await screen.findByLabelText("Адрес сервера");
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Тестовое подключение" }));
+
+    expect(await screen.findByText("port: Значение должно быть целым числом.")).toBeInTheDocument();
+  });
+});

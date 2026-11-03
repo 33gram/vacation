@@ -609,3 +609,81 @@ describe("departments reparenting by drag and drop (T-M1-20, FR-EMP-002)", () =>
 function isDraggable(node: HTMLElement): boolean {
   return node.getAttribute("draggable") === "true";
 }
+
+describe("422 validation errors (T-M2-28)", () => {
+  it("create: the window has one field, its validation error is shown in the window, not the fallback", async () => {
+    setAccessToken("token");
+    setFetchHandler((method, pathname) => {
+      if (method === "GET" && pathname === "/api/auth/me") {
+        return { status: 200, body: meResponse({ role: "hr_admin", must_change_password: false }) };
+      }
+      if (method === "GET" && pathname === "/api/departments") {
+        return { status: 200, body: [departmentResponse({ id: 1, name: "Существующий отдел", parent_id: null })] };
+      }
+      if (method === "GET" && pathname === "/api/employees") {
+        return { status: 200, body: [] };
+      }
+      if (method === "POST" && pathname === "/api/departments") {
+        return {
+          status: 422,
+          body: {
+            detail: [
+              { loc: ["body", "name"], msg: "Слишком длинное значение: не более 200 символов.", type: "string_too_long" },
+            ],
+          },
+        };
+      }
+      return null;
+    });
+
+    renderApp("/departments");
+    const user = userEvent.setup();
+    await screen.findByText(/Существующий отдел/);
+    await user.click(screen.getByRole("button", { name: "Добавить подразделение" }));
+    await user.type(screen.getByLabelText("Название"), "Ещё один отдел");
+    await user.click(screen.getByRole("button", { name: "Создать" }));
+
+    const message = await screen.findByText("Слишком длинное значение: не более 200 символов.");
+    expect(message.closest(".ant-alert")).not.toBeNull();
+    expect(screen.queryByText("Не удалось создать подразделение.")).not.toBeInTheDocument();
+  });
+
+  it("assign head: the error of head_employee_id is shown under the head field", async () => {
+    const department = departmentResponse({ id: 1, name: "Отдел", parent_id: 5, head_employee_id: null });
+    const activeEmployee = employeeResponse({ id: 1, full_name: "Иванов Иван Иванович" });
+    setAccessToken("token");
+    setFetchHandler((method, pathname) => {
+      if (method === "GET" && pathname === "/api/auth/me") {
+        return { status: 200, body: meResponse({ role: "hr_admin", must_change_password: false }) };
+      }
+      if (method === "GET" && pathname === "/api/employees") {
+        return { status: 200, body: [activeEmployee] };
+      }
+      if (method === "GET" && pathname === "/api/departments") {
+        return { status: 200, body: [department] };
+      }
+      if (method === "PUT" && pathname === "/api/departments/1") {
+        return {
+          status: 422,
+          body: {
+            detail: [
+              { loc: ["body", "head_employee_id"], msg: "Значение должно быть целым числом.", type: "int_parsing" },
+            ],
+          },
+        };
+      }
+      return null;
+    });
+
+    renderApp("/departments");
+    const user = userEvent.setup();
+    await screen.findByText(/Отдел/);
+    await user.click(screen.getByRole("button", { name: "Назначить руководителя" }));
+    await user.click(screen.getByLabelText("Руководитель"));
+    await user.click(await screen.findByTitle("Иванов Иван Иванович"));
+    await user.click(screen.getByRole("button", { name: "Назначить" }));
+
+    const message = await screen.findByText("Значение должно быть целым числом.");
+    expect(screen.getByLabelText("Руководитель").closest(".ant-form-item")).toContainElement(message);
+  });
+});

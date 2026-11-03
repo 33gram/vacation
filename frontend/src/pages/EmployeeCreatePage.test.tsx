@@ -133,3 +133,37 @@ describe("employee create form (T-M1-19, FR-EMP-001)", () => {
     expect(postBody).toMatchObject({ auth_type: "ldap", initial_password: null });
   });
 });
+
+describe("422 validation errors (T-M2-28)", () => {
+  it("lays ALL errors under their fields (initial_password -> the password field) and the whole-body error above the buttons", async () => {
+    mockBackend(() => ({
+      status: 422,
+      body: {
+        detail: [
+          { loc: ["body", "email"], msg: "Значение должно быть строкой.", type: "string_type" },
+          { loc: ["body", "position"], msg: "Слишком длинное значение: не более 200 символов.", type: "string_too_long" },
+          { loc: ["body", "initial_password"], msg: "Обязательное поле.", type: "missing" },
+          { loc: ["body"], msg: "Тело запроса должно быть объектом.", type: "model_attributes_type" },
+        ],
+      },
+    }));
+
+    renderApp("/employees/new");
+    const user = userEvent.setup();
+
+    await fillRequiredFields(user);
+    await user.click(screen.getByRole("radio", { name: "Локальный пароль" }));
+    await user.type(await screen.findByLabelText("Первичный пароль"), "StrongPass1!");
+    await user.click(screen.getByRole("button", { name: "Создать" }));
+
+    const under = (label: string) => screen.getByLabelText(label).closest(".ant-form-item");
+    expect(under("E-mail")).toContainElement(await screen.findByText("Значение должно быть строкой."));
+    expect(under("Должность")).toContainElement(
+      screen.getByText("Слишком длинное значение: не более 200 символов."),
+    );
+    expect(under("Первичный пароль")).toContainElement(screen.getByText("Обязательное поле."));
+    const general = screen.getByText("Тело запроса должно быть объектом.");
+    expect(general.closest(".ant-form-item")).toBeNull();
+    expect(screen.queryByText("Не удалось создать карточку.")).not.toBeInTheDocument();
+  });
+});

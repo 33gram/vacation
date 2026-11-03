@@ -86,6 +86,15 @@ export const MENU_ITEMS: readonly MenuItemConfig[] = [
     roles: ["hr_admin", "system_admin"],
     group: "Администрирование",
   },
+  {
+    key: "admin-business-rules",
+    path: "/admin/business-rules",
+    label: "Параметры бизнес-правил",
+    // Строка матрицы раздела 7 «Настройка параметров бизнес-правил (FR-ADMIN-004)» - HR и Админ
+    // (требования v1.27); оба эндпоинта (`business_rules_router.py`) пускают тех же двух ролей.
+    roles: ["hr_admin", "system_admin"],
+    group: "Администрирование",
+  },
 ];
 
 function isAvailable(item: MenuItemConfig, role: Role, hasEmployeeCard: boolean): boolean {

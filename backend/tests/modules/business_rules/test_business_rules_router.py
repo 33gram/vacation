@@ -192,10 +192,14 @@ async def test_two_invalid_pairs_are_both_named_and_the_valid_one_is_not_written
     )
 
     assert response.status_code == 400
-    detail = response.json()["detail"]
-    assert "annual_leave_days:" in detail
-    assert "approval_escalation_working_days:" in detail
-    assert "min_leave_part_days" not in detail
+    # Строка ЦЕЛИКОМ, а не вхождения: её читает `rulesErrorsByKey`
+    # (`frontend/src/entities/businessRules.ts`) и раскладывает по полям, разделяя на `"; "`
+    # перед очередным ключом. Смена разделителя (скажем, на `", "`) молча вернула бы на экране
+    # один общий баннер вместо подписей под двумя полями, а проверка вхождений промолчала бы.
+    assert response.json()["detail"] == (
+        "annual_leave_days: значение недопустимо, нужно целое число от 1 до 366; "
+        "approval_escalation_working_days: значение недопустимо, нужно целое число от 1 до 60"
+    )
     assert tuple(await _row(db_session, "min_leave_part_days")) == tuple(before)
 
 

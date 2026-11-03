@@ -19,6 +19,25 @@
 с заглавной буквы (регулярное выражение ищет `sa.table(`). Сторож честен
 ровно до той формы записи, которую знает.
 
+ВТОРАЯ СВЕРКА - засеянные ключи против реестра `RULES` (PR #187 check, П-3), в обе стороны:
+- ключ, засеянный миграцией, но не внесённый в `RULES`, проходит сторожа раздела 5 (он сверяет
+  ДОКУМЕНТ с сидированием) и старт (`validate_all` идёт реестр -> таблица), но
+  `list_rule_rows` его отбрасывает: он не доходит до `GET`, и параметр молча не настраивается
+  в интерфейсе (`FR-ADMIN-004/1`);
+- ключ реестра без строки в сидировании не даёт приложению запуститься (`validate_all`).
+Первое не ловит ни одна другая проверка, поэтому сверка здесь; она не читает документ и потому
+не пропускается в dev-контейнере (пропуск - у тестов, которым нужен `requirements.md`).
+Граница (правило 8): сверяются ИМЕНА ключей, не значения и не диапазоны.
+
+ТРЕТЬЯ СВЕРКА - язык описаний (PR #187 review, Сп-4): `description` - подпись поля на экране
+«Параметры бизнес-правил», то есть текст интерфейса (`NFR-LOC-001`). Сторож
+`test_user_facing_texts_are_russian.py` смотрит строки-сообщения закрытого перечня модулей
+приложения и сидирование не видит, а проверка выше смотрит, что описание НАЗЫВАЕТ правило.
+Здесь: каждое описание содержит кириллицу. Граница (правило 8): проверяется НАЛИЧИЕ кириллицы,
+а не грамотность, не полнота перевода и не то, что нет английских слов (`BR-1`, `FR-…` в
+описании обязаны остаться). Как и сверка с реестром, документ не читает и выполняется в
+dev-контейнере.
+
 Граница (правило 8): сторож подтверждает, что для каждого правила с числом
 ключ СУЩЕСТВУЕТ и его `description` называет правило, а не что значение
 ключа равно числу в тексте (это закрепляет `test_seed.py`).
@@ -32,6 +51,9 @@ from pathlib import Path
 
 import pytest
 
+from app.modules.business_rules.service import RULES
+from tests.dev_container import DEV_CONTAINER_MOUNTS
+
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _REQUIREMENTS_PATH = _REPO_ROOT / "docs" / "requirements.md"
 # Миграции ОБНАРУЖИВАЮТСЯ, а не перечисляются: ключи, добавленные любой будущей
@@ -40,13 +62,15 @@ _VERSIONS = Path(__file__).resolve().parents[1] / "alembic" / "versions"
 _TABLE = "business_rules_config"
 _DECLARES_TABLE = re.compile(r"sa\.table\(\s*[\"']" + _TABLE + r"[\"']")
 
-pytestmark = pytest.mark.skipif(
+# Пропуск - у тестов, которым нужен `docs/requirements.md`, а не у всего модуля: сверка засеянных
+# ключей с реестром (`find_registry_mismatch`) документа не читает и в dev-контейнере выполняется.
+_needs_docs = pytest.mark.skipif(
     not _REQUIREMENTS_PATH.is_file(),
     reason=(
-        "docs/requirements.md не резолвится по вычисленному пути "
-        "(parents[2] от backend/tests) - та же причина, что у "
-        "test_leave_types_section6_guard.py: внутри dev-контейнера backend "
-        "смонтировано только поддерево backend/; в CI путь резолвится верно"
+        "docs/requirements.md не резолвится по вычисленному пути (parents[2] от "
+        "backend/tests), та же причина, что у test_leave_types_section6_guard.py: "
+        + DEV_CONTAINER_MOUNTS
+        + "; в CI путь резолвится верно"
     ),
 )
 
@@ -177,12 +201,74 @@ def find_gaps(requirements_text: str, preset: dict[str, str]) -> list[str]:
     return problems
 
 
+def find_registry_mismatch(preset: dict[str, str], registry: set[str]) -> list[str]:
+    problems = [
+        f"ключ {key!r} засеян миграцией, но не внесён в реестр RULES: экран его не покажет"
+        for key in sorted(set(preset) - registry)
+    ]
+    problems += [
+        f"ключ {key!r} есть в реестре RULES, но не засеян миграцией: приложение не запустится"
+        for key in sorted(registry - set(preset))
+    ]
+    return problems
+
+
+_CYRILLIC = re.compile(r"[А-Яа-яЁё]")
+
+
+def find_non_russian_descriptions(preset: dict[str, str]) -> list[str]:
+    return [
+        f"ключ {key!r}: description без кириллицы, а это подпись поля на экране (NFR-LOC-001)"
+        for key, description in sorted(preset.items())
+        if not _CYRILLIC.search(description)
+    ]
+
+
+def test_every_seeded_description_contains_cyrillic() -> None:
+    assert find_non_russian_descriptions(_preset()) == []
+
+
+def test_an_english_seeded_description_is_reported() -> None:
+    problems = find_non_russian_descriptions(
+        {**_preset(), "annual_leave_days": "Annual leave days (BR-1)"}
+    )
+
+    assert problems == [
+        "ключ 'annual_leave_days': description без кириллицы, а это подпись поля на экране "
+        "(NFR-LOC-001)"
+    ]
+
+
+def test_seeded_keys_and_the_registry_are_the_same_set() -> None:
+    assert find_registry_mismatch(_preset(), set(RULES)) == []
+
+
+def test_a_seeded_key_missing_from_the_registry_is_reported() -> None:
+    problems = find_registry_mismatch({**_preset(), "surprise": "BR-1"}, set(RULES))
+
+    assert problems == [
+        "ключ 'surprise' засеян миграцией, но не внесён в реестр RULES: экран его не покажет"
+    ]
+
+
+def test_a_registry_key_missing_from_the_seeding_is_reported() -> None:
+    preset = _preset()
+    del preset["min_leave_part_days"]
+
+    assert find_registry_mismatch(preset, set(RULES)) == [
+        "ключ 'min_leave_part_days' есть в реестре RULES, но не засеян миграцией: "
+        "приложение не запустится"
+    ]
+
+
+@_needs_docs
 def test_every_section5_rule_with_a_number_has_a_seeded_key() -> None:
     text = _REQUIREMENTS_PATH.read_text(encoding="utf-8")
 
     assert find_gaps(text, _preset()) == []
 
 
+@_needs_docs
 def test_rule_with_a_number_added_to_section5_is_reported() -> None:
     text = _REQUIREMENTS_PATH.read_text(encoding="utf-8")
     anchor = "| BR-8 |"
@@ -194,6 +280,7 @@ def test_rule_with_a_number_added_to_section5_is_reported() -> None:
     ]
 
 
+@_needs_docs
 def test_rule_without_a_number_needs_no_key() -> None:
     text = _REQUIREMENTS_PATH.read_text(encoding="utf-8")
     anchor = "| BR-8 |"
@@ -204,6 +291,7 @@ def test_rule_without_a_number_needs_no_key() -> None:
     assert find_gaps(extended, _preset()) == []
 
 
+@_needs_docs
 def test_missing_seeded_key_is_reported() -> None:
     text = _REQUIREMENTS_PATH.read_text(encoding="utf-8")
     preset = _preset()
@@ -214,6 +302,7 @@ def test_missing_seeded_key_is_reported() -> None:
     ]
 
 
+@_needs_docs
 def test_unmapped_seeded_key_is_reported() -> None:
     text = _REQUIREMENTS_PATH.read_text(encoding="utf-8")
 
@@ -222,6 +311,7 @@ def test_unmapped_seeded_key_is_reported() -> None:
     assert problems == ["ключ 'surprise' в сидировании не отображён ни в BR-*, ни в FR-*"]
 
 
+@_needs_docs
 def test_description_that_loses_its_source_is_reported() -> None:
     text = _REQUIREMENTS_PATH.read_text(encoding="utf-8")
 
@@ -230,6 +320,7 @@ def test_description_that_loses_its_source_is_reported() -> None:
     assert problems == ["ключ 'annual_leave_days': description не называет BR-1"]
 
 
+@_needs_docs
 def test_description_naming_a_longer_rule_id_does_not_count_as_naming_the_rule() -> None:
     text = _REQUIREMENTS_PATH.read_text(encoding="utf-8")
     extended = text.replace(
@@ -246,6 +337,7 @@ def test_description_naming_a_longer_rule_id_does_not_count_as_naming_the_rule()
     ]
 
 
+@_needs_docs
 def test_description_naming_a_longer_fr_criterion_does_not_count_as_naming_the_source() -> None:
     text = _REQUIREMENTS_PATH.read_text(encoding="utf-8")
 

@@ -155,18 +155,19 @@ from pathlib import Path
 
 import pytest
 
+from tests.dev_container import DEV_CONTAINER_MOUNTS
+
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _MAKEFILE_PATH = _REPO_ROOT / "Makefile"
 
 _skip_without_full_checkout = pytest.mark.skipif(
     not _MAKEFILE_PATH.is_file(),
     reason=(
-        "Makefile не резолвится по вычисленному пути (parents[2] от "
-        "backend/tests) - та же причина, что и у test_ears_criteria_"
-        "coverage.py/test_hashed_lock_applied.py: внутри dev-контейнера "
-        "backend смонтировано только поддерево backend/, корневой "
-        "Makefile недоступен; в CI backend-tests запускает pytest "
-        "напрямую на раннере с полным чекаутом, и путь резолвится верно"
+        "Makefile не резолвится по вычисленному пути (parents[2] от backend/tests), та же"
+        " причина, что у test_ears_criteria_coverage.py и test_hashed_lock_applied.py: "
+        + DEV_CONTAINER_MOUNTS
+        + "; в CI backend-tests запускает pytest напрямую на раннере с полным чекаутом, и "
+        "путь резолвится верно"
     ),
 )
 

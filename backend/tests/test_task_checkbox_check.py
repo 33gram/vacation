@@ -32,7 +32,7 @@
    самого импорта не выполнится ни один). Внутри dev-контейнера
    `backend` это тот же путь, что и в `test_check_conflict_markers.py`
    («два родителя вверх» упирается в `/`, не в корень репозитория, —
-   контейнер монтирует только поддерево `backend/`), и падать при
+   что в контейнер смонтировано - `tests/dev_container.py`), и падать при
    ИМПОРТЕ модуля на уровне файла (`FileNotFoundError` внутри `exec_
    module`) — не то же самое, что штатно пропустить тест: импорт
    выполняется до срабатывания любого `skipif`, поэтому обёрнут в
@@ -57,6 +57,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.dev_container import DEV_CONTAINER_MOUNTS
+
 _SCRIPT_PATH = Path(__file__).resolve().parents[2] / "scripts" / "check_task_checkbox.py"
 _REPO_ROOT = _SCRIPT_PATH.parents[1]
 
@@ -74,13 +76,11 @@ else:
 pytestmark = pytest.mark.skipif(
     not _SCRIPT_PATH.is_file(),
     reason=(
-        "scripts/check_task_checkbox.py не резолвится по вычисленному "
-        "пути (parents[2] от backend/tests) - внутри dev-контейнера "
-        "backend это корень файловой системы контейнера, не корень "
-        "репозитория, потому что смонтировано только поддерево "
-        "backend/ (см. test_check_conflict_markers.py, та же причина); "
-        "в CI backend-tests чекаутит весь репозиторий и путь резолвится "
-        "верно"
+        "scripts/check_task_checkbox.py не резолвится по вычисленному пути (parents[2] от"
+        " backend/tests): внутри dev-контейнера это корень файловой системы контейнера, "
+        "не корень репозитория; та же причина, что в test_check_conflict_markers.py: "
+        + DEV_CONTAINER_MOUNTS
+        + "; в CI backend-tests чекаутит весь репозиторий и путь резолвится верно"
     ),
 )
 

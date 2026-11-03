@@ -25,8 +25,9 @@
 
 1. Модульный `pytestmark`: скрипт недоступен по вычисленному пути
    («два родителя вверх» от `backend/tests` не ведёт в корень
-   репозитория внутри dev-контейнера `backend`, где смонтирован только
-   `backend/`, — см. `test_check_conflict_markers.py` за тем же
+   репозитория внутри dev-контейнера `backend`, что в него смонтировано -
+   `tests/dev_container.py`, — см.
+   `test_check_conflict_markers.py` за тем же
    рассуждением). Пропускает ВСЕ тесты файла, включая синтетические
    (все вызывают `find_violations`, импортированную из скрипта).
 2. Точечный `@_needs_real_history` — только на тестах с префиксом
@@ -46,6 +47,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.dev_container import DEV_CONTAINER_MOUNTS
+
 _SCRIPT_PATH = Path(__file__).resolve().parents[2] / "scripts" / "check_basis_version.py"
 _REPO_ROOT = _SCRIPT_PATH.parents[1]
 
@@ -63,12 +66,11 @@ else:
 pytestmark = pytest.mark.skipif(
     not _SCRIPT_PATH.is_file(),
     reason=(
-        "scripts/check_basis_version.py не резолвится по вычисленному пути "
-        "(parents[2] от backend/tests) - внутри dev-контейнера backend это "
-        "корень файловой системы контейнера, не корень репозитория, потому "
-        "что смонтировано только поддерево backend/ (см. "
-        "test_check_conflict_markers.py, та же причина); в CI backend-tests "
-        "чекаутит весь репозиторий и путь резолвится верно"
+        "scripts/check_basis_version.py не резолвится по вычисленному пути (parents[2] от"
+        " backend/tests): внутри dev-контейнера это корень файловой системы контейнера, "
+        "не корень репозитория; та же причина, что в test_check_conflict_markers.py: "
+        + DEV_CONTAINER_MOUNTS
+        + "; в CI backend-tests чекаутит весь репозиторий и путь резолвится верно"
     ),
 )
 

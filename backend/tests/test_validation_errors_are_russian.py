@@ -5,8 +5,13 @@
 отправляется несколько негодных тел; в ответе 422 у КАЖДОГО элемента `msg` содержит кириллицу.
 
 Аутентификация обходится подменой зависимостей `app.modules.auth.rbac` (роль и токен для этого
-свипа не нужны: 422 строится до тела эндпоинта). Маршрут, для которого 422 получить не удалось,
-объявляется в `_NO_422_FROM_PROBES` с причиной, иначе тест падает.
+свипа не нужны). Тело эндпоинта при этом НЕ выполняется, и это обеспечивает не общее свойство
+FastAPI, а проверка в самом свипе: каждое пробное тело перед отправкой прогоняется МОДЕЛЬЮ тела
+этого маршрута (`route.body_field.validate`), принимаемое отсеивается (`_invalid_bodies`), а при
+отправке то же утверждается ещё раз (`_assert_rejected`) - иначе эндпоинт с необязательными
+полями (`LdapTestRequest`: `{}` валидно) выполнился бы, пошёл в LDAP и записал результат
+проверки. Маршрут, у которого после отсева не осталось ни одного негодного тела, или чей 422
+получить не удалось, объявляется в `_NO_422_FROM_PROBES` с причиной, иначе тест падает.
 
 Сторож не должен слепнуть: нашёл ли он маршруты и ошибки - проверяется отдельно и громко.
 
@@ -92,7 +97,7 @@ def _properties(route: APIRoute) -> list[str]:
     return list(schema.get("properties", {}))
 
 
-def _probe_bodies(properties: list[str]) -> list[object]:
+def _probe_bodies(properties: list[str]) -> list[object]:  # все варианты, до отсева
     return [
         {},
         [],
@@ -102,6 +107,23 @@ def _probe_bodies(properties: list[str]) -> list[object]:
         {name: 10**30 for name in properties},
         {name: "NOT-A-VALID-CODE" for name in properties},
     ]
+
+
+def _accepted_by_the_model(route: APIRoute, body: object) -> bool:
+    """Тело, которое модель тела маршрута принимает: такое эндпоинт выполнил бы."""
+    _, errors = route.body_field.validate(body, {}, loc=("body",))
+    return not errors
+
+
+def _invalid_bodies(route: APIRoute) -> list[object]:
+    probes = _probe_bodies(_properties(route))
+    return [body for body in probes if not _accepted_by_the_model(route, body)]
+
+
+def _assert_rejected(route: APIRoute, body: object) -> None:
+    assert not _accepted_by_the_model(route, body), (
+        f"пробное тело {body!r} модель маршрута {route.path} принимает: эндпоинт выполнился бы"
+    )
 
 
 def _path(route: APIRoute, value: str) -> str:
@@ -119,8 +141,10 @@ def _responses_422(client: TestClient, route: APIRoute, method: str) -> list[lis
         if is_multipart:
             attempts = [{"data": {"bad": "1"}}]
         else:
-            attempts = [{"json": body} for body in _probe_bodies(_properties(route))]
+            attempts = [{"json": body} for body in _invalid_bodies(route)]
         for kwargs in attempts:
+            if "json" in kwargs:
+                _assert_rejected(route, kwargs["json"])
             response = client.request(method, path, **kwargs)
             if response.status_code == 422:
                 responses.append(response.json()["detail"])
@@ -129,6 +153,16 @@ def _responses_422(client: TestClient, route: APIRoute, method: str) -> list[lis
 
 def test_the_sweep_finds_the_routes_with_a_body() -> None:
     assert len(_body_routes()) >= _MIN_ROUTES, "сторож ослеп: маршрутов с телом меньше ожидаемого"
+
+
+def test_a_body_the_model_accepts_is_never_sent() -> None:
+    # `LdapTestRequest`: все поля необязательны, `{}` валидно и означает «проверить сохранённое»
+    # (эндпоинт ходит в LDAP и пишет результат проверки) - такое тело сюда отправляться не должно.
+    [route] = [r for r, _ in _body_routes() if r.path == "/api/admin/ldap-settings/test"]
+
+    assert _accepted_by_the_model(route, {})
+    assert {} not in _invalid_bodies(route)
+    assert _invalid_bodies(route), "после отсева у маршрута не осталось негодных тел"
 
 
 def test_every_422_message_of_every_body_route_is_russian(client: TestClient) -> None:

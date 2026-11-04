@@ -27,7 +27,7 @@ const LDAP_FORM_FIELDS = [
   "bind_password",
   "user_match_attribute",
   "is_active",
-] as const;
+] as const satisfies readonly (keyof LdapFormValues)[];
 
 /** Тело формы — поля в две колонки (`ui.md` §3, «Форма настроек»): слева
  * «куда подключаться» (адрес, порт, base DN, атрибут сопоставления),

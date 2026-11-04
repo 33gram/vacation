@@ -1,4 +1,5 @@
 import { fieldError, formValidation, stringDetail, violationList } from "../api/errors";
+import type { EmployeeFormValues } from "./EmployeeForm";
 
 // Поля формы сотрудника (имена `Form.Item` в `EmployeeForm`); поле «Пароль» в теле запроса называется
 // `initial_password` (создание) и `new_password` (правка) - `aliases` ниже.
@@ -14,7 +15,7 @@ const EMPLOYEE_FORM_FIELDS = [
   "leave_category",
   "auth_type",
   "password",
-] as const;
+] as const satisfies readonly (keyof EmployeeFormValues)[];
 const PASSWORD_ALIASES = { initial_password: "password", new_password: "password" } as const;
 
 export interface EmployeeFormSubmitError {

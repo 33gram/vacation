@@ -20,47 +20,70 @@ export function stringDetail(detail: unknown): string | null {
  * проверкой их не различает; здесь сверяется форма элемента (`code` +
  * `message`), которая есть только у нарушений парольной политики. */
 // Поля, для которых сервис добавляет к тексту ошибки машиночитаемый
-// префикс `"<поле>: "` (T-M1-47) — по нему интерфейс кладёт ошибку под
+// префикс `"<поле>: "` (T-M1-47, T-M2-27) — по нему интерфейс кладёт ошибку под
 // нужное поле формы, а сам префикс пользователю не показывается
-// (`ui.md` §7: место ошибки — под полем). Проверено разбором
-// синтаксического дерева всех `raise` в `app/`, не построчным `grep`
-// (T-M1-20 review — построчный `grep` не видит `raise`, у которого
-// текст ошибки на следующей строке, и именно так предыдущая версия
-// этого комментария ошибочно решила, что раздел «Подразделения» вовсе
-// не размечает ошибки по полю): `employee_service.py` —
-// `department_id`, `manager_id`; `unique_violations.py` —
-// `personnel_number`, `email` (тексты оттуда, `raise ValueError(...)` —
-// в вызывающем коде, `employee_service.py`); `department_service.py` —
-// `head_employee_id` (строка про уволенного руководителя). Пять полей,
-// не четыре. Список закрыт и совпадает с полями, которые сервис
-// размечает так сегодня — новое поле с этим же соглашением придётся
-// добавить сюда явно, молчаливого совпадения по любому `"слово: "` в
-// начале строки не будет: текст ошибки не обязан быть в этой форме
-// (например, `WeakPasswordError` начинается с "Пароль", а не с имени
-// поля).
+// (`ui.md` §7: место ошибки — под полем). Список ЗАКРЫТ и охраняется
+// backend-тестом `test_field_error_prefixes_guard.py`: он обнаруживает префиксы в `app/**`
+// разбором синтаксического дерева и сверяет их с этим перечнем в обе стороны, поэтому
+// новое поле с этим же соглашением придётся добавить сюда явно, а запись без источника на
+// бэкенде тест покажет. Молчаливого совпадения по любому `"слово: "` в начале строки нет:
+// текст ошибки не обязан быть в этой форме (например, `WeakPasswordError` начинается с
+// "Пароль", а не с имени поля). ГРАНИЦА сторожа: он видит строки-литералы (и начало
+// f-строки); ключи реестра бизнес-правил (`RuleValuesInvalidError`) собираются во время
+// выполнения и сюда не входят — их разбор идёт по ключам из ответа `GET`.
 const FIELD_ERROR_PREFIXES = [
   "manager_id",
   "email",
   "personnel_number",
   "department_id",
   "head_employee_id",
+  "code",
+  "is_active",
+  "balance_tracked",
 ] as const;
+
+/** ЕДИНСТВЕННЫЙ разбор префиксов полей (`T-M2-27`). Текст — один или несколько отказов вида
+ * `<поле>: текст`, склеенных через `"; "` (`RuleValuesInvalidError`, `MainLeaveTypeProtectedError`).
+ * Возвращает ВСЕ совпавшие префиксы в порядке появления; `null` — строка не в этой форме: не
+ * строка, нет известных полей, строка не НАЧИНАЕТСЯ с известного поля (текст до первого
+ * префикса или неизвестное поле), и вызывающий показывает её целиком общим текстом.
+ * Неизвестное поле внутри строки в разбор не попадает и остаётся хвостом предыдущего текста;
+ * `"; "` внутри текста не разделитель, если за ним не стоит известный префикс. */
+export function prefixedMessages(
+  detail: unknown,
+  knownFields: readonly string[],
+): { field: string; message: string }[] | null {
+  const text = stringDetail(detail);
+  if (text === null || knownFields.length === 0) {
+    return null;
+  }
+  const alternatives = [...knownFields]
+    .sort((a, b) => b.length - a.length)
+    .map((field) => field.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+    .join("|");
+  const starts = [...text.matchAll(new RegExp(`(?:^|; )(${alternatives}): `, "g"))];
+  if (starts.length === 0 || starts[0].index !== 0) {
+    return null;
+  }
+  return starts.map((match, index) => {
+    const textStart = match.index + match[0].length;
+    const textEnd = index + 1 < starts.length ? starts[index + 1].index : text.length;
+    return { field: match[1], message: text.slice(textStart, textEnd) };
+  });
+}
 
 /** Разбирает `stringDetail`-совместимый текст на `{field, message}`, если
  * он начинается с одного из известных префиксов, или возвращает `null`
- * (не наш случай — общая ошибка операции, `ui.md` §7). */
+ * (не наш случай — общая ошибка операции, `ui.md` §7). Разбор — `prefixedMessages`;
+ * сообщение — весь остаток строки после первого префикса. */
 export function fieldError(detail: unknown): { field: string; message: string } | null {
+  const parsed = prefixedMessages(detail, FIELD_ERROR_PREFIXES);
   const text = stringDetail(detail);
-  if (text === null) {
+  if (parsed === null || text === null) {
     return null;
   }
-  for (const field of FIELD_ERROR_PREFIXES) {
-    const prefix = `${field}: `;
-    if (text.startsWith(prefix)) {
-      return { field, message: text.slice(prefix.length) };
-    }
-  }
-  return null;
+  const { field } = parsed[0];
+  return { field, message: text.slice(`${field}: `.length) };
 }
 
 export function violationList(detail: unknown): { code: string; message: string }[] | null {

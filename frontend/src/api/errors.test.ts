@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   detailText,
+  fieldError,
   formValidation,
   layoutValidation,
+  prefixedMessages,
   validationIssues,
   violationList,
 } from "./errors";
@@ -94,5 +96,58 @@ describe("formValidation and detailText", () => {
     expect(detailText([OTHER_FIELD, WHOLE_BODY])).toBe(`name: ${OTHER_FIELD.msg} ${WHOLE_BODY.msg}`);
     expect(detailText(POLICY)).toBeNull();
     expect(detailText(undefined)).toBeNull();
+  });
+});
+
+describe("prefixedMessages and fieldError (T-M2-27)", () => {
+  const FIELDS = ["is_active", "balance_tracked", "code"];
+
+  it("returns every prefix in order of appearance", () => {
+    expect(prefixedMessages("is_active: первый; balance_tracked: второй", FIELDS)).toEqual([
+      { field: "is_active", message: "первый" },
+      { field: "balance_tracked", message: "второй" },
+    ]);
+  });
+
+  it("returns one entry for one prefix (the single case is the plural with one element)", () => {
+    expect(prefixedMessages("code: Код не меняется", FIELDS)).toEqual([
+      { field: "code", message: "Код не меняется" },
+    ]);
+  });
+
+  it.each([
+    ["plain text", "Пароль слишком короткий"],
+    ["a word that is not a known field", "unknown_key: плохо"],
+    ["text before the first prefix", "ошибка: code: плохо"],
+    ["not a string", ["code: плохо"]],
+  ])("returns null for %s", (_name, detail) => {
+    expect(prefixedMessages(detail, FIELDS)).toBeNull();
+  });
+
+  it("returns null when no field is known", () => {
+    expect(prefixedMessages("code: плохо", [])).toBeNull();
+  });
+
+  it("keeps a `; ` that is not followed by a known prefix inside the text", () => {
+    expect(prefixedMessages("code: а; б: в", FIELDS)).toEqual([{ field: "code", message: "а; б: в" }]);
+  });
+
+  it("fieldError: the closed list covers the leave type fields too", () => {
+    expect(fieldError("code: Код не меняется")).toEqual({ field: "code", message: "Код не меняется" });
+    expect(fieldError("balance_tracked: нельзя")).toEqual({ field: "balance_tracked", message: "нельзя" });
+    expect(fieldError("is_active: нельзя")).toEqual({ field: "is_active", message: "нельзя" });
+  });
+
+  it("fieldError: a message that starts with an ordinary word is not a field error", () => {
+    expect(fieldError("Пароль: не подходит")).toBeNull();
+    expect(fieldError("weak: не подходит")).toBeNull();
+    expect(fieldError(["email: x"])).toBeNull();
+  });
+
+  it("fieldError: the message is the whole rest of the string after the first prefix", () => {
+    expect(fieldError("email: адрес занят; manager_id: сотрудник не найден")).toEqual({
+      field: "email",
+      message: "адрес занят; manager_id: сотрудник не найден",
+    });
   });
 });

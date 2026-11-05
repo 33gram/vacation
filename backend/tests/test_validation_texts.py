@@ -25,6 +25,36 @@ def test_every_entry_of_the_map_and_the_fallback_are_russian() -> None:
         assert _CYRILLIC.search(text), f"type={error_type}: {text!r}"
 
 
+def _limit_entries() -> list[tuple[str, object, str]]:
+    """Записи карты, зависящие от `ctx`: (type, запись, ключ предела). Ключ берётся из самой
+    записи (`limit_key`), второго списка ключей здесь нет; запись-функция без метки - ошибка."""
+    found = []
+    for error_type, entry in _BY_TYPE.items():
+        if not callable(entry):
+            continue
+        key = getattr(entry, "limit_key", None)
+        assert key, f"type={error_type}: у записи-функции нет метки limit_key"
+        found.append((error_type, entry, key))
+    return found
+
+
+def test_the_sweep_over_the_map_finds_its_entries() -> None:
+    assert len(_limit_entries()) >= 8, "перебор пределов ослеп"
+
+
+@pytest.mark.parametrize("error_type", [t for t, _, _ in _limit_entries()])
+def test_every_limit_entry_puts_a_numeric_limit_into_the_text_and_never_a_string(
+    error_type: str,
+) -> None:
+    [(_, entry, key)] = [e for e in _limit_entries() if e[0] == error_type]
+    number = 7654321
+    marker = "MARKER-CTX-STRING"
+
+    assert str(number) in entry({key: number}), f"type={error_type}: предел {key} не в тексте"
+    assert marker not in entry({key: marker}), f"type={error_type}: строка {key} попала в текст"
+    assert str(number) not in entry({}), f"type={error_type}: предел взялся из ничего"
+
+
 def test_a_known_type_gets_its_own_russian_text() -> None:
     assert russian_message({"type": "missing", "msg": "Field required"}) == "Обязательное поле."
 

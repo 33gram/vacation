@@ -13,7 +13,18 @@ FastAPI, а проверка в самом свипе: каждое пробно
 проверки. Маршрут, у которого после отсева не осталось ни одного негодного тела, или чей 422
 получить не удалось, объявляется в `_NO_422_FROM_PROBES` с причиной, иначе тест падает.
 
+Кроме языка проверяется, что перевод НЕ пропал: у каждой собранной ошибки `type` есть в карте
+(`_BY_TYPE`; `value_error` обрабатывается отдельной веткой `russian_message`) и текст не равен
+`FALLBACK_TEXT`. Запасной текст русский, поэтому проверка кириллицы пропажу перевода не видит.
+Единственный разрешённый путь к запасному тексту на настоящих маршрутах - `_INTENTIONAL_FALLBACK`
+(тип и причина); тип, не названный там, получает запасной текст только ценой красного теста.
+
 Сторож не должен слепнуть: нашёл ли он маршруты и ошибки - проверяется отдельно и громко.
+
+multipart-маршрут (`POST /api/employees/import`) проходит ту же проверку: пробное тело
+`{"bad": "1"}` прогоняется моделью формы маршрута (форма `file` обязательна) и отправляется
+только если модель его отвергает (решено прогоном: `body_field.validate` на словаре полей формы
+даёт ошибку, как и сам запрос).
 
 ГРАНИЦЫ (правило 8): проверяется язык `msg` на телах из `_probe_bodies` (неверный тип, пусто,
 не объект, слишком длинное, число вне границ, неподходящий формат кода); тип ошибки, который эти
@@ -32,6 +43,7 @@ from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 
 import app.modules.auth.rbac as rbac
+from app.core.validation_texts import _BY_TYPE, FALLBACK_TEXT
 from app.main import app
 
 _CYRILLIC = re.compile(r"[А-Яа-яЁё]")
@@ -41,9 +53,25 @@ _BODY_METHODS = {"POST", "PUT", "PATCH"}
 # дали 422 на пробных телах.
 _NO_422_FROM_PROBES: dict[tuple[str, str], str] = {}
 
-# Не ниже числа маршрутов с телом на момент написания (15 JSON + 1 multipart): краснеет на
-# УДАЛЕНИИ маршрутов и молчит на добавлении - это защита от пустого свипа, а не контроль состава.
-_MIN_ROUTES = 15
+# Типы, которым запасной текст отдан НАМЕРЕННО (запись карты равна `FALLBACK_TEXT`), и причина.
+# Это единственный разрешённый путь к запасному тексту на настоящих маршрутах.
+_INTENTIONAL_FALLBACK: dict[str, str] = {
+    "literal_error": (
+        "допустимые значения лежат в `ctx.expected` строкой; строки из `ctx` в текст не идут "
+        "(присланное значение может оказаться там), общего русского текста без них нет"
+    ),
+    "enum": "то же, что у `literal_error`: перечень допустимых значений - строка из `ctx`",
+}
+
+# `value_error` не в карте: `russian_message` берёт текст нашего собственного `ValueError`
+# (см. докстринг `app/core/validation_texts.py`); запасной текст он получает, только если
+# русского текста у валидатора нет, и это тем же свипом считается пропажей перевода.
+_HANDLED_APART = {"value_error"}
+
+# Равно числу маршрутов с телом, ИЗМЕРЕНО (16: 15 JSON + 1 multipart): удаление любого маршрута
+# краснит тест (красный прогон: порог 17 даёт `16 >= 17`). Добавление молчит - это защита от
+# пустого свипа, а не контроль состава; новый маршрут попадает под сторожа сам.
+_MIN_ROUTES = 16
 
 
 class _Account:
@@ -126,6 +154,14 @@ def _assert_rejected(route: APIRoute, body: object) -> None:
     )
 
 
+def _is_multipart(route: APIRoute) -> bool:
+    return getattr(route.body_field.field_info, "media_type", None) == "multipart/form-data"
+
+
+def _invalid_form_bodies(route: APIRoute) -> list[object]:
+    return [body for body in ({"bad": "1"},) if not _accepted_by_the_model(route, body)]
+
+
 def _path(route: APIRoute, value: str) -> str:
     path = route.path
     for param in route.dependant.path_params:
@@ -135,16 +171,14 @@ def _path(route: APIRoute, value: str) -> str:
 
 def _responses_422(client: TestClient, route: APIRoute, method: str) -> list[list[dict]]:
     responses = []
-    is_multipart = getattr(route.body_field.field_info, "media_type", None) == "multipart/form-data"
     for value in ("1", "x"):  # корректный и негодный параметр пути
         path = _path(route, value)
-        if is_multipart:
-            attempts = [{"data": {"bad": "1"}}]
+        if _is_multipart(route):
+            attempts = [{"data": body} for body in _invalid_form_bodies(route)]
         else:
             attempts = [{"json": body} for body in _invalid_bodies(route)]
         for kwargs in attempts:
-            if "json" in kwargs:
-                _assert_rejected(route, kwargs["json"])
+            _assert_rejected(route, kwargs.get("json", kwargs.get("data")))
             response = client.request(method, path, **kwargs)
             if response.status_code == 422:
                 responses.append(response.json()["detail"])
@@ -169,6 +203,7 @@ def test_every_422_message_of_every_body_route_is_russian(client: TestClient) ->
     total_errors = 0
     silent: list[tuple[str, str]] = []
     english: list[str] = []
+    untranslated: list[str] = []
     for route, method in _body_routes():
         details = _responses_422(client, route, method)
         if not details and (method, route.path) not in _NO_422_FROM_PROBES:
@@ -176,11 +211,25 @@ def test_every_422_message_of_every_body_route_is_russian(client: TestClient) ->
         for detail in details:
             for error in detail:
                 total_errors += 1
+                where = f"{method} {route.path} type={error['type']}"
                 if not _CYRILLIC.search(error["msg"]):
-                    english.append(f"{method} {route.path} type={error['type']}: {error['msg']!r}")
+                    english.append(f"{where}: {error['msg']!r}")
+                if error["type"] not in _BY_TYPE and error["type"] not in _HANDLED_APART:
+                    untranslated.append(f"{where}: типа нет в карте")
+                elif error["msg"] == FALLBACK_TEXT and error["type"] not in _INTENTIONAL_FALLBACK:
+                    untranslated.append(f"{where}: запасной текст без записи в списке намеренных")
 
     assert total_errors > 0, "сторож ослеп: ни одной ошибки 422 не получено"
     assert not silent, (
         f"маршрут с телом не дал 422 на пробных телах (объявить в _NO_422_FROM_PROBES): {silent}"
     )
     assert not english, "422 с нерусским текстом:\n" + "\n".join(sorted(set(english)))
+    assert not untranslated, "пропал перевод:\n" + "\n".join(sorted(set(untranslated)))
+
+
+def test_the_intentional_fallback_list_matches_the_map() -> None:
+    # Запись списка, которой в карте уже нет или чей текст стал собственным, - устаревшее
+    # исключение: оно молча разрешало бы запасной текст там, где перевод появился.
+    for error_type, reason in _INTENTIONAL_FALLBACK.items():
+        assert reason
+        assert _BY_TYPE.get(error_type) == FALLBACK_TEXT, f"{error_type}: в карте не запасной текст"

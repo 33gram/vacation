@@ -32,6 +32,8 @@ FALLBACK_TEXT = "Недопустимое значение."
 _CYRILLIC = re.compile(r"[А-Яа-яЁё]")
 _VALUE_ERROR_PREFIX = "Value error, "
 
+_Builder = Callable[[Mapping[str, Any]], str]
+
 
 def _number(ctx: Mapping[str, Any], key: str) -> str | None:
     """Предел из `ctx`, только если это число (не строка, не произвольный объект)."""
@@ -41,7 +43,19 @@ def _number(ctx: Mapping[str, Any], key: str) -> str | None:
     return str(value)
 
 
-def _with_limit(template: str, plain: str, key: str) -> Callable[[Mapping[str, Any]], str]:
+def _limited_by(key: str) -> Callable[[_Builder], _Builder]:
+    """Помечает запись-функцию ключом `ctx`, из которого она берёт предел (`limit_key`): по этой
+    метке тест перебирает записи сам, не держа второй список ключей."""
+
+    def mark(build: _Builder) -> _Builder:
+        build.limit_key = key  # type: ignore[attr-defined]
+        return build
+
+    return mark
+
+
+def _with_limit(template: str, plain: str, key: str) -> _Builder:
+    @_limited_by(key)
     def build(ctx: Mapping[str, Any]) -> str:
         limit = _number(ctx, key)
         return template.format(limit) if limit is not None else plain
@@ -49,6 +63,7 @@ def _with_limit(template: str, plain: str, key: str) -> Callable[[Mapping[str, A
     return build
 
 
+@_limited_by("max_length")
 def _too_long(ctx: Mapping[str, Any]) -> str:
     limit = _number(ctx, "max_length")
     # `field_type` - класс поля из схемы ("Value" для строки, "List" для списка), не данные.
@@ -58,6 +73,7 @@ def _too_long(ctx: Mapping[str, Any]) -> str:
     return f"Слишком длинное значение: не более {limit} {unit}."
 
 
+@_limited_by("min_length")
 def _too_short(ctx: Mapping[str, Any]) -> str:
     limit = _number(ctx, "min_length")
     unit = "символов" if ctx.get("field_type") in (None, "Value") else "элементов"
@@ -72,7 +88,7 @@ _NUMBER = "Значение должно быть числом."
 _BOOLEAN = "Значение должно быть логическим (да или нет)."
 _OBJECT = "Тело запроса должно быть объектом."
 
-_BY_TYPE: dict[str, str | Callable[[Mapping[str, Any]], str]] = {
+_BY_TYPE: dict[str, str | _Builder] = {
     "missing": "Обязательное поле.",
     "string_type": "Значение должно быть строкой.",
     "int_type": _INTEGER,

@@ -24,11 +24,39 @@ class LeaveTypeCodeConflictError(Exception):
 
 
 class LeaveTypeCodeImmutableError(ValueError):
-    """Код вида после создания не меняется."""
+    """Код вида после создания не меняется. Текст несёт префикс поля `code:` (`T-M2-27`): по нему
+    форма кладёт отказ под поле, а сам префикс пользователю не показывается (`ui.md` §7)."""
+
+
+# Тексты отказа по основному виду, по одному на нарушенное поле; каждый несёт префикс поля
+# (`T-M2-27`). Общий текст (оба нарушения одним предложением) разбить по полям нельзя, поэтому он
+# разделён на два.
+_MAIN_NOT_DEACTIVATED = (
+    "is_active: Основной оплачиваемый отпуск нельзя деактивировать: "
+    "от него зависит начисление (FR-BAL-001)"
+)
+_MAIN_NOT_UNTRACKED = (
+    "balance_tracked: Основной оплачиваемый отпуск нельзя лишить признака "
+    "«по виду ведётся остаток»: от него зависит начисление (FR-BAL-001)"
+)
 
 
 class MainLeaveTypeProtectedError(ValueError):
-    """Основной вид нельзя вывести из обращения или лишить признака «ведётся остаток»."""
+    """Основной вид нельзя вывести из обращения или лишить признака «ведётся остаток».
+
+    Нарушены могут быть ОБА поля разом, и отказ называет ВСЕ нарушенные, не первое увиденное:
+    тексты по полям с префиксом `<поле>: ` через `"; "` - та же форма, что у
+    `RuleValuesInvalidError` (`T-M2-12`), и один разбор на клиенте. Порядок фиксирован:
+    `is_active`, затем `balance_tracked`."""
+
+    def __init__(self, *, is_active: bool, balance_tracked: bool) -> None:
+        parts = []
+        if not is_active:
+            parts.append(_MAIN_NOT_DEACTIVATED)
+        if not balance_tracked:
+            parts.append(_MAIN_NOT_UNTRACKED)
+        assert parts, "отказ без нарушенного поля"
+        super().__init__("; ".join(parts))
 
 
 class LeaveTypeHasEventsError(Exception):
@@ -82,7 +110,7 @@ async def update_leave_type(
         raise LeaveTypeNotFoundError("Вид отпуска не найден")
     if payload.code is not None and payload.code != leave_type.code:
         raise LeaveTypeCodeImmutableError(
-            "Код вида отпуска после создания не меняется: по нему находится основной вид, "
+            "code: Код вида отпуска после создания не меняется: по нему находится основной вид, "
             "переименование сломало бы начисление. Меняется наименование"
         )
     if leave_type.code == MAIN_LEAVE_TYPE_CODE and not (
@@ -93,8 +121,7 @@ async def update_leave_type(
         # выведенным из обращения или не ведущим остаток, - `GET .../balances` его бы
         # не показал при живом журнале.
         raise MainLeaveTypeProtectedError(
-            "Основной оплачиваемый отпуск нельзя деактивировать и нельзя лишить признака "
-            "«по виду ведётся остаток»: от него зависит начисление (FR-BAL-001)"
+            is_active=payload.is_active, balance_tracked=payload.balance_tracked
         )
     if leave_type.balance_tracked and not payload.balance_tracked:
         if await leave_type_has_events(session, leave_type_id):

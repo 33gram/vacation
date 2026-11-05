@@ -277,8 +277,8 @@ describe("API refusals look like refusals, with the server's own text (ui.md §7
 
   it.each([
     "Код вида отсутствий менять нельзя",
-    "Основной вид нельзя деактивировать или лишить признака «по виду ведётся остаток»: по нему начисляется отпуск",
-  ])("PUT 400 «%s»: shown as is above the buttons, not as a crash", async (text) => {
+    "unknown_field: Основной вид нельзя деактивировать",
+  ])("PUT 400 without a known field prefix «%s»: shown as is above the buttons", async (text) => {
     mockBackend("hr_admin", [ANNUAL, TIME_OFF], () => ({ status: 400, body: { detail: text } }));
     const user = userEvent.setup();
 
@@ -292,6 +292,37 @@ describe("API refusals look like refusals, with the server's own text (ui.md §7
     // Форма осталась открытой и в ней нет ошибок под полями.
     expect(screen.getByRole("button", { name: "Сохранить" })).toBeInTheDocument();
     expect(document.querySelector(".ant-form-item-explain-error")).toBeNull();
+  });
+});
+
+describe("PUT 400 field prefixes (T-M2-27)", () => {
+  const fieldItemOf = (label: string) => screen.getByLabelText(label).closest(".ant-form-item")!;
+  const IS_ACTIVE = "Основной оплачиваемый отпуск нельзя деактивировать: от него зависит начисление (FR-BAL-001)";
+  const TRACKED = "Основной оплачиваемый отпуск нельзя лишить признака «по виду ведётся остаток»: от него зависит начисление (FR-BAL-001)";
+
+  async function submitMainType(detail: string) {
+    mockBackend("hr_admin", [ANNUAL, TIME_OFF], () => ({ status: 400, body: { detail } }));
+    const user = userEvent.setup();
+    renderApp("/admin/leave-types/1");
+    await user.click(await screen.findByRole("button", { name: "Редактировать" }));
+    await user.click(screen.getByRole("switch", { name: "Вид используется" }));
+    await user.click(screen.getByRole("button", { name: "Сохранить" }));
+  }
+
+  it("one field: the text goes under it without the prefix, nothing above the buttons", async () => {
+    await submitMainType(`is_active: ${IS_ACTIVE}`);
+
+    expect(fieldItemOf("Вид используется")).toContainElement(await screen.findByText(IS_ACTIVE));
+    expect(screen.queryByText(/is_active:/)).toBeNull();
+    expect(document.querySelector(".ant-alert")).toBeNull();
+  });
+
+  it("both fields violated: each text under its own field", async () => {
+    await submitMainType(`is_active: ${IS_ACTIVE}; balance_tracked: ${TRACKED}`);
+
+    expect(fieldItemOf("Вид используется")).toContainElement(await screen.findByText(IS_ACTIVE));
+    expect(fieldItemOf("По виду ведётся остаток")).toContainElement(screen.getByText(TRACKED));
+    expect(document.querySelector(".ant-alert")).toBeNull();
   });
 });
 

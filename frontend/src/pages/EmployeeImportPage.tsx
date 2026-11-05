@@ -4,7 +4,7 @@ import type { UploadFile } from "antd";
 import { useState } from "react";
 
 import { apiClient } from "../api/client";
-import { stringDetail } from "../api/errors";
+import { detailText } from "../api/errors";
 import type { components } from "../api/generated/schema";
 
 type ImportSummary = components["schemas"]["ImportSummary"];
@@ -62,7 +62,7 @@ export function EmployeeImportPage() {
       // защитно, а не полагаемся на типизацию.
       const detail = (error as { detail?: unknown } | undefined)?.detail;
       setGeneralError(
-        stringDetail(detail) ?? `Не удалось загрузить файл (код ${response.status}).`,
+        detailText(detail) ?? `Не удалось загрузить файл (код ${response.status}).`,
       );
       return;
     }

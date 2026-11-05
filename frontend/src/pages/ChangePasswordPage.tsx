@@ -3,7 +3,7 @@ import { Alert, Button, Form, Input, Layout, Typography } from "antd";
 import { useState } from "react";
 
 import { apiClient } from "../api/client";
-import { stringDetail, violationList } from "../api/errors";
+import { formValidation, stringDetail, violationList } from "../api/errors";
 import { useLogout } from "../app/useLogout";
 import { PasswordPolicyChecklist } from "../components/PasswordPolicyChecklist";
 
@@ -27,6 +27,7 @@ interface ChangePasswordFormValues {
  * выход отсюда, кроме самой смены пароля, — «Выйти» в шапке. */
 export function ChangePasswordPage() {
   const queryClient = useQueryClient();
+  const [form] = Form.useForm<ChangePasswordFormValues>();
   const [violatedCodes, setViolatedCodes] = useState<Set<string> | null>(null);
   const [generalError, setGeneralError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -36,6 +37,10 @@ export function ChangePasswordPage() {
   const handleFinish = async (values: ChangePasswordFormValues) => {
     setGeneralError(null);
     setViolatedCodes(null);
+    form.setFields([
+      { name: "current_password", errors: [] },
+      { name: "new_password", errors: [] },
+    ]);
     setSubmitting(true);
     const { error } = await apiClient.POST("/api/auth/password/change", {
       body: values,
@@ -43,8 +48,16 @@ export function ChangePasswordPage() {
     setSubmitting(false);
 
     if (error) {
+      // Два разных списка в `detail`: нарушения парольной политики (400, `code`/`message`) и
+      // ошибки валидации тела (422, `loc`/`msg`/`type`) - различаются формой элемента.
       const violations = violationList(error.detail);
-      if (violations) {
+      const validation = formValidation(error.detail, ["current_password", "new_password"]);
+      if (validation) {
+        form.setFields(
+          validation.fieldErrors.map(({ field, message }) => ({ name: field, errors: [message] })),
+        );
+        setGeneralError(validation.generalError);
+      } else if (violations) {
         setViolatedCodes(new Set(violations.map((violation) => violation.code)));
       } else {
         // "Неверный текущий пароль" (401) и "Сменить пароль можно только
@@ -81,7 +94,7 @@ export function ChangePasswordPage() {
           <Alert type="error" message={generalError} showIcon style={{ marginBottom: 16 }} />
         )}
 
-        <Form<ChangePasswordFormValues> layout="vertical" onFinish={handleFinish}>
+        <Form<ChangePasswordFormValues> form={form} layout="vertical" onFinish={handleFinish}>
           <Form.Item
             label="Текущий пароль"
             name="current_password"

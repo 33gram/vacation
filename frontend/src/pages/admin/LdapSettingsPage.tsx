@@ -3,7 +3,7 @@ import { Alert, Button, Col, Form, Input, InputNumber, Row, Space, Switch, Typog
 import { useState } from "react";
 
 import { apiClient } from "../../api/client";
-import { stringDetail } from "../../api/errors";
+import { detailText, formValidation, stringDetail, ValidationFailure } from "../../api/errors";
 import { formatDateTime } from "../../app/format";
 import { EmptyState, ErrorLoadingState, LoadingState } from "../../app/states";
 import {
@@ -17,6 +17,17 @@ import {
 } from "../../entities/ldapSettings";
 import type { LdapFormValues, LdapSettingsOut, LdapTestResponse } from "../../entities/ldapSettings";
 import { useLdapSettingsQuery } from "../../entities/useLdapSettingsQuery";
+
+// Имена полей формы (совпадают с полями тела `PUT`): ошибки валидации 422 ложатся под них (`T-M2-28`).
+const LDAP_FORM_FIELDS = [
+  "server_url",
+  "port",
+  "base_dn",
+  "bind_dn",
+  "bind_password",
+  "user_match_attribute",
+  "is_active",
+] as const satisfies readonly (keyof LdapFormValues)[];
 
 /** Тело формы — поля в две колонки (`ui.md` §3, «Форма настроек»): слева
  * «куда подключаться» (адрес, порт, base DN, атрибут сопоставления),
@@ -62,12 +73,34 @@ function LdapSettingsForm({
       ? `Последняя зафиксированная проверка: ${formatDateTime(saved.last_tested_at)} — ${lastTestStatusLabel(saved.last_test_status)}`
       : `Последняя зафиксированная проверка: ${lastTestStatusLabel(null)}`;
 
+  /** 422 по полям формы: подписи ложатся под поля, не легшее под поля - общим текстом над кнопками.
+   * `false` - это не отказ валидации, ошибку показывает вызывающий. */
+  const showFieldErrors = (error: unknown): boolean => {
+    if (!(error instanceof ValidationFailure)) {
+      return false;
+    }
+    form.setFields(
+      // Имена в раскладке - из `LDAP_FORM_FIELDS`, то есть поля этой формы.
+      error.layout.fieldErrors.map(({ field, message }) => ({
+        name: field as keyof LdapFormValues,
+        errors: [message],
+      })),
+    );
+    setActionError(error.layout.generalError);
+    return true;
+  };
+
   const saveMutation = useMutation({
     mutationFn: async (values: LdapFormValues) => {
       const { error } = await apiClient.PUT("/api/admin/ldap-settings", {
         body: toLdapSettingsIn(values),
       });
       if (error) {
+        // 422 (`T-M2-28`): ошибки полей уходят под поля в `onError`.
+        const layout = formValidation(error.detail, LDAP_FORM_FIELDS);
+        if (layout) {
+          throw new ValidationFailure(layout);
+        }
         throw new Error(stringDetail(error.detail) ?? "Не удалось сохранить параметры подключения.");
       }
     },
@@ -92,6 +125,9 @@ function LdapSettingsForm({
       ]);
     },
     onError: (error) => {
+      if (showFieldErrors(error)) {
+        return;
+      }
       setActionError(error instanceof Error ? error.message : "Не удалось сохранить параметры подключения.");
     },
   });
@@ -107,7 +143,14 @@ function LdapSettingsForm({
         body: toLdapTestRequest(currentValues, isDraftTest),
       });
       if (error) {
-        throw new Error(stringDetail(error.detail) ?? "Не удалось проверить подключение.");
+        // 422 (`T-M2-28`, `ui.md` §7): поля тела - поля этой же формы, их ошибки уходят под поля,
+        // как у сохранения. Общим текстом остаётся то, что под поля не легло, и отказ САМОЙ
+        // операции (не удалось соединиться) - у него поля нет.
+        const layout = formValidation(error.detail, LDAP_FORM_FIELDS);
+        if (layout) {
+          throw new ValidationFailure(layout);
+        }
+        throw new Error(detailText(error.detail) ?? "Не удалось проверить подключение.");
       }
       return { data, wasDraft: isDraftTest };
     },
@@ -130,6 +173,9 @@ function LdapSettingsForm({
     },
     onError: (error) => {
       setTestResult(null);
+      if (showFieldErrors(error)) {
+        return;
+      }
       setActionError(error instanceof Error ? error.message : "Не удалось проверить подключение.");
     },
   });

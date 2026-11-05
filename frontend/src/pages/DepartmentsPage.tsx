@@ -4,7 +4,7 @@ import type { DataNode, TreeProps } from "antd/es/tree";
 import { useMemo, useState } from "react";
 
 import { apiClient } from "../api/client";
-import { fieldError, stringDetail } from "../api/errors";
+import { detailText, fieldError, singleFieldValidationText, stringDetail } from "../api/errors";
 import { EmptyState, ErrorLoadingState, LoadingState } from "../app/states";
 import { DepartmentHeadModal } from "../components/DepartmentHeadModal";
 import { DepartmentNameModal } from "../components/DepartmentNameModal";
@@ -161,7 +161,7 @@ export function DepartmentsPage() {
         body: departmentUpdateBody(department, { parent_id: newParentId }),
       });
       if (error) {
-        throw new Error(stringDetail(error.detail) ?? "Не удалось перенести подразделение.");
+        throw new Error(detailText(error.detail) ?? "Не удалось перенести подразделение.");
       }
     },
     onMutate: async ({ department, newParentId }) => {
@@ -232,7 +232,12 @@ export function DepartmentsPage() {
       body: { name, parent_id: nameModal.parentId },
     });
     if (error) {
-      return stringDetail(error.detail) ?? "Не удалось создать подразделение.";
+      // 422 (`T-M2-28`): у окна одно поле, тексты ошибок валидации показываются в окне (не запасным текстом).
+      return (
+        singleFieldValidationText(error.detail, "name") ??
+        stringDetail(error.detail) ??
+        "Не удалось создать подразделение."
+      );
     }
     await queryClient.invalidateQueries({ queryKey: ["departments"] });
     setNameModal(null);
@@ -249,7 +254,11 @@ export function DepartmentsPage() {
       body: departmentUpdateBody(department, { name }),
     });
     if (error) {
-      return stringDetail(error.detail) ?? "Не удалось переименовать подразделение.";
+      return (
+        singleFieldValidationText(error.detail, "name") ??
+        stringDetail(error.detail) ??
+        "Не удалось переименовать подразделение."
+      );
     }
     await queryClient.invalidateQueries({ queryKey: ["departments"] });
     setNameModal(null);
@@ -270,6 +279,10 @@ export function DepartmentsPage() {
       const matchedFieldError = fieldError(error.detail);
       if (matchedFieldError) {
         return matchedFieldError;
+      }
+      const validationText = singleFieldValidationText(error.detail, "head_employee_id");
+      if (validationText !== null) {
+        return { field: "head_employee_id", message: validationText };
       }
       return stringDetail(error.detail) ?? "Не удалось назначить руководителя.";
     }

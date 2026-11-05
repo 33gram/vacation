@@ -13,6 +13,7 @@ from app.core.config import get_settings
 from app.core.health import router as health_router
 from app.core.logging import configure_logging
 from app.core.security import warm_dummy_password_hash_cache
+from app.core.validation_texts import russian_message
 from app.db.session import get_session_factory
 from app.modules.admin.business_rules_router import router as business_rules_router
 from app.modules.admin.ldap_settings_router import router as ldap_settings_router
@@ -177,6 +178,17 @@ async def _handle_request_validation_error(
     которое прогон не затронул, может положить значение в `ctx` и в
     будущем, и белый список защищает от этого без необходимости перепроверять.
 
+    `msg` переводится на русский по `type` (`T-M2-28`, `NFR-LOC-001`, `ui.md` §7 запрещает
+    переписывать серверный текст на клиенте): карта текстов — одно место,
+    `app/core/validation_texts.py`, неизвестный `type` даёт русский запасной текст. Присланное
+    значение в `msg` не попадает (там же, как и почему).
+
+    ГРАНИЦА белого списка (`T-M2-28`, правило 8): список намеренно сохраняет `loc`, а у
+    вложенного тела последний элемент `loc` — КЛЮЧ ИЗ ЗАПРОСА КЛИЕНТА (`["body", "values",
+    "<ключ>"]` у параметров бизнес-правил). Утечки нет: свой ввод возвращается своему же
+    клиенту, а без ключа ошибку не положить под поле формы. Но это граница списка, заведённого
+    ради `NFR-SEC-004`: присланная строка в ответе есть, и она только в `loc`, не в `msg`.
+
     Код ответа остаётся 422, форма — `{"detail": [...]}`: это ровно то, что
     уже описывает `openapi-export`/сгенерированный клиент, а не новый
     контракт.
@@ -184,7 +196,7 @@ async def _handle_request_validation_error(
     Из присланного тела в этом обработчике ничего не логируется — утечка в
     лог та же утечка (`NFR-SEC-004`)."""
     sanitized_errors = [
-        {"loc": error.get("loc"), "msg": error.get("msg"), "type": error.get("type")}
+        {"loc": error.get("loc"), "msg": russian_message(error), "type": error.get("type")}
         for error in exc.errors()
     ]
     return JSONResponse(status_code=422, content={"detail": jsonable_encoder(sanitized_errors)})

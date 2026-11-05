@@ -294,3 +294,48 @@ describe("API refusals look like refusals, with the server's own text (ui.md §7
     expect(document.querySelector(".ant-form-item-explain-error")).toBeNull();
   });
 });
+
+describe("422 validation errors (T-M2-28)", () => {
+  const fieldItemOf = (label: string) => screen.getByLabelText(label).closest(".ant-form-item")!;
+
+  it("POST 422: every error under its own field (the code pattern is the server's), the whole-body one above the buttons", async () => {
+    mockBackend("hr_admin", [ANNUAL], () => ({
+      status: 422,
+      body: {
+        detail: [
+          { loc: ["body", "code"], msg: "Значение не соответствует допустимому формату.", type: "string_pattern_mismatch" },
+          { loc: ["body", "name"], msg: "Слишком длинное значение: не более 200 символов.", type: "string_too_long" },
+          { loc: ["body"], msg: "Тело запроса должно быть объектом.", type: "model_attributes_type" },
+        ],
+      },
+    }));
+    const user = userEvent.setup();
+
+    renderApp("/admin/leave-types/new");
+    await user.type(await screen.findByLabelText("Код"), "Comp Leave");
+    await user.type(screen.getByLabelText("Название"), "Компенсационный");
+    await user.click(screen.getByRole("button", { name: "Создать" }));
+
+    expect(fieldItemOf("Код")).toContainElement(
+      await screen.findByText("Значение не соответствует допустимому формату."),
+    );
+    expect(fieldItemOf("Название")).toContainElement(
+      screen.getByText("Слишком длинное значение: не более 200 символов."),
+    );
+    expect(screen.getByText("Тело запроса должно быть объектом.").closest(".ant-form-item")).toBeNull();
+  });
+
+  it("PUT 422 goes through the same parser (status 422, not 400/409)", async () => {
+    mockBackend("hr_admin", [ANNUAL, TIME_OFF], () => ({
+      status: 422,
+      body: { detail: [{ loc: ["body", "annual_limit"], msg: "Значение должно быть числом.", type: "decimal_parsing" }] },
+    }));
+    const user = userEvent.setup();
+
+    renderApp("/admin/leave-types/2");
+    await user.click(await screen.findByRole("button", { name: "Редактировать" }));
+    await user.click(screen.getByRole("button", { name: "Сохранить" }));
+
+    expect(await screen.findByText("Значение должно быть числом.")).toBeInTheDocument();
+  });
+});

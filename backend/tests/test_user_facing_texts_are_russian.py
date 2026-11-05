@@ -12,8 +12,13 @@ HTTP-ответа, обязано быть по-русски (`ui.md` §7 зап
 FUNCTIONS` функций-строителей текста). Она НЕ проверяет:
 - модули, для которых русский текст не требование (`_EXCLUDED_MODULES`
   ниже — «что не переводится», см. тело коммита T-M1-47);
-- встроенные тексты pydantic в 422 (`"Field required"` и подобные) —
-  это не наши строки, их правка — T-M1-40 (`RequestValidationError`);
+- сами тексты 422 (`"Field required"` и подобные): с `T-M2-28` они НАШИ -
+  сервер переводит `msg` по `type` (`app/core/validation_texts.py`). Этот
+  сторож их не сканирует (он смотрит аргументы вызовов, а карта - словарь);
+  язык карты держат `test_validation_texts.py` (каждая запись и запасной
+  текст содержат кириллицу) и свип `test_validation_errors_are_russian.py`
+  (по всем маршрутам с телом). Текст собственного `ValueError` валидатора
+  схемы входит в область этого сторожа через `app/schemas/*.py` ниже;
 - машиночитаемые идентификаторы (имена полей вроде `personnel_number`,
   `email`, значения `auth_type`) — они и не должны быть переведены;
   проверка целенаправленно смотрит только на ТЕКСТ сообщения (реальный
@@ -52,6 +57,7 @@ _SCANNED_MODULES = (
     "app/modules/admin/ldap_settings_service.py",
     "app/modules/employees/unique_violations.py",
     "app/schemas/employee.py",
+    "app/schemas/balance.py",
     "app/modules/employees/import_parsing.py",
     "app/modules/employees/import_service.py",
     "app/core/ldap_client.py",

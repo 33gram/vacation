@@ -83,3 +83,25 @@ describe("employee import wizard (T-M1-19, FR-EMP-003)", () => {
     expect(await screen.findByText("employees.csv")).toBeInTheDocument();
   });
 });
+
+describe("422 validation errors (T-M2-28)", () => {
+  it("the upload has no form fields: the validation error is one general text, not the code fallback", async () => {
+    mockBackend({
+      status: 422,
+      body: { detail: [{ loc: ["body", "file"], msg: "Обязательное поле.", type: "missing" }] },
+    });
+
+    const { container } = renderApp("/employees/import");
+    const user = userEvent.setup();
+    await screen.findByText("Выбрать файл");
+    const fileInput = container.querySelector<HTMLInputElement>('input[type="file"]');
+    if (!fileInput) {
+      throw new Error("file input not found");
+    }
+    await user.upload(fileInput, selectAFile());
+    await user.click(screen.getByRole("button", { name: "Загрузить" }));
+
+    expect(await screen.findByText("file: Обязательное поле.")).toBeInTheDocument();
+    expect(screen.queryByText(/Не удалось загрузить файл/)).not.toBeInTheDocument();
+  });
+});

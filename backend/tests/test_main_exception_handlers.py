@@ -223,6 +223,9 @@ async def test_request_validation_error_handler_strips_value_keeps_diagnostics()
     # обработчика).
     assert set(error.keys()) == {"loc", "msg", "type"}
     assert error["loc"] == ["body", "secret"]
+    # `T-M2-28`: текст русский, по `type`, и несёт только предел из схемы, не присланное значение.
+    assert error["type"] == "string_too_long"
+    assert error["msg"] == "Слишком длинное значение: не более 5 символов."
 
 
 async def _make_system_admin(db_session):
@@ -243,6 +246,11 @@ async def test_login_password_too_long_does_not_leak_it(api_client) -> None:
 
     assert response.status_code == 422
     assert _PASSWORD_MARKER not in response.text
+    # `T-M2-28`: текст отказа - перевод по `type`, в нём есть предел из схемы, но не пароль.
+    [error] = response.json()["detail"]
+    assert error["msg"] == (
+        f"Слишком длинное значение: не более {MAX_PASSWORD_LENGTH_CHARS} символов."
+    )
 
 
 async def test_password_change_current_password_too_long_does_not_leak_it(
@@ -399,3 +407,5 @@ async def test_create_employee_wrong_type_email_does_not_leak_it(db_session, api
     [error] = response.json()["detail"]
     assert set(error.keys()) == {"loc", "msg", "type"}
     assert error["loc"] == ["body", "email"]
+    # `T-M2-28`: перевод по `type` не возвращает присланное значение и в `msg`.
+    assert error["msg"] == "Значение должно быть строкой."

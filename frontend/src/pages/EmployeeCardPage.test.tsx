@@ -368,3 +368,46 @@ describe("employee card (T-M1-19, FR-EMP-001)", () => {
     },
   );
 });
+
+describe("422 validation errors (T-M2-28)", () => {
+  it("deactivation: the date has no form field, the validation error is one general text in the dialog", async () => {
+    setAccessToken("token");
+    setFetchHandler((method, pathname) => {
+      if (method === "GET" && pathname === "/api/auth/me") {
+        return { status: 200, body: meResponse({ role: "hr_admin", must_change_password: false }) };
+      }
+      if (method === "GET" && pathname === "/api/departments") {
+        return { status: 200, body: DEPARTMENTS };
+      }
+      if (method === "GET" && pathname === "/api/employees") {
+        return { status: 200, body: [MANAGER, EMPLOYEE] };
+      }
+      if (method === "GET" && pathname === "/api/employees/2") {
+        return { status: 200, body: EMPLOYEE };
+      }
+      if (method === "POST" && pathname === "/api/employees/2/deactivate") {
+        return {
+          status: 422,
+          body: {
+            detail: [
+              { loc: ["body", "termination_date"], msg: "Неверная дата, нужен формат ГГГГ-ММ-ДД.", type: "date_parsing" },
+            ],
+          },
+        };
+      }
+      return null;
+    });
+
+    renderApp("/employees/2");
+    const user = userEvent.setup();
+    await screen.findByRole("heading", { name: "Петров Пётр Петрович" });
+    await user.click(screen.getByRole("button", { name: "Деактивировать" }));
+    const dialog = await screen.findByRole("dialog");
+    await user.click(within(dialog).getByRole("button", { name: "Деактивировать" }));
+
+    expect(
+      await within(dialog).findByText("termination_date: Неверная дата, нужен формат ГГГГ-ММ-ДД."),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Не удалось деактивировать сотрудника.")).not.toBeInTheDocument();
+  });
+});

@@ -19,10 +19,14 @@ export function stringDetail(detail: unknown): string | null {
  * массива синтаксически, но с разными полями. `Array.isArray` одной
  * проверкой их не различает; здесь сверяется форма элемента (`code` +
  * `message`), которая есть только у нарушений парольной политики. */
-// Поля, для которых сервис добавляет к тексту ошибки машиночитаемый
+// ВСЕ поля, для которых сервис добавляет к тексту ошибки машиночитаемый
 // префикс `"<поле>: "` (T-M1-47, T-M2-27) — по нему интерфейс кладёт ошибку под
 // нужное поле формы, а сам префикс пользователю не показывается
-// (`ui.md` §7: место ошибки — под полем). Список ЗАКРЫТ и охраняется
+// (`ui.md` §7: место ошибки — под полем). Это перечень ДЛЯ СТОРОЖА, а не «поля одной формы»:
+// в нём поля сотрудника, подразделения и вида отсутствий вместе, и ни одна форма его не
+// использует — каждая разбирает префиксы по СВОИМ полям (`fieldError(detail, поля)`,
+// `prefixedMessages`), иначе отказ с префиксом чужого поля лёг бы на несуществующее поле и
+// исчез с экрана. Список ЗАКРЫТ и охраняется
 // backend-тестом `test_field_error_prefixes_guard.py`: он обнаруживает префиксы в `app/**`
 // разбором синтаксического дерева и сверяет их с этим перечнем в обе стороны, поэтому
 // новое поле с этим же соглашением придётся добавить сюда явно, а запись без источника на
@@ -31,7 +35,7 @@ export function stringDetail(detail: unknown): string | null {
 // "Пароль", а не с имени поля). ГРАНИЦА сторожа: он видит строки-литералы (и начало
 // f-строки); ключи реестра бизнес-правил (`RuleValuesInvalidError`) собираются во время
 // выполнения и сюда не входят — их разбор идёт по ключам из ответа `GET`.
-const FIELD_ERROR_PREFIXES = [
+export const FIELD_ERROR_PREFIXES = [
   "manager_id",
   "email",
   "personnel_number",
@@ -73,11 +77,14 @@ export function prefixedMessages(
 }
 
 /** Разбирает `stringDetail`-совместимый текст на `{field, message}`, если
- * он начинается с одного из известных префиксов, или возвращает `null`
- * (не наш случай — общая ошибка операции, `ui.md` §7). Разбор — `prefixedMessages`;
- * сообщение — весь остаток строки после первого префикса. */
-export function fieldError(detail: unknown): { field: string; message: string } | null {
-  const parsed = prefixedMessages(detail, FIELD_ERROR_PREFIXES);
+ * он начинается с префикса одного из ПОЛЕЙ ВЫЗЫВАЮЩЕЙ ФОРМЫ (`knownFields`), или возвращает `null`
+ * (не наш случай — общая ошибка операции, `ui.md` §7: префикс чужого поля тоже не наш).
+ * Разбор — `prefixedMessages`; сообщение — весь остаток строки после первого префикса. */
+export function fieldError(
+  detail: unknown,
+  knownFields: readonly string[],
+): { field: string; message: string } | null {
+  const parsed = prefixedMessages(detail, knownFields);
   const text = stringDetail(detail);
   if (parsed === null || text === null) {
     return null;

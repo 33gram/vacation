@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   detailText,
+  FIELD_ERROR_PREFIXES,
   fieldError,
   formValidation,
   layoutValidation,
@@ -132,20 +133,25 @@ describe("prefixedMessages and fieldError (T-M2-27)", () => {
     expect(prefixedMessages("code: а; б: в", FIELDS)).toEqual([{ field: "code", message: "а; б: в" }]);
   });
 
-  it("fieldError: the closed list covers the leave type fields too", () => {
-    expect(fieldError("code: Код не меняется")).toEqual({ field: "code", message: "Код не меняется" });
-    expect(fieldError("balance_tracked: нельзя")).toEqual({ field: "balance_tracked", message: "нельзя" });
-    expect(fieldError("is_active: нельзя")).toEqual({ field: "is_active", message: "нельзя" });
+  it("fieldError: only the fields of the calling form are its prefixes", () => {
+    expect(fieldError("code: Код не меняется", FIELDS)).toEqual({ field: "code", message: "Код не меняется" });
+    expect(fieldError("is_active: нельзя", FIELDS)).toEqual({ field: "is_active", message: "нельзя" });
+    // Префикс чужого поля - не префикс этой формы: общий текст, а не поле, которого нет.
+    expect(fieldError("code: Код не меняется", ["email", "manager_id"])).toBeNull();
+  });
+
+  it("FIELD_ERROR_PREFIXES is the guard's list, not a form's: it holds every backend prefix", () => {
+    expect(FIELD_ERROR_PREFIXES).toEqual(expect.arrayContaining(["email", "head_employee_id", "code", "is_active"]));
   });
 
   it("fieldError: a message that starts with an ordinary word is not a field error", () => {
-    expect(fieldError("Пароль: не подходит")).toBeNull();
-    expect(fieldError("weak: не подходит")).toBeNull();
-    expect(fieldError(["email: x"])).toBeNull();
+    expect(fieldError("Пароль: не подходит", FIELDS)).toBeNull();
+    expect(fieldError("weak: не подходит", FIELDS)).toBeNull();
+    expect(fieldError(["code: x"], FIELDS)).toBeNull();
   });
 
   it("fieldError: the message is the whole rest of the string after the first prefix", () => {
-    expect(fieldError("email: адрес занят; manager_id: сотрудник не найден")).toEqual({
+    expect(fieldError("email: адрес занят; manager_id: сотрудник не найден", ["email", "manager_id"])).toEqual({
       field: "email",
       message: "адрес занят; manager_id: сотрудник не найден",
     });

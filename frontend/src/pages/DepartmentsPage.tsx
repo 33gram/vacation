@@ -276,7 +276,7 @@ export function DepartmentsPage() {
       body: departmentUpdateBody(headModalDepartment, { head_employee_id: headEmployeeId }),
     });
     if (error) {
-      const matchedFieldError = fieldError(error.detail);
+      const matchedFieldError = fieldError(error.detail, ["head_employee_id"]);
       if (matchedFieldError) {
         return matchedFieldError;
       }

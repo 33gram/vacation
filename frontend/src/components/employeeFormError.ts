@@ -49,7 +49,7 @@ export function parseEmployeeFormError(
       generalError: validation.generalError,
     };
   }
-  const matchedFieldError = fieldError(detail);
+  const matchedFieldError = fieldError(detail, EMPLOYEE_FORM_FIELDS);
   const violations = violationList(detail);
   return {
     fieldErrors: matchedFieldError ? [matchedFieldError] : [],

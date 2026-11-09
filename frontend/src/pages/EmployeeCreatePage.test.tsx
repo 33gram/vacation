@@ -89,7 +89,7 @@ describe("employee create form (T-M1-19, FR-EMP-001)", () => {
     expect(screen.queryByText(/^email:/)).not.toBeInTheDocument();
   });
 
-  it("a prefix of a field this form does not have goes above the buttons, it does not vanish (PR #189)", async () => {
+  it("a prefix of a field this form does not have: the text goes above the buttons without the prefix (PR #189 check, П-3)", async () => {
     mockBackend(() => ({
       status: 400,
       body: { detail: "code: Код вида отпуска после создания не меняется" },
@@ -101,8 +101,26 @@ describe("employee create form (T-M1-19, FR-EMP-001)", () => {
     await fillRequiredFields(user);
     await user.click(screen.getByRole("button", { name: "Создать" }));
 
-    const text = await screen.findByText("code: Код вида отпуска после создания не меняется");
+    const text = await screen.findByText("Код вида отпуска после создания не меняется");
     expect(text.closest(".ant-alert")).not.toBeNull();
+    expect(screen.queryByText(/code:/)).not.toBeInTheDocument();
+  });
+
+  it("two prefixes of fields this form does not have: both are stripped, both texts are shown (PR #189 check, П-3)", async () => {
+    mockBackend(() => ({
+      status: 400,
+      body: { detail: "is_active: Нельзя деактивировать; balance_tracked: Нельзя снять признак" },
+    }));
+
+    renderApp("/employees/new");
+    const user = userEvent.setup();
+
+    await fillRequiredFields(user);
+    await user.click(screen.getByRole("button", { name: "Создать" }));
+
+    const text = await screen.findByText("Нельзя деактивировать Нельзя снять признак");
+    expect(text.closest(".ant-alert")).not.toBeNull();
+    expect(screen.queryByText(/is_active:|balance_tracked:/)).not.toBeInTheDocument();
   });
 
   it("puts the typed password into initial_password when auth_type is local", async () => {

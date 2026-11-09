@@ -8,6 +8,7 @@ import {
   prefixedMessages,
   validationIssues,
   violationList,
+  withoutFieldPrefixes,
 } from "./errors";
 
 const BODY_FIELD = { loc: ["body", "code"], msg: "Значение не соответствует допустимому формату.", type: "string_pattern_mismatch" };
@@ -142,6 +143,18 @@ describe("prefixedMessages and fieldError (T-M2-27)", () => {
 
   it("FIELD_ERROR_PREFIXES is the guard's list, not a form's: it holds every backend prefix", () => {
     expect(FIELD_ERROR_PREFIXES).toEqual(expect.arrayContaining(["email", "head_employee_id", "code", "is_active"]));
+  });
+
+  it("withoutFieldPrefixes strips every known prefix and joins the texts like layoutValidation does", () => {
+    expect(withoutFieldPrefixes("code: Код не меняется")).toBe("Код не меняется");
+    expect(withoutFieldPrefixes("is_active: нельзя; balance_tracked: тоже нельзя")).toBe("нельзя тоже нельзя");
+    expect(withoutFieldPrefixes("Пароль слишком короткий")).toBe("Пароль слишком короткий");
+    expect(withoutFieldPrefixes("unknown_key: плохо")).toBe("unknown_key: плохо");
+    expect(withoutFieldPrefixes(["code: x"])).toBeNull();
+  });
+
+  it("detailText returns a string detail without its field prefix", () => {
+    expect(detailText("head_employee_id: уволенный сотрудник")).toBe("уволенный сотрудник");
   });
 
   it("fieldError: a message that starts with an ordinary word is not a field error", () => {

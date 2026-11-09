@@ -1,4 +1,4 @@
-import { formValidation, prefixedMessages, stringDetail } from "../api/errors";
+import { formValidation, prefixedMessages, withoutFieldPrefixes } from "../api/errors";
 import type { LeaveTypeFormSubmitError, LeaveTypeFormValues } from "./LeaveTypeForm";
 
 // Имена полей формы вида отсутствия (совпадают с полями тела запроса); `satisfies` ловит опечатку.
@@ -22,7 +22,7 @@ const LEAVE_TYPE_FORM_FIELDS = [
  *   - `400` (`T-M2-27`): текст несёт префикс(ы) `<поле>: ` (`code:` - смена кода; `is_active:` и/или
  *     `balance_tracked:` - защита основного вида, оба через `"; "`, когда нарушены оба) - каждый
  *     текст под своим полем. Поле, которого в форме нет, и текст без префикса - общим текстом над
- *     кнопками. Из ЭТОЙ формы достижим только отказ основного вида: поле кода в правке отключено, и
+ *     кнопками (известные префиксы с него сняты, `withoutFieldPrefixes`). Из ЭТОЙ формы достижим только отказ основного вида: поле кода в правке отключено, и
  *     `code:` закрывают тест разбора и backend-тест, а не тест формы;
  *   - `POST` 409 - один отказ, дубль кода -> под полем «Код» (префикса у него нет, поле по паре
  *     «метод - статус»);
@@ -53,7 +53,7 @@ export function leaveTypeSubmitError(
       generalError: null,
     };
   }
-  const message = stringDetail(detail) ?? fallbackMessage;
+  const message = withoutFieldPrefixes(detail) ?? fallbackMessage;
   if (method === "POST" && status === 409) {
     return { fieldErrors: [{ field: "code", message }], generalError: null };
   }

@@ -4,20 +4,24 @@
 интерфейс кладёт под поле формы по префиксу `"<поле>: "` в тексте отказа (`CLAUDE.md`
 «Соглашения»). Раньше список сверялся с бэкендом разбором дерева `raise` вручную (`T-M1-20`
 review); теперь это делает тест, в обе стороны:
-  - префикс в `app/**` без записи в перечне: отказ молча показывался бы общим текстом;
-  - запись перечня без источника на бэкенде: интерфейс ждёт префикс, которого никто не шлёт.
+  - в `app/**` есть строковый литерал с таким префиксом, а в перечне записи нет;
+  - запись перечня без такого литерала в `app/**`.
 
 Обнаружение - разбор AST (`ast`), не построчный `grep`: строка отказа может стоять на следующей
 строке после `raise` или быть собрана из соседних литералов.
 
-ГРАНИЦЫ (правило 8). Обнаружение видит ТОЛЬКО такие формы:
-  1. строковый литерал в любом месте `app/**` (в том числе константа модуля, аргумент `raise`,
-     `return` помощника вроде `personnel_number_conflict_message`), кроме докстрингов;
-  2. начальный литерал f-строки (`f"department_id: подразделение {id} не найдено"`);
-  3. соседние литералы (`"a: " "b"`) - их склеивает сам разбор Python.
+ЧТО ДОКАЗЫВАЕТ СВЕРКА (правило 8): НАЛИЧИЕ ЛИТЕРАЛА с префиксом в `app/**`, а не то, что он уходит
+в `detail` отказа API. Литерал может стоять в логе, в `Field(description=...)`, в константе без
+читателя - сверка его засчитает так же.
+
+ФАКТИЧЕСКОЕ ПРАВИЛО обнаружения: засчитывается любой строковый литерал в `app/**`, к которому
+подходит `^слово: `, кроме докстрингов модуля, класса и функции. В том числе ЛЮБОЙ сегмент
+f-строки, не только начальный (`ast.walk` отдаёт сегменты `JoinedStr` как отдельные `Constant`).
+Соседние литералы (`"a: " "b"`) склеивает сам разбор Python. Правила проверены на синтетическом
+дереве (`test_the_discovery_rules_on_a_synthetic_tree`), а не только на `app/**`.
 Не видит: префикс, собранный во время выполнения (`f"{key}: {text}"` в `RuleValuesInvalidError` -
 ключи реестра разбирает `rulesErrorsByKey` по ключам из ответа `GET`, не этот перечень),
-конкатенацию `"поле" + ": текст"`, префикс не в начале строки, текст из внешнего файла.
+конкатенацию `"поле" + ": текст"`, префикс не в начале литерала, текст из внешнего файла.
 Строка вида `слово: ` в `app/**`, которая не префикс поля (`_NOT_FIELD_PREFIXES`), называется
 явно с причиной. Что смонтировано в dev-контейнер `backend` - `tests/dev_container.py`:
 `frontend/src` там нет, тест пропускается, пока каталог не скопирован туда вручную, в CI
@@ -74,23 +78,17 @@ def _docstring_nodes(tree: ast.AST) -> set[int]:
 
 
 def _backend_prefixes(root: Path = _APP) -> dict[str, list[str]]:
-    """Префикс -> где найден (файл:строка), по формам 1-3 из докстринга модуля."""
+    """Префикс -> где найден (файл:строка), по правилу из докстринга модуля."""
     found: dict[str, list[str]] = {}
     for path in sorted(root.rglob("*.py")):
         tree = ast.parse(path.read_text("utf-8"))
         docstrings = _docstring_nodes(tree)
         for node in ast.walk(tree):
-            text = None
-            if isinstance(node, ast.Constant) and isinstance(node.value, str):
-                if id(node) not in docstrings:
-                    text = node.value
-            elif (
-                isinstance(node, ast.JoinedStr)
-                and node.values
-                and isinstance(node.values[0], ast.Constant)
-            ):
-                text = node.values[0].value
-            match = _PREFIX.match(text) if text else None
+            if not (isinstance(node, ast.Constant) and isinstance(node.value, str)):
+                continue
+            if id(node) in docstrings:
+                continue
+            match = _PREFIX.match(node.value)
             if match:
                 where = f"{path.relative_to(root.parent)}:{node.lineno}"
                 found.setdefault(match.group(1), []).append(where)
@@ -102,7 +100,7 @@ def _fields_found() -> dict[str, list[str]]:
 
 
 def test_the_discovery_is_not_blind() -> None:
-    # Приметы, которые нашлись бы при любом работающем обнаружении: по одной на каждую форму.
+    # Приметы, которые нашлись бы при любом работающем обнаружении.
     found = _fields_found()
     assert "personnel_number" in found  # литерал в f-строке внутри помощника
     assert "manager_id" in found  # литерал в `raise ValueError(...)`
@@ -113,16 +111,40 @@ def test_the_discovery_is_not_blind() -> None:
 def test_every_backend_prefix_is_in_the_client_list() -> None:
     missing = {k: v for k, v in _fields_found().items() if k not in _client_list()}
     assert not missing, (
-        "префикс размечается на бэкенде, но не внесён в FIELD_ERROR_PREFIXES "
-        f"(ошибка показалась бы общим текстом): {missing}"
+        "в app/** есть литерал с префиксом поля, а в FIELD_ERROR_PREFIXES записи нет "
+        f"(литерал мог не уходить в detail - сверка видит только его наличие): {missing}"
     )
 
 
 def test_every_client_entry_has_a_backend_source() -> None:
     orphans = _client_list() - _fields_found().keys()
-    assert not orphans, f"запись FIELD_ERROR_PREFIXES без источника на бэкенде: {sorted(orphans)}"
+    assert not orphans, (
+        f"запись FIELD_ERROR_PREFIXES без литерала с таким префиксом в app/**: {sorted(orphans)}"
+    )
 
 
 def test_the_not_a_prefix_list_is_not_stale() -> None:
     stale = set(_NOT_FIELD_PREFIXES) - _backend_prefixes().keys()
     assert not stale, f"_NOT_FIELD_PREFIXES называет строку, которой в app/** нет: {sorted(stale)}"
+
+
+def test_the_discovery_rules_on_a_synthetic_tree(tmp_path: Path) -> None:
+    # `_backend_prefixes(root)` читает любое дерево: правила проверяются на нём, потому что в
+    # `app/**` докстрингов вида `слово: ` нет и пустое множество дало бы зелёный тест.
+    package = tmp_path / "app"
+    package.mkdir()
+    (package / "sample.py").write_text(
+        '"""docmod: докстринг модуля - не засчитан."""\n'
+        "\n\n"
+        "class Box:\n"
+        '    """docclass: докстринг класса - не засчитан."""\n'
+        "\n\n"
+        "def make(n: int) -> list[str]:\n"
+        '    """docfunc: докстринг функции - не засчитан."""\n'
+        '    plain = "plainfield: обычный литерал"\n'
+        '    middle = f"{n}midfield: нестартовый сегмент f-строки"\n'
+        '    glued = "gluedfield" + ": конкатенация"\n'
+        "    return [plain, middle, glued]\n",
+        "utf-8",
+    )
+    assert set(_backend_prefixes(package)) == {"plainfield", "midfield"}

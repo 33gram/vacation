@@ -105,11 +105,21 @@ async def test_fr_bal_002_opening_my_balance_gives_the_main_type_with_its_histor
     assert Decimal(main["total_balance"]) == Decimal(main["balance"])
     assert main["unit"] == "calendar_days"
     assert main["working_year_start"] == HIRED.isoformat()
-    # T-M2-21: по строке на шаг накопления (200 дней - шесть-семь шагов), не одна на год
-    assert len(main["history"]) == len(_step_dates(HIRED, TODAY)) > 1
-    assert {e["entry_type"] for e in main["history"]} == {ACCRUAL}
-    assert {e["actor_name"] for e in main["history"]} == {"Система"}  # начисляет система
-    assert "actor_account_id" not in main["history"][0]  # внутренний идентификатор не отдаётся
+    # T-M2-30: начислений в истории нет - они свёрнуты сервером по рабочему году
+    # (в журнале по строке на шаг, T-M2-21: 200 дней - шесть-семь шагов).
+    assert main["history"] == []
+    assert by_code["time_off"]["accrual_years"] == []  # нет событий - нет и сводки
+    (year,) = main["accrual_years"]
+    steps = _step_dates(HIRED, TODAY)
+    assert len(steps) > 1
+    assert year["working_year_start"] == HIRED.isoformat()
+    assert year["last_accrual_date"] == steps[-1].isoformat()  # дата последнего начисления года
+    # Итог года - число сервера: он же остаток (событий других типов нет).
+    assert Decimal(year["accrued"]) == Decimal(main["balance"])
+    # Сводка - агрегат, а не событие: ни идентификатора, ни причины, ни автора.
+    assert set(year) == {
+        "working_year_start", "working_year_end", "accrued", "last_accrual_date",
+    }  # fmt: skip
     assert body["as_of"] == TODAY.isoformat()
 
 
@@ -251,12 +261,15 @@ async def test_fr_bal_002_the_history_is_cut_at_the_requested_date_and_keeps_the
     )
 
     main = earlier.json()["balances"][0]
-    types = {e["entry_type"] for e in main["history"]}
-    assert types == {ACCRUAL}  # начисления за завершённый год остались, корректировки нет
+    assert main["history"] == []  # корректировки (позже даты) нет, начисления - в сводке
+    # Сводка отсечена датой: только завершённый год, остальные шаги позже `as_of`.
+    (year,) = main["accrual_years"]
+    assert year["working_year_start"] == hire.isoformat()
     # Ожидание - из `accrual_steps`: равенство этой арифметики с `compute_accrual` закреплено
     # перебором дней (`test_accrual_arithmetic.py`, `test_accrual_step_dates.py`). Здесь
-    # проверяется, что эндпоинт отдаёт ИМЕННО её даты, все двенадцать точно; верность самих дат
-    # этот тест не проверяет - при ошибке в `accrual_steps` он остался бы зелёным.
+    # проверяется, что СЕРВИС записал ИМЕННО её даты, все двенадцать точно (эндпоинт шаги
+    # больше не отдаёт, T-M2-30, поэтому читаем журнал); верность самих дат этот тест не
+    # проверяет - при ошибке в `accrual_steps` он остался бы зелёным.
     expected = [
         step.date.isoformat()
         for step in accrual_steps(
@@ -269,7 +282,14 @@ async def test_fr_bal_002_the_history_is_cut_at_the_requested_date_and_keeps_the
         )
     ]
     assert len(expected) == 12
-    assert sorted(e["entry_date"] for e in main["history"]) == expected
+    written = [
+        e.entry_date.isoformat()
+        for e in await _events(db_session, employee.id)
+        if e.entry_type == ACCRUAL and e.entry_date <= first_year_last_day
+    ]
+    assert sorted(written) == expected
+    assert year["last_accrual_date"] == expected[-1]
+    assert Decimal(year["accrued"]) == Decimal("28.00")  # норма 28: сумма шагов года
 
 
 # --- ленивое начисление (T-M2-19) ----------------------------------------------
@@ -593,9 +613,11 @@ async def test_the_total_balance_sums_every_working_year(db_session, api_client)
     response = await api_client.get(_url(employee.id), headers=bearer_header(hr))
 
     main = next(b for b in response.json()["balances"] if b["code"] == "annual_paid")
-    years = {e["working_year_start"] for e in main["history"]}
-    assert len(years) == 2
+    years = [y["working_year_start"] for y in main["accrual_years"]]
+    assert len(years) == 2 and years == sorted(years)
     assert Decimal(main["total_balance"]) > Decimal(main["balance"])
+    accrued = sum(Decimal(y["accrued"]) for y in main["accrual_years"])
+    assert Decimal(main["total_balance"]) == accrued
 
 
 # --- уволенный, неактивный вид, границы корректировки ---------------------------

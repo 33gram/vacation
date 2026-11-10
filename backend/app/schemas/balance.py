@@ -35,6 +35,19 @@ class BalanceEntryOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class AccrualYearOut(BaseModel):
+    """Начисления одного рабочего года, свёрнутые сервером (`T-M2-30`, `FR-BAL-002`):
+    сумма событий `accrual` года на дату запроса. Это агрегат, а не событие: у него нет
+    ни `id`, ни причины, ни автора, и в `history` он не входит. Клиент итог не считает,
+    а показывает как пришёл. Год без событий `accrual` (например, только начальный
+    остаток) в списке отсутствует."""
+
+    working_year_start: datetime.date
+    working_year_end: datetime.date
+    accrued: Decimal  # сумма `accrual` года на дату запроса (без пересчётов и корректировок)
+    last_accrual_date: datetime.date  # дата последнего начисления года, не позже даты запроса
+
+
 class LeaveTypeBalanceOut(BaseModel):
     """Остаток по одному виду (`FR-BAL-002`)."""
 
@@ -47,7 +60,9 @@ class LeaveTypeBalanceOut(BaseModel):
     working_year_end: datetime.date | None
     balance: Decimal  # остаток за этот рабочий год на дату запроса
     total_balance: Decimal  # сумма по ВСЕМ рабочим годам на дату запроса
+    # События БЕЗ начислений, по возрастанию даты; начисления - в `accrual_years` (`T-M2-30`).
     history: list[BalanceEntryOut]
+    accrual_years: list[AccrualYearOut]  # по возрастанию начала года
 
 
 class EmployeeBalancesOut(BaseModel):

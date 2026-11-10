@@ -42,6 +42,7 @@ from app.modules.balances.service import (
     BalanceEntryError,
     accrue_before_read,
     adjust_balance,
+    get_accrual_years,
     get_balance,
     get_total_balance,
     get_working_year,
@@ -50,6 +51,7 @@ from app.modules.balances.service import (
 )
 from app.modules.employees import employee_service
 from app.schemas.balance import (
+    AccrualYearOut,
     BalanceAdjustOut,
     BalanceAdjustRequest,
     BalanceEntryOut,
@@ -128,7 +130,10 @@ async def get_employee_balances(
         year_start = year_end = None
 
     histories = {
-        leave_type.id: await list_entries(session, employee_id, leave_type.id, as_of=on_date)
+        # Начисления - в `accrual_years`, свёрнутыми (T-M2-30), в историю не входят.
+        leave_type.id: await list_entries(
+            session, employee_id, leave_type.id, as_of=on_date, include_accruals=False
+        )
         for leave_type in leave_types
     }
     author_ids = {
@@ -173,6 +178,17 @@ async def get_employee_balances(
                         else names.get(e.actor_account_id, SYSTEM_AUTHOR_LABEL),
                     )
                     for e in histories[leave_type.id]
+                ],
+                accrual_years=[
+                    AccrualYearOut(
+                        working_year_start=y.working_year_start,
+                        working_year_end=y.working_year_end,
+                        accrued=y.accrued,
+                        last_accrual_date=y.last_accrual_date,
+                    )
+                    for y in await get_accrual_years(
+                        session, employee_id, leave_type.id, as_of=on_date
+                    )
                 ],
             )
         )

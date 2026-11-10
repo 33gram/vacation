@@ -4,10 +4,16 @@ from __future__ import annotations
 
 import datetime
 from decimal import Decimal
+from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
 from app.core.time_utils import utcnow
+from app.models.leave_balance_entry import LEAVE_BALANCE_ENTRY_TYPES
+
+# Выведен из того же кортежа, что и `CheckConstraint` таблицы: источник значений один, схема
+# OpenAPI получает перечисление (TS-клиент - union). Приём как в `schemas/leave_type.py`.
+EntryType = Literal[*LEAVE_BALANCE_ENTRY_TYPES]
 
 
 class BalanceEntryOut(BaseModel):
@@ -17,7 +23,7 @@ class BalanceEntryOut(BaseModel):
     «Пользователь системы»), логин не показывается."""
 
     id: int
-    entry_type: str
+    entry_type: EntryType
     quantity: Decimal
     entry_date: datetime.date
     working_year_start: datetime.date

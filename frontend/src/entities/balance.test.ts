@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { entryTypeLabel, formatAmount, formatQuantity, unitLabel } from "./balance";
+import { type EntryType, entryTypeLabel, formatAmount, formatQuantity, unitLabel } from "./balance";
 
 describe("balance display helpers (FR-BAL-002)", () => {
   it("formats the server's decimal string without any arithmetic", () => {
@@ -29,6 +29,8 @@ describe("balance display helpers (FR-BAL-002)", () => {
 
   it("shows an unknown entry type as it came", () => {
     expect(entryTypeLabel("accrual")).toBe("Начисление");
-    expect(entryTypeLabel("something_new")).toBe("something_new");
+    // Значение вне союза (рассинхрон версий бэкенда и фронтенда) в тип не вписывается: `as` нужен
+    // ровно здесь, чтобы смоделировать ответ в обход схемы.
+    expect(entryTypeLabel("something_new" as EntryType)).toBe("something_new");
   });
 });

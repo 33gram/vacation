@@ -6,8 +6,9 @@
 проверяет их.
 
   1. К журналу обращается ровно тот набор файлов, что назван в реестре
-     `_JOURNAL_FILES` (у каждой записи - причина): модель, её реэкспорт и
-     сервис `modules/balances/service.py`. Любой другой модуль (отчёт,
+     `_JOURNAL_FILES` (у каждой записи - причина): модель, её реэкспорт,
+     схема ответа (только кортеж типов событий) и сервис
+     `modules/balances/service.py`. Любой другой модуль (отчёт,
      начисление, эндпоинт) со своей суммой или вставкой краснит сторожа -
      остаток и запись событий проходят через функции сервиса.
   2. В КАЖДОМ из этих файлов, включая модель, нет путей изменения и
@@ -41,6 +42,10 @@ _APP_ROOT = Path(__file__).resolve().parents[3] / "app"
 _JOURNAL_FILES = {
     "models/leave_balance_entry.py": "объявляет таблицу и модель (схема, не код записи)",
     "models/__init__.py": "реэкспорт модели для Alembic и тестов, обращений к данным нет",
+    "schemas/balance.py": (
+        "берёт кортеж типов событий `LEAVE_BALANCE_ENTRY_TYPES` для `Literal` схемы ответа "
+        "(T-M2-25); данных журнала не читает и не пишет"
+    ),
     "modules/balances/service.py": "единственное место записи событий и вычисления остатка",
 }
 _MODEL_NAME = "LeaveBalanceEntry"
@@ -74,6 +79,35 @@ def touches_journal(source: str) -> bool:
             if node.module == _MODEL_MODULE or any(a.name == _MODEL_NAME for a in node.names):
                 return True
         if isinstance(node, ast.Import) and any(a.name == _MODEL_MODULE for a in node.names):
+            return True
+        if (
+            isinstance(node, ast.Constant)
+            and isinstance(node.value, str)
+            and id(node) not in skip
+            and _TABLE_NAME in node.value
+        ):
+            return True
+    return False
+
+
+def names_the_model_or_table(source: str) -> bool:
+    """Ссылается ли код на САМУ модель журнала или таблицу, а не только на модуль модели
+    (импорт ради соседнего имени вроде кортежа типов). Докстринги не считаются.
+
+    ГРАНИЦА (правило 8): видит СТАТИЧЕСКИЕ ссылки на имя модели (`Name`, `Attribute`,
+    `ImportFrom`) и строковые литералы, содержащие имя таблицы. Не видит ссылку через строку с
+    именем МОДЕЛИ (`getattr(module, "LeaveBalanceEntry")`, `importlib`, строковая аннотация).
+    `from ... import *` детектор НЕ обходит: использование имени после него остаётся узлом
+    `Name` (проверено прогоном, `test_naming_the_model_after_a_star_import_is_found`); но
+    `import *` без последующего использования имени не засчитывается."""
+    tree = ast.parse(source)
+    skip = _docstrings(tree)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and node.id == _MODEL_NAME:
+            return True
+        if isinstance(node, ast.Attribute) and node.attr == _MODEL_NAME:
+            return True
+        if isinstance(node, ast.ImportFrom) and any(a.name == _MODEL_NAME for a in node.names):
             return True
         if (
             isinstance(node, ast.Constant)
@@ -130,6 +164,49 @@ def _journal_files() -> dict[str, str]:
 
 def test_only_the_balances_service_reaches_the_journal() -> None:
     assert set(_journal_files()) == set(_JOURNAL_FILES)
+
+
+# Файлы реестра, которым разрешено ТОЛЬКО ссылаться на модуль модели (ради соседнего имени,
+# не самой модели): имя модели и таблицы в них запрещены, иначе запись реестра «данных журнала
+# не читает» была бы голым обещанием.
+_MODULE_REFERENCE_ONLY = ("schemas/balance.py",)
+
+
+def test_module_reference_only_files_import_the_module_but_never_name_the_model() -> None:
+    for name in _MODULE_REFERENCE_ONLY:
+        assert name in _JOURNAL_FILES, name
+        source = (_APP_ROOT / name).read_text(encoding="utf-8")
+        assert _MODEL_MODULE in source, f"{name} не ссылается на модуль модели"
+        assert not names_the_model_or_table(source), (
+            f"{name} назван в реестре как «только модуль модели», но ссылается на "
+            f"{_MODEL_NAME} или таблицу {_TABLE_NAME}: читать журнал можно только "
+            "через modules/balances/service.py"
+        )
+
+
+def test_naming_the_model_is_found_importing_only_the_tuple_is_not() -> None:
+    tuple_only = "from app.models.leave_balance_entry import LEAVE_BALANCE_ENTRY_TYPES\n"
+    assert not names_the_model_or_table(tuple_only)
+    assert names_the_model_or_table(
+        "from app.models.leave_balance_entry import LeaveBalanceEntry\n"
+    )
+    assert names_the_model_or_table(
+        "import app.models.leave_balance_entry as m\nx = m.LeaveBalanceEntry\n"
+    )
+    assert names_the_model_or_table("select(LeaveBalanceEntry)\n")
+    assert names_the_model_or_table('text("SELECT 1 FROM leave_balance_entries")\n')
+
+
+def test_a_docstring_with_the_table_name_is_not_a_reference_but_the_same_string_is() -> None:
+    in_docstring = '"""Читает leave_balance_entries."""\nx = 1\n'
+    outside = 'x = "leave_balance_entries"\n'
+    assert not names_the_model_or_table(in_docstring)
+    assert names_the_model_or_table(outside)
+
+
+def test_naming_the_model_after_a_star_import_is_found() -> None:
+    source = "from app.models.leave_balance_entry import *\nq = select(LeaveBalanceEntry)\n"
+    assert names_the_model_or_table(source)
 
 
 def test_files_that_reach_the_journal_have_no_update_or_delete_paths() -> None:

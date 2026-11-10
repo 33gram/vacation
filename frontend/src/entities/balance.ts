@@ -17,9 +17,13 @@ export function unitLabel(unit: string): string {
   return UNIT_LABELS[unit] ?? unit;
 }
 
-// Схема отдаёт `entry_type` голой строкой (перечисления в OpenAPI нет), значения - тип
-// событий журнала (`models/leave_balance_entry.py`). Неизвестный тип показывается как пришёл.
-const ENTRY_TYPE_LABELS: Record<string, string> = {
+export type EntryType = BalanceEntry["entry_type"];
+
+// Подписи типов событий журнала (`models/leave_balance_entry.py`). Схема отдаёт `entry_type`
+// перечислением (`T-M2-25`), поэтому `Record<EntryType, string>` исчерпывающий: новый тип на
+// бэкенде после перегенерации клиента останавливает `tsc` ("Property ... is missing"), подпись
+// для несуществующего типа - тоже ("Object literal may only specify known properties").
+const ENTRY_TYPE_LABELS: Record<EntryType, string> = {
   accrual: "Начисление",
   usage: "Списание",
   usage_reversal: "Возврат при отмене",
@@ -29,7 +33,12 @@ const ENTRY_TYPE_LABELS: Record<string, string> = {
   termination_closeout: "Фиксация при увольнении",
 };
 
-export function entryTypeLabel(entryType: string): string {
+// Запасное `?? entryType` ОСТАВЛЕНО сознательно. Тип проверяет компилятор, а не ответ: клиент
+// не проверяет тело ответа во время выполнения, и более новый бэкенд при выкатке (или кэш
+// старой сборки фронтенда) пришлёт значение вне союза. Показать его как пришло лучше пустой
+// ячейки. Это защита от рассинхрона версий, а не способ пропускать новые типы: новый тип в
+// схеме без подписи сюда не доедет - сборка не пройдёт.
+export function entryTypeLabel(entryType: EntryType): string {
   return ENTRY_TYPE_LABELS[entryType] ?? entryType;
 }
 

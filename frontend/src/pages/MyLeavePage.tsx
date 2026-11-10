@@ -10,6 +10,7 @@ import {
   entryTypeLabel,
   formatAmount,
   type BalanceEntry,
+  type EntryType,
   type LeaveTypeBalance,
 } from "../entities/balance";
 import { BalancesLoadError, useMyBalancesQuery } from "../entities/useMyBalancesQuery";
@@ -20,7 +21,7 @@ const HISTORY_PAGE_SIZE = 10;
 function historyColumns(unit: string): ColumnsType<BalanceEntry> {
   return [
     { title: "Дата", dataIndex: "entry_date", render: (value: string) => formatDate(value) },
-    { title: "Тип", dataIndex: "entry_type", render: (value: string) => entryTypeLabel(value) },
+    { title: "Тип", dataIndex: "entry_type", render: (value: EntryType) => entryTypeLabel(value) },
     {
       title: "Количество",
       dataIndex: "quantity",

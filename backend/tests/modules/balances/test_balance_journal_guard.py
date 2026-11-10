@@ -90,6 +90,28 @@ def touches_journal(source: str) -> bool:
     return False
 
 
+def names_the_model_or_table(source: str) -> bool:
+    """Ссылается ли код на САМУ модель журнала или таблицу, а не только на модуль модели
+    (импорт ради соседнего имени вроде кортежа типов). Докстринги не считаются."""
+    tree = ast.parse(source)
+    skip = _docstrings(tree)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and node.id == _MODEL_NAME:
+            return True
+        if isinstance(node, ast.Attribute) and node.attr == _MODEL_NAME:
+            return True
+        if isinstance(node, ast.ImportFrom) and any(a.name == _MODEL_NAME for a in node.names):
+            return True
+        if (
+            isinstance(node, ast.Constant)
+            and isinstance(node.value, str)
+            and id(node) not in skip
+            and _TABLE_NAME in node.value
+        ):
+            return True
+    return False
+
+
 def find_mutations(source: str, filename: str) -> list[str]:
     tree = ast.parse(source)
     skip = _docstrings(tree)
@@ -135,6 +157,37 @@ def _journal_files() -> dict[str, str]:
 
 def test_only_the_balances_service_reaches_the_journal() -> None:
     assert set(_journal_files()) == set(_JOURNAL_FILES)
+
+
+# Файлы реестра, которым разрешено ТОЛЬКО ссылаться на модуль модели (ради соседнего имени,
+# не самой модели): имя модели и таблицы в них запрещены, иначе запись реестра «данных журнала
+# не читает» была бы голым обещанием.
+_MODULE_REFERENCE_ONLY = ("schemas/balance.py",)
+
+
+def test_module_reference_only_files_import_the_module_but_never_name_the_model() -> None:
+    for name in _MODULE_REFERENCE_ONLY:
+        assert name in _JOURNAL_FILES, name
+        source = (_APP_ROOT / name).read_text(encoding="utf-8")
+        assert _MODEL_MODULE in source, f"{name} не ссылается на модуль модели"
+        assert not names_the_model_or_table(source), (
+            f"{name} назван в реестре как «только модуль модели», но ссылается на "
+            f"{_MODEL_NAME} или таблицу {_TABLE_NAME}: читать журнал можно только "
+            "через modules/balances/service.py"
+        )
+
+
+def test_naming_the_model_is_found_importing_only_the_tuple_is_not() -> None:
+    tuple_only = "from app.models.leave_balance_entry import LEAVE_BALANCE_ENTRY_TYPES\n"
+    assert not names_the_model_or_table(tuple_only)
+    assert names_the_model_or_table(
+        "from app.models.leave_balance_entry import LeaveBalanceEntry\n"
+    )
+    assert names_the_model_or_table(
+        "import app.models.leave_balance_entry as m\nx = m.LeaveBalanceEntry\n"
+    )
+    assert names_the_model_or_table("select(LeaveBalanceEntry)\n")
+    assert names_the_model_or_table('text("SELECT 1 FROM leave_balance_entries")\n')
 
 
 def test_files_that_reach_the_journal_have_no_update_or_delete_paths() -> None:

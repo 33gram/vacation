@@ -9,6 +9,7 @@ type LdapSettingsOut = components["schemas"]["LdapSettingsOut"];
 type EmployeeBalancesOut = components["schemas"]["EmployeeBalancesOut"];
 type LeaveTypeBalanceOut = components["schemas"]["LeaveTypeBalanceOut"];
 type BalanceEntryOut = components["schemas"]["BalanceEntryOut"];
+type AccrualYearOut = components["schemas"]["AccrualYearOut"];
 
 export function meResponse(overrides: Partial<MeResponse> = {}): MeResponse {
   return {
@@ -92,6 +93,16 @@ export function balanceEntryResponse(overrides: Partial<BalanceEntryOut> = {}): 
   };
 }
 
+export function accrualYearResponse(overrides: Partial<AccrualYearOut> = {}): AccrualYearOut {
+  return {
+    working_year_start: "2026-03-10",
+    working_year_end: "2027-03-10",
+    accrued: "18.67",
+    last_accrual_date: "2026-10-24",
+    ...overrides,
+  };
+}
+
 export function leaveTypeBalanceResponse(
   overrides: Partial<LeaveTypeBalanceOut> = {},
 ): LeaveTypeBalanceOut {
@@ -104,7 +115,8 @@ export function leaveTypeBalanceResponse(
     working_year_end: "2027-03-09",
     balance: "18.67",
     total_balance: "18.67",
-    history: [balanceEntryResponse()],
+    history: [balanceEntryResponse({ entry_type: "manual_adjustment" })],
+    accrual_years: [],
     ...overrides,
   };
 }

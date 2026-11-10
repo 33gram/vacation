@@ -7,6 +7,7 @@ import { setAccessToken } from "../app/auth";
 import { SessionProvider } from "../app/SessionContext";
 import { setFetchHandler } from "../test-utils/fetchMock";
 import {
+  accrualYearResponse,
   balanceEntryResponse,
   balancesResponse,
   leaveTypeBalanceResponse,
@@ -98,13 +99,6 @@ describe("my leave (T-M2-13, FR-BAL-002)", () => {
             total_balance: "46.50",
             history: [
               balanceEntryResponse({
-                id: 1,
-                entry_type: "accrual",
-                quantity: "28.00",
-                entry_date: "2026-03-10",
-                actor_name: "Система",
-              }),
-              balanceEntryResponse({
                 id: 2,
                 entry_type: "manual_adjustment",
                 quantity: "-3.50",
@@ -113,6 +107,7 @@ describe("my leave (T-M2-13, FR-BAL-002)", () => {
                 actor_name: "Иванова Анна",
               }),
             ],
+            accrual_years: [accrualYearResponse({ accrued: "28.00", last_accrual_date: "2026-03-10" })],
           }),
         ]),
       }),
@@ -135,7 +130,131 @@ describe("my leave (T-M2-13, FR-BAL-002)", () => {
     expect(within(adjustment!).getByText("Иванова Анна")).toBeInTheDocument();
     const accrual = rows.find((row) => within(row).queryByText("Начисление"));
     expect(within(accrual!).getByText("+28 кал. дн.")).toBeInTheDocument();
-    expect(within(accrual!).getByText("Система")).toBeInTheDocument();
+  });
+
+  describe("history: newest first, accruals folded per working year (T-M2-30, ui.md §6)", () => {
+    function history(balance: Parameters<typeof leaveTypeBalanceResponse>[0]) {
+      mockBackend({ role: "employee" }, () => ({
+        status: 200,
+        body: balancesResponse([leaveTypeBalanceResponse(balance)]),
+      }));
+    }
+
+    function bodyRows(card: HTMLElement) {
+      // Строки данных таблицы (без заголовка и служебной строки замера антда).
+      return Array.from(card.querySelectorAll<HTMLElement>("tbody .ant-table-row"));
+    }
+
+    it("shows the accruals of a working year as ONE row with the server's sum and the last accrual date", async () => {
+      history({
+        history: [],
+        accrual_years: [
+          accrualYearResponse({
+            working_year_start: "2026-03-10",
+            working_year_end: "2027-03-10",
+            accrued: "18.67",
+            last_accrual_date: "2026-10-24",
+          }),
+        ],
+      });
+
+      renderApp("/my-leave");
+
+      const card = await screen.findByLabelText("Ежегодный оплачиваемый отпуск");
+      const rows = bodyRows(card);
+      expect(rows).toHaveLength(1);
+      expect(within(rows[0]).getByText("24.10.2026")).toBeInTheDocument(); // дата - из ответа
+      expect(within(rows[0]).getByText("Начисление")).toBeInTheDocument();
+      expect(within(rows[0]).getByText("+18,67 кал. дн.")).toBeInTheDocument();
+      expect(
+        within(rows[0]).getByText("Начислено за рабочий год 10.03.2026 — 10.03.2027"),
+      ).toBeInTheDocument();
+    });
+
+    it("the first row is the NEWEST event, whatever the order the server sent", async () => {
+      history({
+        history: [
+          balanceEntryResponse({ id: 1, entry_type: "initial_import", entry_date: "2025-04-01" }),
+          balanceEntryResponse({ id: 2, entry_type: "manual_adjustment", entry_date: "2026-05-02" }),
+          balanceEntryResponse({ id: 3, entry_type: "recalculation", entry_date: "2026-08-01" }),
+        ],
+        accrual_years: [
+          accrualYearResponse({ working_year_start: "2025-03-10", last_accrual_date: "2026-02-10" }),
+          accrualYearResponse({ working_year_start: "2026-03-10", last_accrual_date: "2026-10-24" }),
+        ],
+      });
+
+      renderApp("/my-leave");
+
+      const card = await screen.findByLabelText("Ежегодный оплачиваемый отпуск");
+      const dates = bodyRows(card).map((row) => row.querySelector("td")?.textContent);
+      expect(dates).toEqual(["24.10.2026", "01.08.2026", "02.05.2026", "10.02.2026", "01.04.2025"]);
+    });
+
+    it("keeps the other event types as their own rows with the reason and the author", async () => {
+      history({
+        history: [
+          balanceEntryResponse({
+            id: 4,
+            entry_type: "recalculation",
+            quantity: "-10.00",
+            entry_date: "2026-08-01",
+            reason: "Пересчёт при изменении даты приёма",
+            actor_name: "Иванова Анна",
+          }),
+        ],
+        accrual_years: [accrualYearResponse({ last_accrual_date: "2026-10-24" })],
+      });
+
+      renderApp("/my-leave");
+
+      const card = await screen.findByLabelText("Ежегодный оплачиваемый отпуск");
+      const rows = bodyRows(card);
+      expect(rows).toHaveLength(2);
+      expect(within(rows[1]).getByText("Пересчёт")).toBeInTheDocument();
+      expect(within(rows[1]).getByText("-10 кал. дн.")).toBeInTheDocument();
+      expect(within(rows[1]).getByText("Пересчёт при изменении даты приёма")).toBeInTheDocument();
+      expect(within(rows[1]).getByText("Иванова Анна")).toBeInTheDocument();
+    });
+
+    it("an empty history says so", async () => {
+      history({ history: [], accrual_years: [] });
+
+      renderApp("/my-leave");
+
+      const card = await screen.findByLabelText("Ежегодный оплачиваемый отпуск");
+      expect(within(card).getByText("Событий пока нет")).toBeInTheDocument();
+    });
+
+    it("does not add anything up: the folded sum and the totals are shown as the server sent them", async () => {
+      // Числа нарочно НЕ сходятся: два года по 28 и 18,67, а итог сервера - 99. Клиент,
+      // сложивший годы, показал бы 46,67; показано должно быть присланное.
+      history({
+        balance: "18.67",
+        total_balance: "99.00",
+        history: [],
+        accrual_years: [
+          accrualYearResponse({
+            working_year_start: "2025-03-10",
+            accrued: "28.00",
+            last_accrual_date: "2026-02-10",
+          }),
+          accrualYearResponse({
+            working_year_start: "2026-03-10",
+            accrued: "18.67",
+            last_accrual_date: "2026-10-24",
+          }),
+        ],
+      });
+
+      renderApp("/my-leave");
+
+      const card = await screen.findByLabelText("Ежегодный оплачиваемый отпуск");
+      expect(within(card).getByText("99 кал. дн.")).toBeInTheDocument();
+      expect(within(card).getByText("+28 кал. дн.")).toBeInTheDocument();
+      expect(within(card).getByText("+18,67 кал. дн.")).toBeInTheDocument();
+      expect(within(card).queryByText(/46,67/)).not.toBeInTheDocument();
+    });
   });
 
   it("takes the unit of each leave type from the response, never a hardcoded word", async () => {
@@ -156,7 +275,8 @@ describe("my leave (T-M2-13, FR-BAL-002)", () => {
           unit: "hours",
           balance: "16.00",
           total_balance: "16.00",
-          history: [balanceEntryResponse({ id: 5, quantity: "8.00", entry_type: "accrual" })],
+          history: [],
+          accrual_years: [accrualYearResponse({ accrued: "8.00" })],
         }),
         leaveTypeBalanceResponse({
           leave_type_id: 3,

@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import { daysInYear, isWeekendDate } from "../entities/productionCalendar";
 import { setFetchHandler } from "../test-utils/fetchMock";
 import {
+  accrualYearResponse,
   balanceEntryResponse,
   balancesResponse,
   departmentResponse,
@@ -202,7 +203,8 @@ describe("the calendar skeleton (the number is known before loading: one block p
 
 describe("the \"My leave\" skeleton: a block plus the history table", () => {
   it("for one leave type, matches the block and the full page of history the page draws", async () => {
-    const history = Array.from({ length: 12 }, (_, index) =>
+    // T-M2-30: строки таблицы - события истории И свёрнутые начисления года; здесь их 11 + 1.
+    const history = Array.from({ length: 11 }, (_, index) =>
       balanceEntryResponse({ id: index + 1, entry_date: "2026-03-10", quantity: "1.00" }),
     );
     const gate = deferred();
@@ -217,7 +219,9 @@ describe("the \"My leave\" skeleton: a block plus the history table", () => {
       if (method === "GET" && pathname === "/api/employees/7/balances") {
         return gate.promise.then(() => ({
           status: 200,
-          body: balancesResponse([leaveTypeBalanceResponse({ history })]),
+          body: balancesResponse([
+            leaveTypeBalanceResponse({ history, accrual_years: [accrualYearResponse()] }),
+          ]),
         }));
       }
       return null;
@@ -234,7 +238,8 @@ describe("the \"My leave\" skeleton: a block plus the history table", () => {
       gate.resolve();
     });
     await screen.findByLabelText("Ежегодный оплачиваемый отпуск");
-    // Один вид: один блок, 12 записей истории, страница истории - 10 строк, 5 колонок.
+    // Один вид: один блок, 12 строк истории (11 событий и свёрнутые начисления), страница
+    // истории - 10 строк, 5 колонок.
     expect(skeletonBlocks).toBe(countIn(container, ".ant-card"));
     expect(skeletonRows.length).toBe(countIn(container, "tbody .ant-table-row"));
     expect(skeletonColumns).toBe(countIn(container, "thead th"));

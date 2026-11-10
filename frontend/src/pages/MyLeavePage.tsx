@@ -9,8 +9,9 @@ import { useSession } from "../app/useSession";
 import {
   entryTypeLabel,
   formatAmount,
-  type BalanceEntry,
+  historyRows,
   type EntryType,
+  type HistoryRow,
   type LeaveTypeBalance,
   type Unit,
 } from "../entities/balance";
@@ -19,7 +20,7 @@ import { BalancesLoadError, useMyBalancesQuery } from "../entities/useMyBalances
 // Размер страницы истории - ОДНО число и для таблицы, и для каркаса загрузки (`ui.md` §4).
 const HISTORY_PAGE_SIZE = 10;
 
-function historyColumns(unit: Unit): ColumnsType<BalanceEntry> {
+function historyColumns(unit: Unit): ColumnsType<HistoryRow> {
   return [
     { title: "Дата", dataIndex: "entry_date", render: (value: string) => formatDate(value) },
     { title: "Тип", dataIndex: "entry_type", render: (value: EntryType) => entryTypeLabel(value) },
@@ -30,7 +31,7 @@ function historyColumns(unit: Unit): ColumnsType<BalanceEntry> {
       render: (value: string) => formatAmount(value, unit, { signed: true }),
     },
     { title: "Причина", dataIndex: "reason", render: (value: string | null) => value ?? "—" },
-    { title: "Кто", dataIndex: "actor_name" },
+    { title: "Кто", dataIndex: "actor_name", render: (value: string | null) => value ?? "—" },
   ];
 }
 
@@ -40,7 +41,8 @@ function historyColumns(unit: Unit): ColumnsType<BalanceEntry> {
  * нет), не форма и не мастер.
  *
  * Единственный источник - `GET /api/employees/{id}/balances`; на фронтенде НЕТ расчёта (ни
- * сумм, ни разниц): показывается то, что посчитал сервер. Единица - из ответа, подпись одна
+ * сумм, ни разниц): показывается то, что посчитал сервер. История - свежие сверху, начисления
+ * рабочего года одной строкой с итогом сервера (`T-M2-30`, `ui.md` §6, `historyRows`). Единица - из ответа, подпись одна
  * на всё приложение (`entities/balance.ts`). Выбора даты нет: основание «остаток на дату внутри
  * года занижен» снято `T-M2-21`, элемент вынесен в `T-M2-31`. */
 export function MyLeavePage() {
@@ -61,7 +63,9 @@ export function MyLeavePage() {
     // одного вида (`app/loadingShapeParity.test.tsx`). ОЦЕНКА: число блоков (видов отпуска)
     // приходит с ответом - основной вид есть всегда (защищён, `T-M2-10`), остальные добавятся
     // после загрузки; число строк истории тоже неизвестно - взята полная страница, у короткой
-    // истории экран после загрузки будет ниже.
+    // истории экран после загрузки будет ниже. После свёртки начислений (`T-M2-30`) история
+    // обычно короче (строка на рабочий год плюс редкие события), и расхождение чаще, чем
+    // прежде; оценка («полная страница») не менялась.
     return (
       <>
         <LoadingState shape={{ kind: "card", blocks: 1 }} />
@@ -138,10 +142,10 @@ function LeaveTypeCard({ balance }: { balance: LeaveTypeBalance }) {
         </Descriptions.Item>
       </Descriptions>
       <Typography.Title level={5}>История</Typography.Title>
-      <Table<BalanceEntry>
+      <Table<HistoryRow>
         size="small"
-        rowKey="id"
-        dataSource={balance.history}
+        rowKey="key"
+        dataSource={historyRows(balance)}
         pagination={{ pageSize: HISTORY_PAGE_SIZE, hideOnSinglePage: true }}
         locale={{ emptyText: "Событий пока нет" }}
         columns={historyColumns(balance.unit)}

@@ -253,10 +253,23 @@ async def test_fr_bal_002_the_history_is_cut_at_the_requested_date_and_keeps_the
     main = earlier.json()["balances"][0]
     types = {e["entry_type"] for e in main["history"]}
     assert types == {ACCRUAL}  # начисления за завершённый год остались, корректировки нет
-    # Двенадцать шагов первого года; последний - в пределах года, не позже его последнего дня.
-    dates = sorted(e["entry_date"] for e in main["history"])
-    assert len(dates) == 12
-    assert dates[-1] <= first_year_last_day.isoformat()
+    # Ожидание - из `accrual_steps`: равенство этой арифметики с `compute_accrual` закреплено
+    # перебором дней (`test_accrual_arithmetic.py`, `test_accrual_step_dates.py`). Здесь
+    # проверяется, что эндпоинт отдаёт ИМЕННО её даты, все двенадцать точно; верность самих дат
+    # этот тест не проверяет - при ошибке в `accrual_steps` он остался бы зелёным.
+    expected = [
+        step.date.isoformat()
+        for step in accrual_steps(
+            hire_date=hire,
+            working_year_start=hire,
+            as_of=first_year_last_day,
+            annual_norm=28,
+            rounding_threshold_days=15,
+            excluded_days=0,
+        )
+    ]
+    assert len(expected) == 12
+    assert sorted(e["entry_date"] for e in main["history"]) == expected
 
 
 # --- ленивое начисление (T-M2-19) ----------------------------------------------

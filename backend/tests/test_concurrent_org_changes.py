@@ -696,9 +696,10 @@ async def test_accrual_uses_the_hire_date_committed_by_another_transaction() -> 
         assert set(years) == {new}  # а не {old}: расчёт по устаревшей карточке
 
 
-async def test_two_concurrent_reads_write_the_accrual_once() -> None:
+async def test_two_concurrent_reads_write_each_accrual_step_once() -> None:
     """Два одновременных ленивых начисления по одному сотруднику сериализуются на замке
-    строки: событие начисления одно, а не два. Раньше это было рассуждением, а не
+    строки: каждый шаг начисления записан один раз, а не по разу от каждой сессии (набор
+    событий равен шагам `accrual_steps`, без дублей). Раньше это было рассуждением, а не
     проверенным сценарием."""
     engine = get_engine()
     today = datetime.datetime.now(datetime.UTC).date()

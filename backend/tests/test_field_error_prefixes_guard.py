@@ -24,8 +24,9 @@ f-строки, не только начальный (`ast.walk` отдаёт с
 конкатенацию `"поле" + ": текст"`, префикс не в начале литерала, текст из внешнего файла.
 Строка вида `слово: ` в `app/**`, которая не префикс поля (`_NOT_FIELD_PREFIXES`), называется
 явно с причиной. Что смонтировано в dev-контейнер `backend` - `tests/dev_container.py`:
-`frontend/src` там нет, тест пропускается, пока каталог не скопирован туда вручную, в CI
-выполняется.
+`frontend/src` там нет, поэтому пропускаются только два теста сверки с перечнем клиента
+(`_needs_client_list`), пока каталог не скопирован туда вручную; остальные читают `app/` и
+временный каталог и идут всегда. В CI выполняются все.
 """
 
 from __future__ import annotations
@@ -41,7 +42,7 @@ from tests.dev_container import DEV_CONTAINER_MOUNTS
 _APP = Path(__file__).resolve().parents[1] / "app"
 _ERRORS_TS = Path(__file__).resolve().parents[2] / "frontend" / "src" / "api" / "errors.ts"
 
-pytestmark = pytest.mark.skipif(
+_needs_client_list = pytest.mark.skipif(
     not _ERRORS_TS.is_file(),
     reason=(
         "frontend/src не резолвится по вычисленному пути: "
@@ -108,6 +109,7 @@ def test_the_discovery_is_not_blind() -> None:
     assert len(found) >= 8
 
 
+@_needs_client_list
 def test_every_backend_prefix_is_in_the_client_list() -> None:
     missing = {k: v for k, v in _fields_found().items() if k not in _client_list()}
     assert not missing, (
@@ -116,6 +118,7 @@ def test_every_backend_prefix_is_in_the_client_list() -> None:
     )
 
 
+@_needs_client_list
 def test_every_client_entry_has_a_backend_source() -> None:
     orphans = _client_list() - _fields_found().keys()
     assert not orphans, (

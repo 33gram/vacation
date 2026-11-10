@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from app.core.time_utils import utcnow
 from app.models.leave_balance_entry import LEAVE_BALANCE_ENTRY_TYPES
+from app.schemas.leave_type import Unit
 
 # Выведен из того же кортежа, что и `CheckConstraint` таблицы: источник значений один, схема
 # OpenAPI получает перечисление (TS-клиент - union). Приём как в `schemas/leave_type.py`.
@@ -40,7 +41,7 @@ class LeaveTypeBalanceOut(BaseModel):
     leave_type_id: int
     code: str
     name: str
-    unit: str
+    unit: Unit
     # Рабочий год, в который попадает дата запроса; `None` - дата раньше приёма.
     working_year_start: datetime.date | None
     working_year_end: datetime.date | None

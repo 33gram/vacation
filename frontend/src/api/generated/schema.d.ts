@@ -829,8 +829,11 @@ export interface components {
             code: string;
             /** Name */
             name: string;
-            /** Unit */
-            unit: string;
+            /**
+             * Unit
+             * @enum {string}
+             */
+            unit: "calendar_days" | "working_days" | "hours";
             /** Working Year Start */
             working_year_start: string | null;
             /** Working Year End */

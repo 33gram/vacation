@@ -41,8 +41,8 @@ function historyColumns(unit: Unit): ColumnsType<BalanceEntry> {
  *
  * Единственный источник - `GET /api/employees/{id}/balances`; на фронтенде НЕТ расчёта (ни
  * сумм, ни разниц): показывается то, что посчитал сервер. Единица - из ответа, подпись одна
- * на всё приложение (`entities/balance.ts`). Выбора даты нет сознательно: пока не сделана
- * `T-M2-21`, остаток на дату внутри текущего рабочего года занижен. */
+ * на всё приложение (`entities/balance.ts`). Выбора даты нет: основание «остаток на дату внутри
+ * года занижен» снято `T-M2-21`, элемент вынесен в `T-M2-31`. */
 export function MyLeavePage() {
   const me = useSession();
   const { hasEmployeeCard } = useAccess();

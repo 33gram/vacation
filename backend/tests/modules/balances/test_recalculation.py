@@ -375,7 +375,8 @@ async def test_br_8_catch_up_accrues_every_working_year_since_hire(db_session) -
     )
 
     events = [e for e in await _events(db_session, ctx) if e.entry_type == ACCRUAL]
-    assert len(events) == 4  # три завершённых года и текущий
+    # T-M2-21: по событию на шаг - по 12 в каждом из трёх лет и 8 в текущем
+    assert len(events) == 3 * 12 + 8
     assert result.accrued == {
         D(2023, 3, 10): Decimal("28.00"),
         D(2024, 3, 10): Decimal("28.00"),
@@ -501,11 +502,12 @@ async def test_fr_bal_003_a_shift_by_whole_years_leaves_a_record_with_author_and
     await _recalculate(db_session, ctx, D(2026, 3, 10), D(2025, 3, 10))
 
     new_year = [e for e in await _events(db_session, ctx) if e.working_year_start == D(2025, 3, 10)]
-    assert len(new_year) == 1
-    (event,) = new_year
-    assert event.entry_type == ACCRUAL  # тип прежний: заработанное право
-    assert event.actor_account_id == ctx.actor_id
-    assert "10.03.2026" in event.reason and "10.03.2025" in event.reason
+    assert len(new_year) == 12  # T-M2-21: двенадцать шагов завершённого года
+    # Автор и причина пересчёта - у КАЖДОГО события шага, не только у первого.
+    for event in new_year:
+        assert event.entry_type == ACCRUAL  # тип прежний: заработанное право
+        assert event.actor_account_id == ctx.actor_id
+        assert "10.03.2026" in event.reason and "10.03.2025" in event.reason
 
 
 async def test_fr_bal_001_an_ordinary_accrual_is_still_written_without_an_author(
@@ -515,9 +517,10 @@ async def test_fr_bal_001_an_ordinary_accrual_is_still_written_without_an_author
 
     await _accrue(db_session, ctx, AS_OF)
 
-    (event,) = await _events(db_session, ctx)
-    assert event.actor_account_id is None
-    assert "Пересчёт" not in event.reason
+    events = await _events(db_session, ctx)
+    assert len(events) == 8  # T-M2-21: по событию на шаг
+    assert all(event.actor_account_id is None for event in events)
+    assert all("Пересчёт" not in event.reason for event in events)
 
 
 async def test_fr_bal_003_every_event_born_of_a_recalculation_has_author_and_reason(
@@ -531,7 +534,9 @@ async def test_fr_bal_003_every_event_born_of_a_recalculation_has_author_and_rea
     await _recalculate(db_session, ctx, D(2026, 3, 10), D(2026, 3, 20))
 
     born = [e for e in await _events(db_session, ctx) if e.id not in before]
-    assert len(born) == 2  # закрытие и начисление
+    # Закрытие одно, начислений по новой дате - по событию на шаг (T-M2-21).
+    assert len([e for e in born if e.entry_type == RECALCULATION]) == 1
+    assert len([e for e in born if e.entry_type == ACCRUAL]) == len(born) - 1 > 1
     assert all(e.actor_account_id == ctx.actor_id and e.reason for e in born)
 
 

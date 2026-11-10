@@ -59,22 +59,27 @@ async def _events(db_session, ctx: Context) -> list[LeaveBalanceEntry]:
     return list(result.scalars())
 
 
-async def test_fr_bal_001_accrual_writes_one_positive_system_event_for_the_working_year(
+async def test_fr_bal_001_accrual_writes_one_positive_system_event_per_step_of_the_year(
     db_session,
 ) -> None:
+    # T-M2-21: до 24.10 набралось восемь шагов (24.03 ... 24.10), по событию на шаг,
+    # каждое датировано днём шага; сумма - прежние 18,67.
     ctx = await _hired(db_session)
 
     written = await _accrue(db_session, ctx, D(2026, 10, 24))
 
-    (event,) = await _events(db_session, ctx)
+    events = await _events(db_session, ctx)
     assert written == Decimal("18.67")
-    assert (event.entry_type, event.quantity, event.actor_account_id) == (
-        ACCRUAL,
-        Decimal("18.67"),
-        None,
-    )
-    assert (event.working_year_start, event.working_year_end) == (YEAR_START, D(2027, 3, 10))
-    assert event.entry_date == D(2026, 10, 24)
+    assert [event.entry_date for event in events] == [D(2026, month, 24) for month in range(3, 11)]
+    assert [event.quantity for event in events] == [
+        Decimal("2.33"), Decimal("2.34"), Decimal("2.33"), Decimal("2.33"),
+        Decimal("2.34"), Decimal("2.33"), Decimal("2.33"), Decimal("2.34"),
+    ]  # fmt: skip
+    assert {(e.entry_type, e.actor_account_id) for e in events} == {(ACCRUAL, None)}
+    assert {(e.working_year_start, e.working_year_end) for e in events} == {
+        (YEAR_START, D(2027, 3, 10))
+    }
+    assert "8-й месяц" in events[-1].reason and "24.10.2026" in events[-1].reason
     assert await get_balance(db_session, ctx.employee_id, ctx.leave_type_id, YEAR_START) == (
         Decimal("18.67")
     )
@@ -87,11 +92,12 @@ async def test_fr_bal_001_a_repeated_call_for_the_same_date_writes_nothing(db_se
     written = await _accrue(db_session, ctx, D(2026, 10, 24))
 
     assert written == 0
-    assert len(await _events(db_session, ctx)) == 1
+    assert len(await _events(db_session, ctx)) == 8
 
 
 async def test_fr_bal_001_a_later_date_writes_only_the_difference(db_session) -> None:
-    # 10.12: 9 полных месяцев, 28 * 9 / 12 = 21,00; уже начислено 18,67.
+    # 10.12: девятый шаг (24.11) - 28 * 9 / 12 = 21,00; уже начислено 18,67 (восемь шагов),
+    # десятый шаг (24.12) ещё впереди.
     ctx = await _hired(db_session)
     await _accrue(db_session, ctx, D(2026, 10, 24))
 
@@ -99,7 +105,8 @@ async def test_fr_bal_001_a_later_date_writes_only_the_difference(db_session) ->
 
     events = await _events(db_session, ctx)
     assert written == Decimal("2.33")
-    assert [event.quantity for event in events] == [Decimal("18.67"), Decimal("2.33")]
+    assert len(events) == 9
+    assert (events[-1].quantity, events[-1].entry_date) == (Decimal("2.33"), D(2026, 11, 24))
     assert await get_balance(db_session, ctx.employee_id, ctx.leave_type_id, YEAR_START) == (
         Decimal("21.00")
     )
@@ -117,7 +124,7 @@ async def test_fr_bal_001_a_zero_or_negative_difference_writes_no_event_and_does
     written = await _accrue(db_session, ctx, D(2026, 10, 24))
 
     assert written == 0
-    assert len(await _events(db_session, ctx)) == 1
+    assert len(await _events(db_session, ctx)) == 9
     assert await get_balance(db_session, ctx.employee_id, ctx.leave_type_id, YEAR_START) == (
         Decimal("21.00")
     )
@@ -164,9 +171,10 @@ async def test_fr_bal_001_excluded_days_shift_the_recorded_working_year_end(db_s
 
     await _accrue(db_session, ctx, D(2027, 3, 25), excluded_days=16, working_year_start=HIRE)
 
-    (event,) = await _events(db_session, ctx)
-    assert event.working_year_end == D(2027, 3, 26)
-    assert event.quantity == Decimal("28.00")
+    events = await _events(db_session, ctx)
+    assert {event.working_year_end for event in events} == {D(2027, 3, 26)}
+    assert sum(event.quantity for event in events) == Decimal("28.00")
+    assert events[-1].entry_date == D(2027, 3, 12)  # шаг 24.02.2027, сдвинутый на 16 дней
 
 
 async def test_fr_bal_001_an_unknown_employee_is_refused_and_nothing_is_written(
@@ -322,8 +330,9 @@ async def test_br_8_balance_on_a_date_before_and_after_the_event(db_session) -> 
             db_session, ctx.employee_id, ctx.leave_type_id, YEAR_START, as_of=as_of
         )
 
-    assert await balance(D(2026, 10, 23)) == 0
-    assert await balance(D(2026, 10, 24)) == Decimal("18.67")  # день события включается
+    assert await balance(D(2026, 3, 23)) == 0
+    assert await balance(D(2026, 10, 23)) == Decimal("16.33")  # семь шагов
+    assert await balance(D(2026, 10, 24)) == Decimal("18.67")  # день шага включается
     assert await balance(D(2026, 12, 31)) == Decimal("18.67")
 
 

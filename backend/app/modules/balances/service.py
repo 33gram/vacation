@@ -20,14 +20,16 @@ T-M2-08, `FR-BAL-001`, `FR-BAL-002`, `FR-BAL-004`).
 начальные остатки при импорте (`T-M1-36`) пишутся вместе с карточкой
 сотрудника одной транзакцией, а не по одному коммиту на событие.
 
-НАЧИСЛЕНИЕ (T-M2-05). `accrue_leave` пишет РАЗНОСТЬ между тем, сколько
-должно быть начислено к дате (`accrual.compute_accrual`), и тем, что уже
-начислено за этот рабочий год (сумма событий `accrual`), одним событием.
-Разность не больше нуля — событие НЕ пишется (`CHECK` требует `accrual` > 0, а
+НАЧИСЛЕНИЕ (T-M2-05, `T-M2-21`). `accrue_leave` пишет по событию `accrual` на
+КАЖДЫЙ ещё не записанный шаг накопления рабочего года (`accrual.accrual_steps`),
+датированному днём шага. Количество шага — РАЗНОСТЬ между тем, сколько должно
+быть начислено к шагу (нарастающий итог шагов), и тем, что уже начислено за этот
+рабочий год (сумма событий `accrual` и `recalculation`). Шаг, у которого
+разность не больше нуля, НЕ пишется (`CHECK` требует `accrual` > 0, а
 уменьшение накопленного — это `recalculation`, `T-M2-07`). Поэтому повторный
-вызов на ту же дату ничего не пишет. Сумма уже начисленного — это не остаток
-(остаток включает списания и корректировки) и ему не конкурент: единственное
-место вычисления остатка по-прежнему `get_balance`.
+вызов на ту же дату ничего не пишет, а вызов на более позднюю — только новые шаги.
+Сумма уже начисленного — это не остаток (остаток включает списания и корректировки)
+и ему не конкурент: единственное место вычисления остатка по-прежнему `get_balance`.
 
 ГРАНИЦА `FR-BAL-004` (правило 8). Критерий требует причину И запись в
 журнале аудита. Причину закрывает журнал событий (она обязательна на
@@ -56,6 +58,7 @@ from app.models.leave_balance_entry import (
 from app.models.leave_type import LeaveType
 from app.modules.balances.accrual import (
     MONTHS_IN_YEAR,
+    accrual_steps,
     compute_accrual,
     is_working_year_start,
     working_year_containing,
@@ -361,9 +364,12 @@ async def accrue_leave(
     attribution: AccrualAttribution | None = None,
 ) -> Decimal:
     """Начисляет отпуск за рабочий год на дату `as_of` (`FR-BAL-001`):
-    пишет ОДНО событие `accrual` с разностью «положено минус уже начислено»
-    и возвращает записанное количество; ноль — если писать нечего (событие
-    не пишется, исключение не поднимается).
+    пишет по ОДНОМУ событию `accrual` на каждый ещё не записанный шаг накопления
+    (`accrual_steps`, `T-M2-21`: до двенадцати на рабочий год), датированному днём шага -
+    днём, когда право возникло, а не днём вызова, - и возвращает записанное количество
+    (сумму шагов); ноль — если писать нечего (событий нет, исключение не
+    поднимается). Шаг пишется, когда его нарастающий итог больше уже начисленного, на
+    разность: сумма записанного та же, что у одного события на `as_of`.
 
     Работает только с основным видом (`MAIN_LEAVE_TYPE_CODE`): норма
     `annual_leave_days` - норма основного отпуска, и начислять её на другой
@@ -433,27 +439,46 @@ async def accrue_leave(
             LeaveBalanceEntry.entry_type.in_(ALREADY_ACCRUED_ENTRY_TYPES),
         )
     )
-    difference = accrual.accrued - Decimal(already.scalar_one())
-    if difference <= 0:
-        return Decimal(0)
-    session.add(
-        LeaveBalanceEntry(
-            employee_id=employee_id,
-            leave_type_id=leave_type_id,
-            working_year_start=accrual.working_year_start,
-            working_year_end=accrual.working_year_end,
-            entry_type=ACCRUAL,
-            quantity=difference,
-            entry_date=as_of,
-            reason=(
-                (f"{attribution.reason_prefix.strip()}: " if attribution else "")
-                + f"Начисление на {as_of.strftime('%d.%m.%Y')}: "
-                f"{accrual.counted_months} из {MONTHS_IN_YEAR} месяцев рабочего года"
-            ),
-            actor_account_id=attribution.actor_account_id if attribution else None,
-        )
+    # По событию на шаг (T-M2-21): каждый шаг, чьё накопленное больше уже записанного,
+    # пишет разность и датируется днём шага, а не днём вызова; шаги, покрытые прежними
+    # событиями, пропускаются. Идемпотентность - тот же принцип «положено минус уже
+    # начислено», применённый к нарастающему итогу шагов.
+    written_total = Decimal(already.scalar_one())
+    steps = accrual_steps(
+        hire_date=employee.hire_date,
+        working_year_start=accrual.working_year_start,
+        as_of=as_of,
+        annual_norm=rules[ANNUAL_LEAVE_DAYS],
+        rounding_threshold_days=rules[MONTH_ROUNDING_THRESHOLD_DAYS],
+        excluded_days=excluded_days,
     )
-    await session.flush()
+    prefix = f"{attribution.reason_prefix.strip()}: " if attribution else ""
+    difference = Decimal(0)
+    for step in steps:
+        if step.accrued <= written_total:
+            continue
+        quantity = step.accrued - written_total
+        session.add(
+            LeaveBalanceEntry(
+                employee_id=employee_id,
+                leave_type_id=leave_type_id,
+                working_year_start=accrual.working_year_start,
+                working_year_end=accrual.working_year_end,
+                entry_type=ACCRUAL,
+                quantity=quantity,
+                entry_date=step.date,
+                reason=(
+                    prefix + f"Начисление за {step.counted_months}-й месяц рабочего года "
+                    f"({step.date.strftime('%d.%m.%Y')}): "
+                    f"{step.counted_months} из {MONTHS_IN_YEAR} месяцев"
+                ),
+                actor_account_id=attribution.actor_account_id if attribution else None,
+            )
+        )
+        written_total = step.accrued
+        difference += quantity
+    if difference > 0:
+        await session.flush()
     return difference
 
 
@@ -594,6 +619,20 @@ async def recalculate_balance(
     же; границы месяцев внутри могут отличаться на день при 28/29 февраля, разницы в
     начислении на проверенных датах нет); уменьшение в сохранившемся году эта
     функция не производит.
+
+    ГРАНИЦА `BR-8` (правило 8). При смене даты приёма на НЕ целое число лет границы
+    рабочего года двигаются, а уже записанные события сохраняют свои даты: прежний год
+    закрывается одним `recalculation`, датированным днём пересчёта (`as_of`), новый
+    год начисляется шагами со своими датами. ИЗМЕРЕНО (приём 10.03.2026, начислено на
+    24.10.2026, пересчёт в тот же день, новая дата 11.03, 20.03, 10.04, 10.06.2026 и
+    10.09.2025; остаток на каждый день от приёма до 24.10): остаток по НОВОМУ году
+    на любую дату равен расчёту `compute_accrual` (0 расхождений); СУММА остатка по
+    всем годам на даты ДО дня пересчёта (24.03-23.10, 214 дней) расходится с расчётом
+    по новой дате: прежнее начисление ещё не закрыто, а новое уже есть, расхождение до
+    16,33 (при сдвиге на день и на год без малого оно то же), а не «на день». С дня
+    пересчёта сумма верна. Сдвиг на целое число лет (10.03.2025) расхождения не даёт:
+    год сохраняется. Не исправлено: владелец - `T-M2-32` (закрытие задним числом новыми
+    событиями; прежние события не переписываются).
 
     Автор обязателен; `recalculation` пишется только функцией
     `_write_recalculation` с проверкой причины (`strip()`) и автора. Проверка

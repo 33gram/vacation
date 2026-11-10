@@ -71,7 +71,7 @@ async def test_barrier_a_2015_hire_with_a_card_created_now_accrues_only_the_curr
     assert result.accrued == {D(2026, 3, 10): Decimal("18.67")}
     assert set(result.skipped) == {D(year, 3, 10) for year in range(2015, 2026)}
     assert all("до появления карточки" in reason for reason in result.skipped.values())
-    assert await _count(db_session, ctx) == 1
+    assert await _count(db_session, ctx) == 8  # T-M2-21: по событию на шаг, 24.03-24.10
 
 
 async def test_barrier_a_card_created_a_week_after_the_hire_keeps_the_first_year_whole(
@@ -181,7 +181,8 @@ async def test_lazy_the_first_read_writes_the_accrual_and_the_second_writes_noth
     after_first = await _count(db_session, ctx)
     second = await accrue_before_read(db_session, employee_id=ctx.employee_id, as_of=AS_OF)
 
-    assert after_first == 4 and first.accrued
+    # T-M2-21: три завершённых года по 12 шагов и восемь шагов текущего
+    assert after_first == 3 * 12 + 8 and first.accrued
     assert second.accrued == {}
     assert await _count(db_session, ctx) == after_first  # повтор безопасен
     total = await get_total_balance(db_session, ctx.employee_id, ctx.leave_type_id)
@@ -200,7 +201,7 @@ async def test_lazy_a_read_on_a_past_date_does_not_accrue_forward(db_session) ->
             )
         )
     ).scalars()
-    assert sorted(years) == [D(2023, 3, 10), D(2024, 3, 10)]  # 2025 и 2026 не тронуты
+    assert sorted(set(years)) == [D(2023, 3, 10), D(2024, 3, 10)]  # 2025 и 2026 не тронуты
 
 
 async def test_lazy_an_employee_whose_every_year_is_closed_reads_without_an_error(
@@ -264,7 +265,8 @@ async def test_terminated_accrual_stops_at_the_termination_date_even_a_year_late
             )
         )
     ).scalars()
-    assert max(entries) == D(2026, 7, 10)
+    # последний шаг - четвёртый месяц (24.06): после даты увольнения событий нет
+    assert max(entries) == D(2026, 6, 24)
     again = await _catch_up(db_session, ctx, as_of=D(2028, 10, 27))
     assert again.accrued == {}  # и ещё через год - ничего нового
 

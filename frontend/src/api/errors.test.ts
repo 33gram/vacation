@@ -1,10 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
   detailText,
+  FIELD_ERROR_PREFIXES,
+  fieldError,
   formValidation,
   layoutValidation,
+  prefixedMessages,
   validationIssues,
   violationList,
+  withoutFieldPrefixes,
 } from "./errors";
 
 const BODY_FIELD = { loc: ["body", "code"], msg: "Значение не соответствует допустимому формату.", type: "string_pattern_mismatch" };
@@ -94,5 +98,75 @@ describe("formValidation and detailText", () => {
     expect(detailText([OTHER_FIELD, WHOLE_BODY])).toBe(`name: ${OTHER_FIELD.msg} ${WHOLE_BODY.msg}`);
     expect(detailText(POLICY)).toBeNull();
     expect(detailText(undefined)).toBeNull();
+  });
+});
+
+describe("prefixedMessages and fieldError (T-M2-27)", () => {
+  const FIELDS = ["is_active", "balance_tracked", "code"];
+
+  it("returns every prefix in order of appearance", () => {
+    expect(prefixedMessages("is_active: первый; balance_tracked: второй", FIELDS)).toEqual([
+      { field: "is_active", message: "первый" },
+      { field: "balance_tracked", message: "второй" },
+    ]);
+  });
+
+  it("returns one entry for one prefix (the single case is the plural with one element)", () => {
+    expect(prefixedMessages("code: Код не меняется", FIELDS)).toEqual([
+      { field: "code", message: "Код не меняется" },
+    ]);
+  });
+
+  it.each([
+    ["plain text", "Пароль слишком короткий"],
+    ["a word that is not a known field", "unknown_key: плохо"],
+    ["text before the first prefix", "ошибка: code: плохо"],
+    ["not a string", ["code: плохо"]],
+  ])("returns null for %s", (_name, detail) => {
+    expect(prefixedMessages(detail, FIELDS)).toBeNull();
+  });
+
+  it("returns null when no field is known", () => {
+    expect(prefixedMessages("code: плохо", [])).toBeNull();
+  });
+
+  it("keeps a `; ` that is not followed by a known prefix inside the text", () => {
+    expect(prefixedMessages("code: а; б: в", FIELDS)).toEqual([{ field: "code", message: "а; б: в" }]);
+  });
+
+  it("fieldError: only the fields of the calling form are its prefixes", () => {
+    expect(fieldError("code: Код не меняется", FIELDS)).toEqual({ field: "code", message: "Код не меняется" });
+    expect(fieldError("is_active: нельзя", FIELDS)).toEqual({ field: "is_active", message: "нельзя" });
+    // Префикс чужого поля - не префикс этой формы: общий текст, а не поле, которого нет.
+    expect(fieldError("code: Код не меняется", ["email", "manager_id"])).toBeNull();
+  });
+
+  it("FIELD_ERROR_PREFIXES is the guard's list, not a form's: it holds every backend prefix", () => {
+    expect(FIELD_ERROR_PREFIXES).toEqual(expect.arrayContaining(["email", "head_employee_id", "code", "is_active"]));
+  });
+
+  it("withoutFieldPrefixes strips every known prefix and joins the texts like layoutValidation does", () => {
+    expect(withoutFieldPrefixes("code: Код не меняется")).toBe("Код не меняется");
+    expect(withoutFieldPrefixes("is_active: нельзя; balance_tracked: тоже нельзя")).toBe("нельзя тоже нельзя");
+    expect(withoutFieldPrefixes("Пароль слишком короткий")).toBe("Пароль слишком короткий");
+    expect(withoutFieldPrefixes("unknown_key: плохо")).toBe("unknown_key: плохо");
+    expect(withoutFieldPrefixes(["code: x"])).toBeNull();
+  });
+
+  it("detailText returns a string detail without its field prefix", () => {
+    expect(detailText("head_employee_id: уволенный сотрудник")).toBe("уволенный сотрудник");
+  });
+
+  it("fieldError: a message that starts with an ordinary word is not a field error", () => {
+    expect(fieldError("Пароль: не подходит", FIELDS)).toBeNull();
+    expect(fieldError("weak: не подходит", FIELDS)).toBeNull();
+    expect(fieldError(["code: x"], FIELDS)).toBeNull();
+  });
+
+  it("fieldError: the message is the whole rest of the string after the first prefix", () => {
+    expect(fieldError("email: адрес занят; manager_id: сотрудник не найден", ["email", "manager_id"])).toEqual({
+      field: "email",
+      message: "адрес занят; manager_id: сотрудник не найден",
+    });
   });
 });

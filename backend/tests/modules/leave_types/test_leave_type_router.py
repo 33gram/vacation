@@ -21,6 +21,20 @@ from tests.modules.auth.factories import bearer_header, make_account, make_emplo
 
 _URL = "/api/leave-types"
 
+# Тексты отказов дословно, с префиксом поля (`T-M2-27`): префикс и текст, а не подстрока.
+_CODE_IMMUTABLE = (
+    "code: Код вида отпуска после создания не меняется: по нему находится основной вид, "
+    "переименование сломало бы начисление. Меняется наименование"
+)
+_MAIN_DEACTIVATED = (
+    "is_active: Основной оплачиваемый отпуск нельзя деактивировать: "
+    "от него зависит начисление (FR-BAL-001)"
+)
+_MAIN_UNTRACKED = (
+    "balance_tracked: Основной оплачиваемый отпуск нельзя лишить признака "
+    "«по виду ведётся остаток»: от него зависит начисление (FR-BAL-001)"
+)
+
 
 def _body(**overrides) -> dict:
     body = {
@@ -235,6 +249,7 @@ async def test_changing_the_code_is_refused_not_ignored(db_session, api_client) 
     )
 
     assert response.status_code == 400
+    assert response.json()["detail"] == _CODE_IMMUTABLE
     assert await _type_id(db_session, "annual_paid") == main_id  # по коду основной вид находится
 
 
@@ -325,7 +340,7 @@ async def test_the_main_type_cannot_lose_the_flag_even_on_a_base_without_events(
     )
 
     assert response.status_code == 400
-    assert "FR-BAL-001" in response.json()["detail"]
+    assert response.json()["detail"] == _MAIN_UNTRACKED
     flag = await db_session.scalar(select(LeaveType.balance_tracked).where(LeaveType.id == main_id))
     assert flag is True
 
@@ -341,8 +356,42 @@ async def test_the_main_type_cannot_be_deactivated(db_session, api_client) -> No
     )
 
     assert response.status_code == 400
+    assert response.json()["detail"] == _MAIN_DEACTIVATED
     active = await db_session.scalar(select(LeaveType.is_active).where(LeaveType.id == main_id))
     assert active is True
+
+
+async def test_the_main_type_with_both_fields_violated_names_both_in_a_fixed_order(
+    db_session, api_client
+) -> None:
+    # Оба поля нарушены разом: отказ называет ОБА, в порядке is_active, balance_tracked, а не то,
+    # которое проверка увидела бы первым.
+    hr = await _account(db_session, "hr_admin")
+    main_id = await _type_id(db_session, "annual_paid")
+
+    response = await api_client.put(
+        f"{_URL}/{main_id}",
+        json=_body(code="annual_paid", is_active=False, balance_tracked=False),
+        headers=bearer_header(hr),
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == f"{_MAIN_DEACTIVATED}; {_MAIN_UNTRACKED}"
+
+
+async def test_a_code_change_wins_over_the_main_type_protection(db_session, api_client) -> None:
+    # Два РАЗНЫХ отказа (смена кода и защита основного вида) отвечают по одному: сначала код.
+    hr = await _account(db_session, "hr_admin")
+    main_id = await _type_id(db_session, "annual_paid")
+
+    response = await api_client.put(
+        f"{_URL}/{main_id}",
+        json=_body(code="renamed_main", is_active=False),
+        headers=bearer_header(hr),
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == _CODE_IMMUTABLE
 
 
 async def test_the_main_type_is_still_editable_otherwise(db_session, api_client) -> None:

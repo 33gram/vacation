@@ -1,3 +1,4 @@
+import { prefixedMessages } from "../api/errors";
 import type { components } from "../api/generated/schema";
 
 export type BusinessRuleOut = components["schemas"]["BusinessRuleOut"];
@@ -82,22 +83,9 @@ export function rulesErrorsByKey(
   detail: unknown,
   knownKeys: readonly string[],
 ): Record<string, string> | null {
-  if (typeof detail !== "string" || knownKeys.length === 0) {
+  const parsed = prefixedMessages(detail, knownKeys);
+  if (parsed === null) {
     return null;
   }
-  const alternatives = [...knownKeys]
-    .sort((a, b) => b.length - a.length)
-    .map((key) => key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
-    .join("|");
-  const starts = [...detail.matchAll(new RegExp(`(?:^|; )(${alternatives}): `, "g"))];
-  if (starts.length === 0 || starts[0].index !== 0) {
-    return null;
-  }
-  const errors: Record<string, string> = {};
-  starts.forEach((match, index) => {
-    const textStart = match.index + match[0].length;
-    const textEnd = index + 1 < starts.length ? starts[index + 1].index : detail.length;
-    errors[match[1]] = detail.slice(textStart, textEnd);
-  });
-  return errors;
+  return Object.fromEntries(parsed.map(({ field, message }) => [field, message]));
 }

@@ -1,4 +1,4 @@
-import { formValidation, stringDetail } from "../api/errors";
+import { formValidation, prefixedMessages, withoutFieldPrefixes } from "../api/errors";
 import type { LeaveTypeFormSubmitError, LeaveTypeFormValues } from "./LeaveTypeForm";
 
 // Имена полей формы вида отсутствия (совпадают с полями тела запроса); `satisfies` ловит опечатку.
@@ -18,16 +18,16 @@ const LEAVE_TYPE_FORM_FIELDS = [
 ] as const satisfies readonly (keyof LeaveTypeFormValues)[];
 
 /** Отказ сервера по `POST`/`PUT /api/leave-types` -> форма. Текст сервера показывается как есть
- * (`ui.md` §7). Машиночитаемого префикса поля у этих отказов НЕТ (в отличие от
- * `personnel_number:`/`email:`), поэтому поле определяется по паре «метод - статус»:
- *   - `POST` 409 - один отказ, дубль кода -> под полем «Код»;
+ * (`ui.md` §7), без префикса поля. Поле определяется так:
+ *   - `400` (`T-M2-27`): текст несёт префикс(ы) `<поле>: ` (`code:` - смена кода; `is_active:` и/или
+ *     `balance_tracked:` - защита основного вида, оба через `"; "`, когда нарушены оба) - каждый
+ *     текст под своим полем. Поле, которого в форме нет, и текст без префикса - общим текстом над
+ *     кнопками (известные префиксы с него сняты, `withoutFieldPrefixes`). Из ЭТОЙ формы достижим только отказ основного вида: поле кода в правке отключено, и
+ *     `code:` закрывают тест разбора и backend-тест, а не тест формы;
+ *   - `POST` 409 - один отказ, дубль кода -> под полем «Код» (префикса у него нет, поле по паре
+ *     «метод - статус»);
  *   - `PUT` 409 - один отказ, у вида есть события журнала, а признак «по виду ведётся остаток»
- *     снимают -> под полем «По виду ведётся остаток»;
- *   - `PUT` 400 - ДВА разных отказа (смена кода; деактивация или снятие признака у ОСНОВНОГО вида)
- *     с одним кодом и без признака поля -> общим текстом над кнопками. Сменить код из этой формы
- *     нельзя (поле отключено), так что на практике приходит второй.
- * Различать два `PUT` 400 по тексту нельзя; если понадобится поле - бэкенду нужен префикс, это его
- * правка, не этого файла. */
+ *     снимают -> под полем «По виду ведётся остаток» (тоже по паре «метод - статус»). */
 export function leaveTypeSubmitError(
   method: "POST" | "PUT",
   status: number,
@@ -43,7 +43,17 @@ export function leaveTypeSubmitError(
       generalError: validation.generalError,
     };
   }
-  const message = stringDetail(detail) ?? fallbackMessage;
+  const prefixed = status === 400 ? prefixedMessages(detail, LEAVE_TYPE_FORM_FIELDS) : null;
+  if (prefixed) {
+    return {
+      fieldErrors: prefixed.map(({ field, message }) => ({
+        field: field as (typeof LEAVE_TYPE_FORM_FIELDS)[number],
+        message,
+      })),
+      generalError: null,
+    };
+  }
+  const message = withoutFieldPrefixes(detail) ?? fallbackMessage;
   if (method === "POST" && status === 409) {
     return { fieldErrors: [{ field: "code", message }], generalError: null };
   }

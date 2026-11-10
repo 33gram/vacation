@@ -1,4 +1,4 @@
-import { fieldError, formValidation, stringDetail, violationList } from "../api/errors";
+import { fieldError, formValidation, violationList, withoutFieldPrefixes } from "../api/errors";
 import type { EmployeeFormValues } from "./EmployeeForm";
 
 // Поля формы сотрудника (имена `Form.Item` в `EmployeeForm`); поле «Пароль» в теле запроса называется
@@ -49,11 +49,11 @@ export function parseEmployeeFormError(
       generalError: validation.generalError,
     };
   }
-  const matchedFieldError = fieldError(detail);
+  const matchedFieldError = fieldError(detail, EMPLOYEE_FORM_FIELDS);
   const violations = violationList(detail);
   return {
     fieldErrors: matchedFieldError ? [matchedFieldError] : [],
     violatedCodes: violations ? new Set(violations.map((violation) => violation.code)) : null,
-    generalError: !matchedFieldError && !violations ? (stringDetail(detail) ?? fallbackMessage) : null,
+    generalError: !matchedFieldError && !violations ? (withoutFieldPrefixes(detail) ?? fallbackMessage) : null,
   };
 }

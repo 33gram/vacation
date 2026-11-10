@@ -14,9 +14,12 @@ from decimal import Decimal
 import pytest
 
 from app.modules.balances.accrual import (
+    MONTHS_IN_YEAR,
+    accrual_steps,
     completed_months,
     compute_accrual,
     excluded_unpaid_leave_days,
+    working_year_start_on,
 )
 
 HIRE = datetime.date(2026, 3, 10)
@@ -272,3 +275,139 @@ def test_fr_bal_001_accrual_and_tenure_use_the_same_month_boundaries() -> None:
 def test_fr_bal_001_a_rounding_threshold_below_one_day_is_refused() -> None:
     with pytest.raises(ValueError):
         _accrue(D(2026, 10, 24), threshold=0)
+
+
+# --- Шаги накопления (T-M2-21) -------------------------------------------------
+# Даты шагов ИЗМЕРЕНЫ перебором дней по `compute_accrual` до написания функции
+# (сводка - в отметке T-M2-21): `accrued` растёт ровно один раз в месяц, в первый
+# день, когда остаток неполного месяца достиг порога, а если порог длиннее месяца -
+# в последний день месяца (день, когда месяц стал полным).
+
+
+def _steps(hire: datetime.date, year_index: int, *, norm=NORM, threshold=THRESHOLD, excluded=0):
+    start = working_year_start_on(hire, year_index)
+    return accrual_steps(
+        hire_date=hire,
+        working_year_start=start,
+        as_of=start.replace(year=start.year + 2),  # заведомо позже конца года
+        annual_norm=norm,
+        rounding_threshold_days=threshold,
+        excluded_days=excluded,
+    )
+
+
+def test_steps_of_an_ordinary_year_are_dated_by_the_threshold_day_of_each_month() -> None:
+    steps = _steps(HIRE, 0)
+
+    assert [step.date for step in steps] == [
+        D(2026, 3, 24), D(2026, 4, 24), D(2026, 5, 24), D(2026, 6, 24),
+        D(2026, 7, 24), D(2026, 8, 24), D(2026, 9, 24), D(2026, 10, 24),
+        D(2026, 11, 24), D(2026, 12, 24), D(2027, 1, 24), D(2027, 2, 24),
+    ]  # fmt: skip
+    assert [step.accrued for step in steps][:3] == [
+        Decimal("2.33"),
+        Decimal("4.67"),
+        Decimal("7.00"),
+    ]
+    assert steps[-1].accrued == Decimal("28.00")
+
+
+def test_a_threshold_of_one_dates_the_steps_at_the_month_start() -> None:
+    steps = _steps(HIRE, 0, threshold=1)
+
+    assert steps[0].date == HIRE and steps[-1].date == D(2027, 2, 10)
+
+
+def test_a_threshold_longer_than_the_month_dates_the_steps_at_the_last_day_of_the_month() -> None:
+    # Порог 31 при месяцах в 30-31 день не достигается: месяц считается, когда он
+    # полный, то есть в день перед границей (10.04 - граница, 09.04 - последний день).
+    steps = _steps(HIRE, 0, threshold=31)
+
+    assert steps[0].date == D(2026, 4, 9) and steps[-1].date == D(2027, 3, 9)
+
+
+def test_excluded_days_shift_every_step_by_the_same_number_of_days() -> None:
+    plain = _steps(HIRE, 0)
+    shifted = _steps(HIRE, 0, excluded=5)
+
+    assert [b.date - a.date for a, b in zip(plain, shifted, strict=True)] == [
+        datetime.timedelta(days=5)
+    ] * MONTHS_IN_YEAR
+
+
+def test_the_steps_stop_at_as_of_and_come_out_in_order() -> None:
+    start = HIRE
+    steps = accrual_steps(
+        hire_date=HIRE, working_year_start=start, as_of=D(2026, 6, 24), annual_norm=NORM,
+        rounding_threshold_days=THRESHOLD, excluded_days=0,
+    )  # fmt: skip
+
+    assert [step.date for step in steps][-1] == D(2026, 6, 24) and len(steps) == 4
+    assert accrual_steps(
+        hire_date=HIRE, working_year_start=start, as_of=D(2026, 3, 23), annual_norm=NORM,
+        rounding_threshold_days=THRESHOLD, excluded_days=0,
+    ) == []  # fmt: skip
+
+
+@pytest.mark.parametrize("norm", [28, 29, 30, 1, 0, Decimal("28.5")])
+def test_step_amounts_are_differences_of_rounded_totals_and_sum_to_the_norm(norm) -> None:
+    # Двенадцать округлённых по 2,33 дали бы 27,96; разность округлённых накопленных
+    # складывается ровно в норму.
+    steps = _steps(HIRE, 0, norm=norm)
+    totals = [Decimal(0)] + [step.accrued for step in steps]
+
+    amounts = [b - a for a, b in zip(totals, totals[1:], strict=False)]
+    assert sum(amounts) == Decimal(norm).quantize(Decimal("0.01"))
+    assert len(steps) <= MONTHS_IN_YEAR
+
+
+@pytest.mark.parametrize(
+    ("hire", "year_index"),
+    [
+        (D(2026, 3, 10), 0),  # обычный
+        (D(2026, 1, 31), 0),  # приём 31-го: граница февраля - последний день месяца
+        (D(2023, 1, 31), 1),  # год 31.01.2024-30.01.2025, високосный февраль
+        (D(2024, 2, 29), 0),  # приём 29 февраля
+        (D(2024, 2, 29), 1),  # следующий год без 29 февраля
+        (D(2023, 3, 10), 1),  # год содержит 29.02.2024
+    ],
+)
+@pytest.mark.parametrize("threshold", [1, 15, 31])
+@pytest.mark.parametrize("excluded", [0, 5])
+@pytest.mark.parametrize("norm", [28, 29])
+def test_steps_agree_with_compute_accrual_on_every_day_of_the_year(
+    hire, year_index, threshold, excluded, norm
+) -> None:
+    # Критерий T-M2-21: накопленное по шагам до даты == compute_accrual(as_of=дата)
+    # для КАЖДОГО дня рабочего года, а не для выбранных дат.
+    start = working_year_start_on(hire, year_index)
+    end = working_year_start_on(hire, year_index + 1) + datetime.timedelta(days=excluded)
+    steps = accrual_steps(
+        hire_date=hire, working_year_start=start, as_of=end, annual_norm=norm,
+        rounding_threshold_days=threshold, excluded_days=excluded,
+    )  # fmt: skip
+
+    day = start
+    while day < end:
+        by_steps = max(
+            (step.accrued for step in steps if step.date <= day), default=Decimal("0.00")
+        )
+        direct = compute_accrual(
+            hire_date=hire, as_of=day, annual_norm=norm, rounding_threshold_days=threshold,
+            excluded_days=excluded, working_year_start=start,
+        ).accrued  # fmt: skip
+        assert by_steps == direct, f"{day}: шаги {by_steps}, compute_accrual {direct}"
+        day += datetime.timedelta(days=1)
+
+
+def test_steps_refuse_what_compute_accrual_refuses() -> None:
+    with pytest.raises(ValueError, match="годовщиной"):
+        accrual_steps(
+            hire_date=HIRE, working_year_start=D(2026, 4, 1), as_of=D(2026, 6, 1), annual_norm=NORM,
+            rounding_threshold_days=THRESHOLD, excluded_days=0,
+        )  # fmt: skip
+    with pytest.raises(ValueError, match="Порог"):
+        accrual_steps(
+            hire_date=HIRE, working_year_start=HIRE, as_of=D(2026, 6, 1), annual_norm=NORM,
+            rounding_threshold_days=0, excluded_days=0,
+        )  # fmt: skip

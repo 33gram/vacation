@@ -152,6 +152,77 @@ def completed_months(hire_date: datetime.date, as_of: datetime.date) -> int:
     return _months_reached(hire_date, as_of + datetime.timedelta(days=1))
 
 
+@dataclass(frozen=True)
+class AccrualStep:
+    """Один шаг накопления: день, с которого накоплено `accrued`."""
+
+    date: datetime.date
+    counted_months: int  # месяцы после округления остатка на этот шаг, 1..12
+    accrued: Decimal  # НАКОПЛЕНО на эту дату нарастающим итогом, два знака
+
+
+def accrual_steps(
+    *,
+    hire_date: datetime.date,
+    working_year_start: datetime.date,
+    as_of: datetime.date,
+    annual_norm: int | Decimal,
+    rounding_threshold_days: int,
+    excluded_days: int,
+) -> list[AccrualStep]:
+    """Шаги накопления рабочего года `working_year_start` до `as_of` включительно, по
+    порядку: не больше двенадцати, по одному на месяц (`T-M2-21`). Шаг `k` - первый день,
+    с которого `compute_accrual` считает `k` месяцев: остаток неполного месяца достиг
+    порога (`граница(k-1) + порог дней`) либо, если порог длиннее месяца, месяц стал
+    полным (день перед `границей(k)`: месяц приёма 10.03 кончается 09.04 включительно).
+    Даты ИЗМЕРЕНЫ перебором дней по `compute_accrual`, а не взяты из текста задачи.
+    `excluded_days` сдвигает каждую дату на столько же дней, как сдвигает `compute_accrual`.
+
+    `accrued` шага - нарастающий итог, округлённый тем же выражением, что в
+    `compute_accrual`; количество, которое шаг добавляет, - разность соседних итогов
+    (разность округлённых, а не округление разности: двенадцать по 2,33 не дали бы 28).
+
+    ГАРАНТИРУЕТСЯ: для любого дня рабочего года накопленное по шагам с датой не позже
+    дня равно `compute_accrual(as_of=день).accrued` (перебор дней в
+    `test_accrual_arithmetic.py`; границы месяцев - тот же `_boundary`, что считает
+    `compute_accrual`). НЕ гарантируется: вне года `[начало, конец + excluded_days)`
+    функция не проверяет `as_of` (позже конца даст все двенадцать шагов, раньше начала -
+    пусто), и сдвиг `working_year_start` предыдущими исключениями не моделируется
+    (границы модуля). Тот же отказ `ValueError`, что у `compute_accrual`, на негодные
+    параметры."""
+    if excluded_days < 0:
+        raise ValueError("Число исключаемых дней не может быть отрицательным.")
+    if annual_norm < 0:
+        raise ValueError("Норма отпуска не может быть отрицательной.")
+    if rounding_threshold_days < 1:
+        raise ValueError("Порог округления месяца должен быть не меньше 1 дня.")
+    year_index = working_year_start.year - hire_date.year
+    if year_index < 0 or _anniversary(hire_date, year_index) != working_year_start:
+        raise ValueError("Начало рабочего года не является годовщиной даты приёма.")
+
+    base = year_index * MONTHS_IN_YEAR
+    shift = datetime.timedelta(days=excluded_days)
+    steps: list[AccrualStep] = []
+    for counted in range(1, MONTHS_IN_YEAR + 1):
+        threshold_day = _boundary(hire_date, base + counted - 1) + datetime.timedelta(
+            days=rounding_threshold_days
+        )
+        reached = min(threshold_day, _boundary(hire_date, base + counted))
+        step_date = reached - datetime.timedelta(days=1) + shift
+        if step_date > as_of:
+            break
+        steps.append(
+            AccrualStep(
+                date=step_date,
+                counted_months=counted,
+                accrued=(Decimal(annual_norm) * counted / MONTHS_IN_YEAR).quantize(
+                    _CENT, rounding=ROUND_HALF_UP
+                ),
+            )
+        )
+    return steps
+
+
 def excluded_unpaid_leave_days(leave_lengths: Sequence[int], counted_limit: int) -> int:
     """Сколько дней выпадает из стажа за рабочий год (ст. 121 ТК РФ):
     СУММА календарных дней отпусков без сохранения заработной платы за

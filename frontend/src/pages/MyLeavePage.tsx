@@ -3,51 +3,32 @@ import type { ColumnsType } from "antd/es/table";
 
 import { NO_ACCESS_MESSAGE } from "../app/accessMessage";
 import { formatDate } from "../app/format";
-import {
-  EmptyState,
-  ErrorLoadingState,
-  LoadingState,
-  NoAccessState,
-} from "../app/states";
+import { EmptyState, ErrorLoadingState, LoadingState, NoAccessState } from "../app/states";
 import { useAccess, useGoHome } from "../app/useAccess";
 import { useSession } from "../app/useSession";
 import {
   entryTypeLabel,
   formatAmount,
   type BalanceEntry,
+  type EntryType,
   type LeaveTypeBalance,
 } from "../entities/balance";
-import {
-  BalancesLoadError,
-  useMyBalancesQuery,
-} from "../entities/useMyBalancesQuery";
+import { BalancesLoadError, useMyBalancesQuery } from "../entities/useMyBalancesQuery";
 
 // Размер страницы истории - ОДНО число и для таблицы, и для каркаса загрузки (`ui.md` §4).
 const HISTORY_PAGE_SIZE = 10;
 
 function historyColumns(unit: string): ColumnsType<BalanceEntry> {
   return [
-    {
-      title: "Дата",
-      dataIndex: "entry_date",
-      render: (value: string) => formatDate(value),
-    },
-    {
-      title: "Тип",
-      dataIndex: "entry_type",
-      render: (value: BalanceEntry["entry_type"]) => entryTypeLabel(value),
-    },
+    { title: "Дата", dataIndex: "entry_date", render: (value: string) => formatDate(value) },
+    { title: "Тип", dataIndex: "entry_type", render: (value: EntryType) => entryTypeLabel(value) },
     {
       title: "Количество",
       dataIndex: "quantity",
       align: "right",
       render: (value: string) => formatAmount(value, unit, { signed: true }),
     },
-    {
-      title: "Причина",
-      dataIndex: "reason",
-      render: (value: string | null) => value ?? "—",
-    },
+    { title: "Причина", dataIndex: "reason", render: (value: string | null) => value ?? "—" },
     { title: "Кто", dataIndex: "actor_name" },
   ];
 }
@@ -84,11 +65,7 @@ export function MyLeavePage() {
       <>
         <LoadingState shape={{ kind: "card", blocks: 1 }} />
         <LoadingState
-          shape={{
-            kind: "table",
-            rows: HISTORY_PAGE_SIZE,
-            columns: historyColumns("").length,
-          }}
+          shape={{ kind: "table", rows: HISTORY_PAGE_SIZE, columns: historyColumns("").length }}
         />
       </>
     );
@@ -107,11 +84,7 @@ export function MyLeavePage() {
     // запускало второй (этот `GET` пишет в журнал). НЕ ПРОВЕРЕНО: тест от умолчания этот флаг
     // не отличает - после ошибки без данных кнопка исчезает под каркасом загрузки, и быстрые
     // нажатия не накапливаются и без него. Оставлено подстраховкой, а не проверенной защитой.
-    return (
-      <ErrorLoadingState
-        onRetry={() => query.refetch({ cancelRefetch: false })}
-      />
-    );
+    return <ErrorLoadingState onRetry={() => query.refetch({ cancelRefetch: false })} />;
   }
 
   const balances = query.data?.balances ?? [];

@@ -92,7 +92,14 @@ def touches_journal(source: str) -> bool:
 
 def names_the_model_or_table(source: str) -> bool:
     """Ссылается ли код на САМУ модель журнала или таблицу, а не только на модуль модели
-    (импорт ради соседнего имени вроде кортежа типов). Докстринги не считаются."""
+    (импорт ради соседнего имени вроде кортежа типов). Докстринги не считаются.
+
+    ГРАНИЦА (правило 8): видит СТАТИЧЕСКИЕ ссылки на имя модели (`Name`, `Attribute`,
+    `ImportFrom`) и строковые литералы, содержащие имя таблицы. Не видит ссылку через строку с
+    именем МОДЕЛИ (`getattr(module, "LeaveBalanceEntry")`, `importlib`, строковая аннотация).
+    `from ... import *` детектор НЕ обходит: использование имени после него остаётся узлом
+    `Name` (проверено прогоном, `test_naming_the_model_after_a_star_import_is_found`); но
+    `import *` без последующего использования имени не засчитывается."""
     tree = ast.parse(source)
     skip = _docstrings(tree)
     for node in ast.walk(tree):
@@ -188,6 +195,18 @@ def test_naming_the_model_is_found_importing_only_the_tuple_is_not() -> None:
     )
     assert names_the_model_or_table("select(LeaveBalanceEntry)\n")
     assert names_the_model_or_table('text("SELECT 1 FROM leave_balance_entries")\n')
+
+
+def test_a_docstring_with_the_table_name_is_not_a_reference_but_the_same_string_is() -> None:
+    in_docstring = '"""Читает leave_balance_entries."""\nx = 1\n'
+    outside = 'x = "leave_balance_entries"\n'
+    assert not names_the_model_or_table(in_docstring)
+    assert names_the_model_or_table(outside)
+
+
+def test_naming_the_model_after_a_star_import_is_found() -> None:
+    source = "from app.models.leave_balance_entry import *\nq = select(LeaveBalanceEntry)\n"
+    assert names_the_model_or_table(source)
 
 
 def test_files_that_reach_the_journal_have_no_update_or_delete_paths() -> None:

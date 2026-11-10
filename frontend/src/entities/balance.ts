@@ -46,9 +46,7 @@ export function entryTypeLabel(entryType: EntryType): string {
  * запятая и отброшенные хвостовые нули. Арифметики над остатком на фронтенде нет и быть не
  * должно (`FR-BAL-002`: считает сервер). `signed` добавляет `+` к положительному. */
 export function formatQuantity(value: string, { signed = false } = {}): string {
-  let text = value.includes(".")
-    ? value.replace(/0+$/, "").replace(/\.$/, "")
-    : value;
+  let text = value.includes(".") ? value.replace(/0+$/, "").replace(/\.$/, "") : value;
   if (text === "-0" || text === "") {
     text = "0";
   }
@@ -56,10 +54,6 @@ export function formatQuantity(value: string, { signed = false } = {}): string {
   return signed && !text.startsWith("-") && text !== "0" ? `+${text}` : text;
 }
 
-export function formatAmount(
-  value: string,
-  unit: string,
-  options?: { signed?: boolean },
-): string {
+export function formatAmount(value: string, unit: string, options?: { signed?: boolean }): string {
   return `${formatQuantity(value, options)} ${unitLabel(unit)}`;
 }

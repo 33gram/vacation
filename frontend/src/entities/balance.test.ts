@@ -1,12 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import {
-  type EntryType,
-  entryTypeLabel,
-  formatAmount,
-  formatQuantity,
-  unitLabel,
-} from "./balance";
+import { type EntryType, entryTypeLabel, formatAmount, formatQuantity, unitLabel } from "./balance";
 
 describe("balance display helpers (FR-BAL-002)", () => {
   it("formats the server's decimal string without any arithmetic", () => {

@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 
-import { type EntryType, entryTypeLabel, formatAmount, formatQuantity, unitLabel } from "./balance";
+import {
+  type EntryType,
+  type Unit,
+  entryTypeLabel,
+  formatAmount,
+  formatQuantity,
+  unitLabel,
+} from "./balance";
 
 describe("balance display helpers (FR-BAL-002)", () => {
   it("formats the server's decimal string without any arithmetic", () => {
@@ -23,7 +30,9 @@ describe("balance display helpers (FR-BAL-002)", () => {
     expect(unitLabel("working_days")).toBe("раб. дн.");
     expect(unitLabel("calendar_days")).toBe("кал. дн.");
     expect(unitLabel("hours")).toBe("ч");
-    expect(unitLabel("weeks")).toBe("weeks");
+    // Значение вне союза (рассинхрон версий бэкенда и фронтенда) в тип не вписывается: `as` нужен
+    // ровно здесь, чтобы смоделировать ответ в обход схемы.
+    expect(unitLabel("weeks" as Unit)).toBe("weeks");
     expect(formatAmount("8.00", "hours")).toBe("8 ч");
   });
 

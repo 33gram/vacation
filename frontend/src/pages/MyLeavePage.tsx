@@ -12,13 +12,14 @@ import {
   type BalanceEntry,
   type EntryType,
   type LeaveTypeBalance,
+  type Unit,
 } from "../entities/balance";
 import { BalancesLoadError, useMyBalancesQuery } from "../entities/useMyBalancesQuery";
 
 // Размер страницы истории - ОДНО число и для таблицы, и для каркаса загрузки (`ui.md` §4).
 const HISTORY_PAGE_SIZE = 10;
 
-function historyColumns(unit: string): ColumnsType<BalanceEntry> {
+function historyColumns(unit: Unit): ColumnsType<BalanceEntry> {
   return [
     { title: "Дата", dataIndex: "entry_date", render: (value: string) => formatDate(value) },
     { title: "Тип", dataIndex: "entry_type", render: (value: EntryType) => entryTypeLabel(value) },
@@ -64,8 +65,13 @@ export function MyLeavePage() {
     return (
       <>
         <LoadingState shape={{ kind: "card", blocks: 1 }} />
+        {/* единица нужна только для сборки колонок: число колонок от неё не зависит */}
         <LoadingState
-          shape={{ kind: "table", rows: HISTORY_PAGE_SIZE, columns: historyColumns("").length }}
+          shape={{
+            kind: "table",
+            rows: HISTORY_PAGE_SIZE,
+            columns: historyColumns("working_days").length,
+          }}
         />
       </>
     );

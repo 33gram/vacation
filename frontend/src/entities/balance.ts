@@ -6,14 +6,21 @@ export type BalanceEntry = components["schemas"]["BalanceEntryOut"];
 
 // Подпись единицы - ОДНО место (`FR-BAL-002`): `unit` приходит в ответе и у разных видов
 // разный (у отгула сегодня рабочие дни, по `FR-DAYOFF-001` будут часы, `T-M3-31`), поэтому
-// слово «дней» в разметке не пишется. Значение, которого здесь нет, показывается как пришло.
-const UNIT_LABELS: Record<string, string> = {
+// слово «дней» в разметке не пишется. Схема отдаёт `unit` перечислением (`T-M2-29`), поэтому
+// `Record<Unit, string>` исчерпывающий: новая единица на бэкенде после перегенерации клиента
+// останавливает `tsc`, а не доезжает до пользователя сырым кодом.
+export type Unit = LeaveTypeBalance["unit"];
+
+const UNIT_LABELS: Record<Unit, string> = {
   calendar_days: "кал. дн.",
   working_days: "раб. дн.",
   hours: "ч",
 };
 
-export function unitLabel(unit: string): string {
+// Запасное `?? unit` ОСТАВЛЕНО по тем же причинам, что у `entryTypeLabel`: клиент не проверяет
+// тело ответа во время выполнения, и рассинхрон версий бэкенда и фронтенда пришлёт значение вне
+// союза - лучше показать его как пришло, чем пустую ячейку.
+export function unitLabel(unit: Unit): string {
   return UNIT_LABELS[unit] ?? unit;
 }
 
@@ -54,6 +61,6 @@ export function formatQuantity(value: string, { signed = false } = {}): string {
   return signed && !text.startsWith("-") && text !== "0" ? `+${text}` : text;
 }
 
-export function formatAmount(value: string, unit: string, options?: { signed?: boolean }): string {
+export function formatAmount(value: string, unit: Unit, options?: { signed?: boolean }): string {
   return `${formatQuantity(value, options)} ${unitLabel(unit)}`;
 }

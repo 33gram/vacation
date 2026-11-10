@@ -460,8 +460,11 @@ export interface components {
         BalanceEntryOut: {
             /** Id */
             id: number;
-            /** Entry Type */
-            entry_type: string;
+            /**
+             * Entry Type
+             * @enum {string}
+             */
+            entry_type: "accrual" | "usage" | "usage_reversal" | "manual_adjustment" | "recalculation" | "initial_import" | "termination_closeout";
             /** Quantity */
             quantity: string;
             /**

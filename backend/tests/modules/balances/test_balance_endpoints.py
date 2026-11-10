@@ -22,6 +22,7 @@ from app.models.leave_balance_entry import (
     MANUAL_ADJUSTMENT,
     LeaveBalanceEntry,
 )
+from app.modules.balances.accrual import accrual_steps, compute_accrual, working_year_starts
 from app.modules.balances.service import LeaveTypeNotSeededError
 from tests.modules.auth.factories import bearer_header, make_account, make_employee
 from tests.modules.balances.helpers import make_context
@@ -57,6 +58,24 @@ async def _events(db_session, employee_id: int) -> list[LeaveBalanceEntry]:
     return list(result.scalars())
 
 
+def _step_dates(hire: datetime.date, up_to: datetime.date) -> list[datetime.date]:
+    """Даты шагов начисления всех рабочих годов с приёма до `up_to` (T-M2-21): по событию
+    на каждый, норма и порог - из сидирования (28 и 15). Завершённые годы целиком,
+    текущий - до `up_to`."""
+    return [
+        step.date
+        for start in working_year_starts(hire, up_to)
+        for step in accrual_steps(
+            hire_date=hire,
+            working_year_start=start,
+            as_of=up_to,
+            annual_norm=28,
+            rounding_threshold_days=15,
+            excluded_days=0,
+        )
+    ]
+
+
 def _url(employee_id: int, suffix: str = "") -> str:
     return f"/api/employees/{employee_id}/balances{suffix}"
 
@@ -86,8 +105,10 @@ async def test_fr_bal_002_opening_my_balance_gives_the_main_type_with_its_histor
     assert Decimal(main["total_balance"]) == Decimal(main["balance"])
     assert main["unit"] == "calendar_days"
     assert main["working_year_start"] == HIRED.isoformat()
-    assert [e["entry_type"] for e in main["history"]] == [ACCRUAL]
-    assert main["history"][0]["actor_name"] == "Система"  # начисляет система
+    # T-M2-21: по строке на шаг накопления (200 дней - шесть-семь шагов), не одна на год
+    assert len(main["history"]) == len(_step_dates(HIRED, TODAY)) > 1
+    assert {e["entry_type"] for e in main["history"]} == {ACCRUAL}
+    assert {e["actor_name"] for e in main["history"]} == {"Система"}  # начисляет система
     assert "actor_account_id" not in main["history"][0]  # внутренний идентификатор не отдаётся
     assert body["as_of"] == TODAY.isoformat()
 
@@ -230,9 +251,12 @@ async def test_fr_bal_002_the_history_is_cut_at_the_requested_date_and_keeps_the
     )
 
     main = earlier.json()["balances"][0]
-    types = [e["entry_type"] for e in main["history"]]
-    assert types == [ACCRUAL]  # начисление за завершённый год осталось, корректировки нет
-    assert main["history"][0]["entry_date"] == first_year_last_day.isoformat()
+    types = {e["entry_type"] for e in main["history"]}
+    assert types == {ACCRUAL}  # начисления за завершённый год остались, корректировки нет
+    # Двенадцать шагов первого года; последний - в пределах года, не позже его последнего дня.
+    dates = sorted(e["entry_date"] for e in main["history"])
+    assert len(dates) == 12
+    assert dates[-1] <= first_year_last_day.isoformat()
 
 
 # --- ленивое начисление (T-M2-19) ----------------------------------------------
@@ -249,8 +273,9 @@ async def test_lazy_the_first_get_writes_the_accrual_and_the_second_get_writes_n
     second = await api_client.get(_url(employee.id), headers=bearer_header(own))
 
     assert first.status_code == second.status_code == 200
-    assert len(after_first) == 1 and after_first[0].entry_type == ACCRUAL
-    assert len(await _events(db_session, employee.id)) == 1  # повтор запроса безопасен
+    assert {e.entry_type for e in after_first} == {ACCRUAL}
+    assert len(after_first) == len(_step_dates(HIRED, TODAY))  # T-M2-21: по событию на шаг
+    assert len(await _events(db_session, employee.id)) == len(after_first)  # повтор безопасен
     assert first.json() == second.json()
 
 
@@ -274,10 +299,17 @@ async def test_lazy_a_get_on_a_past_date_does_not_write_events_dated_that_day(
     today = await api_client.get(_url(employee.id), headers=bearer_header(own))
 
     assert on_past.status_code == today.status_code == 200
-    assert {e.entry_date for e in after_past} == {first_year_last_day, TODAY}  # не `past`
+    # События датированы днями шагов (T-M2-21), а не `past` и не днём запроса.
+    assert sorted(e.entry_date for e in after_past) == _step_dates(hire, TODAY)
     assert len(await _events(db_session, employee.id)) == len(after_past)  # «сегодня» не дописало
-    # Остаток на прошлую дату - записанное на неё: до последнего дня года начисления ещё нет.
-    assert Decimal(on_past.json()["balances"][0]["balance"]) == 0
+    # Остаток на прошлую дату - записанное на неё, и он равен расчёту на эту дату.
+    assert Decimal(on_past.json()["balances"][0]["balance"]) == compute_accrual(
+        hire_date=hire,
+        as_of=past,
+        annual_norm=28,
+        rounding_threshold_days=15,
+        excluded_days=0,
+    ).accrued
     at_year_end = await api_client.get(
         _url(employee.id),
         params={"as_of": first_year_last_day.isoformat()},
@@ -299,7 +331,8 @@ async def test_lazy_a_get_on_a_future_date_never_writes_an_accrual_dated_in_the_
     assert response.status_code == 200 and response.json()["as_of"] == future.isoformat()
     events = await _events(db_session, employee.id)
     assert events  # начисление до сегодня записано
-    assert max(e.entry_date for e in events) == TODAY  # а не на будущую дату
+    # Шаги - до сегодня; ни одного, датированного будущим (`future` просили, а не начисляли).
+    assert sorted(e.entry_date for e in events) == _step_dates(HIRED, TODAY)
 
 
 async def test_lazy_an_employee_whose_every_year_is_closed_reads_without_an_error(
@@ -427,9 +460,10 @@ async def test_fr_bal_004_an_adjustment_is_preceded_by_the_lazy_accrual(
         headers=bearer_header(hr),
     )
 
-    types = [e.entry_type for e in await _events(db_session, employee.id)]
-    assert types == [ACCRUAL, MANUAL_ADJUSTMENT]
-    accrued = (await _events(db_session, employee.id))[0].quantity
+    events = await _events(db_session, employee.id)
+    steps = len(_step_dates(HIRED, TODAY))
+    assert [e.entry_type for e in events] == [ACCRUAL] * steps + [MANUAL_ADJUSTMENT]
+    accrued = sum(e.quantity for e in events if e.entry_type == ACCRUAL)
     # Возвращённый остаток включает начисление.
     assert Decimal(response.json()["balance"]) == accrued + 1
 
@@ -568,7 +602,9 @@ async def test_a_terminated_employee_is_accrued_only_up_to_the_termination_date(
 
     assert response.status_code == 200
     events = await _events(db_session, employee.id)
-    assert events and {e.entry_date for e in events} == {termination}  # после увольнения - ничего
+    # Шаги до даты увольнения включительно (T-M2-21); после неё - ничего.
+    assert events and sorted(e.entry_date for e in events) == _step_dates(HIRED, termination)
+    assert max(e.entry_date for e in events) <= termination
 
 
 async def test_a_manager_of_a_subordinates_subordinate_reads_the_balance(

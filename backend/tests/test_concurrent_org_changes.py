@@ -43,6 +43,7 @@ from app.models.account import Account
 from app.models.department import Department
 from app.models.employee import Employee
 from app.models.leave_balance_entry import ACCRUAL, RECALCULATION, LeaveBalanceEntry
+from app.modules.balances.accrual import accrual_steps
 from app.modules.balances.service import accrue_before_read
 from app.modules.employees import department_service, employee_service
 from app.schemas.department import DepartmentUpdate
@@ -692,7 +693,7 @@ async def test_accrual_uses_the_hire_date_committed_by_another_transaction() -> 
                     )
                 )
             ).scalars().all()
-        assert years == [new]  # а не [old]: расчёт по устаревшей карточке
+        assert set(years) == {new}  # а не {old}: расчёт по устаревшей карточке
 
 
 async def test_two_concurrent_reads_write_the_accrual_once() -> None:
@@ -719,4 +720,18 @@ async def test_two_concurrent_reads_write_the_accrual_once() -> None:
                     select(LeaveBalanceEntry).where(LeaveBalanceEntry.employee_id == employee_id)
                 )
             ).scalars().all()
-        assert len(events) == 1 and events[0].entry_type == ACCRUAL
+        # По событию на шаг (T-M2-21): каждый шаг записан один раз, а не по разу от каждой сессии.
+        hire = today - datetime.timedelta(days=200)
+        expected = [
+            step.date
+            for step in accrual_steps(
+                hire_date=hire,
+                working_year_start=hire,
+                as_of=today,
+                annual_norm=28,
+                rounding_threshold_days=15,
+                excluded_days=0,
+            )
+        ]
+        assert sorted(e.entry_date for e in events) == expected
+        assert {e.entry_type for e in events} == {ACCRUAL}

@@ -56,6 +56,7 @@ from app.models.leave_balance_entry import (
 from app.models.leave_type import LeaveType
 from app.modules.balances.accrual import (
     MONTHS_IN_YEAR,
+    accrual_steps,
     compute_accrual,
     is_working_year_start,
     working_year_containing,
@@ -361,9 +362,12 @@ async def accrue_leave(
     attribution: AccrualAttribution | None = None,
 ) -> Decimal:
     """Начисляет отпуск за рабочий год на дату `as_of` (`FR-BAL-001`):
-    пишет ОДНО событие `accrual` с разностью «положено минус уже начислено»
-    и возвращает записанное количество; ноль — если писать нечего (событие
-    не пишется, исключение не поднимается).
+    пишет по ОДНОМУ событию `accrual` на каждый ещё не записанный шаг накопления
+    (`accrual_steps`, `T-M2-21`: до двенадцати на рабочий год), датированному днём шага -
+    днём, когда право возникло, а не днём вызова, - и возвращает записанное количество
+    (сумму шагов); ноль — если писать нечего (событий нет, исключение не
+    поднимается). Шаг пишется, когда его нарастающий итог больше уже начисленного, на
+    разность: сумма записанного та же, что у одного события на `as_of`.
 
     Работает только с основным видом (`MAIN_LEAVE_TYPE_CODE`): норма
     `annual_leave_days` - норма основного отпуска, и начислять её на другой
@@ -433,27 +437,46 @@ async def accrue_leave(
             LeaveBalanceEntry.entry_type.in_(ALREADY_ACCRUED_ENTRY_TYPES),
         )
     )
-    difference = accrual.accrued - Decimal(already.scalar_one())
-    if difference <= 0:
-        return Decimal(0)
-    session.add(
-        LeaveBalanceEntry(
-            employee_id=employee_id,
-            leave_type_id=leave_type_id,
-            working_year_start=accrual.working_year_start,
-            working_year_end=accrual.working_year_end,
-            entry_type=ACCRUAL,
-            quantity=difference,
-            entry_date=as_of,
-            reason=(
-                (f"{attribution.reason_prefix.strip()}: " if attribution else "")
-                + f"Начисление на {as_of.strftime('%d.%m.%Y')}: "
-                f"{accrual.counted_months} из {MONTHS_IN_YEAR} месяцев рабочего года"
-            ),
-            actor_account_id=attribution.actor_account_id if attribution else None,
-        )
+    # По событию на шаг (T-M2-21): каждый шаг, чьё накопленное больше уже записанного,
+    # пишет разность и датируется днём шага, а не днём вызова; шаги, покрытые прежними
+    # событиями, пропускаются. Идемпотентность - тот же принцип «положено минус уже
+    # начислено», применённый к нарастающему итогу шагов.
+    written_total = Decimal(already.scalar_one())
+    steps = accrual_steps(
+        hire_date=employee.hire_date,
+        working_year_start=accrual.working_year_start,
+        as_of=as_of,
+        annual_norm=rules[ANNUAL_LEAVE_DAYS],
+        rounding_threshold_days=rules[MONTH_ROUNDING_THRESHOLD_DAYS],
+        excluded_days=excluded_days,
     )
-    await session.flush()
+    prefix = f"{attribution.reason_prefix.strip()}: " if attribution else ""
+    difference = Decimal(0)
+    for step in steps:
+        if step.accrued <= written_total:
+            continue
+        quantity = step.accrued - written_total
+        session.add(
+            LeaveBalanceEntry(
+                employee_id=employee_id,
+                leave_type_id=leave_type_id,
+                working_year_start=accrual.working_year_start,
+                working_year_end=accrual.working_year_end,
+                entry_type=ACCRUAL,
+                quantity=quantity,
+                entry_date=step.date,
+                reason=(
+                    prefix + f"Начисление за {step.counted_months}-й месяц рабочего года "
+                    f"({step.date.strftime('%d.%m.%Y')}): "
+                    f"{step.counted_months} из {MONTHS_IN_YEAR} месяцев"
+                ),
+                actor_account_id=attribution.actor_account_id if attribution else None,
+            )
+        )
+        written_total = step.accrued
+        difference += quantity
+    if difference > 0:
+        await session.flush()
     return difference
 
 

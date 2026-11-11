@@ -78,6 +78,24 @@ describe("history rows (T-M2-30, ui.md §6)", () => {
     expect(rows.map((row) => row.key)).toEqual(["event-9", "event-7", "accrual-year-2026-03-10"]);
   });
 
+  it("puts the later working year first when two folded rows have the same date", () => {
+    // СИНТЕТИЧЕСКИЙ случай: ответ сервера такого не даёт (даты шагов одного сотрудника
+    // различны, `last_accrual_date` разных рабочих годов не совпадает). Проверяется само правило
+    // разрыва, а не поведение API: результат не должен зависеть от порядка во входе.
+    const years = [
+      accrualYearResponse({ working_year_start: "2025-03-10", last_accrual_date: "2026-02-10" }),
+      accrualYearResponse({ working_year_start: "2026-03-10", last_accrual_date: "2026-02-10" }),
+    ];
+
+    const forward = historyRows(leaveTypeBalanceResponse({ history: [], accrual_years: years }));
+    const backward = historyRows(
+      leaveTypeBalanceResponse({ history: [], accrual_years: [...years].reverse() }),
+    );
+
+    expect(forward.map((row) => row.key)).toEqual(["accrual-year-2026-03-10", "accrual-year-2025-03-10"]);
+    expect(backward.map((row) => row.key)).toEqual(forward.map((row) => row.key));
+  });
+
   it("carries the server's sum of a folded year as it came, without adding anything", () => {
     const rows = historyRows(
       leaveTypeBalanceResponse({

@@ -80,6 +80,7 @@ export function formatAmount(value: string, unit: Unit, options?: { signed?: boo
 export interface HistoryRow {
   key: string;
   id: number | null; // `null` у свёрнутой строки: это агрегат, а не событие
+  year_start: string | null; // начало рабочего года свёрнутой строки; `null` у события
   entry_date: string;
   entry_type: EntryType;
   quantity: string;
@@ -98,6 +99,7 @@ export function historyRows(balance: LeaveTypeBalance): HistoryRow[] {
   const events: HistoryRow[] = balance.history.map((entry) => ({
     key: `event-${entry.id}`,
     id: entry.id,
+    year_start: null,
     entry_date: entry.entry_date,
     entry_type: entry.entry_type,
     quantity: entry.quantity,
@@ -108,6 +110,7 @@ export function historyRows(balance: LeaveTypeBalance): HistoryRow[] {
   const folded: HistoryRow[] = balance.accrual_years.map((year) => ({
     key: `accrual-year-${year.working_year_start}`,
     id: null,
+    year_start: year.working_year_start,
     entry_date: year.last_accrual_date,
     entry_type: "accrual",
     quantity: year.accrued,
@@ -116,11 +119,20 @@ export function historyRows(balance: LeaveTypeBalance): HistoryRow[] {
     folded: true,
   }));
   return [...events, ...folded].sort((a, b) => {
+    // Даты сравниваются СТРОКОЙ: схема отдаёт `Format: date`, то есть `YYYY-MM-DD` фиксированной
+    // ширины (год, месяц и день с ведущими нулями), и порядок строк совпадает с порядком дат.
     if (a.entry_date !== b.entry_date) {
       return a.entry_date < b.entry_date ? 1 : -1;
     }
     if (a.folded !== b.folded) {
       return a.folded ? 1 : -1;
+    }
+    if (a.folded && b.folded) {
+      // Две свёрнутые строки с равной датой: позже начавшийся рабочий год выше. Случай СЕГОДНЯ
+      // недостижим (даты шагов у одного сотрудника различны, `last_accrual_date` разных
+      // рабочих годов не совпадает), правило нужно ради предсказуемости, а не против живого
+      // дефекта: порядок не должен зависеть от стабильности `sort` и порядка ответа.
+      return (a.year_start ?? "") < (b.year_start ?? "") ? 1 : -1;
     }
     return (b.id ?? 0) - (a.id ?? 0);
   });

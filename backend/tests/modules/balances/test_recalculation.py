@@ -118,7 +118,8 @@ async def test_fr_bal_003_a_nonzero_difference_closes_each_old_step_with_reason_
     recalculations = [e for e in await _events(db_session, ctx) if e.entry_type == RECALCULATION]
     # T-M2-32: зеркало на КАЖДЫЙ прежний шаг - та же дата, та же величина с минусом.
     assert len(recalculations) == len(old_steps) == 8
-    assert [(e.entry_date, e.quantity) for e in sorted(recalculations, key=lambda e: e.entry_date)] == [
+    mirrors = sorted(recalculations, key=lambda e: e.entry_date)
+    assert [(e.entry_date, e.quantity) for e in mirrors] == [
         (step.entry_date, -step.quantity) for step in old_steps
     ]
     for event in recalculations:

@@ -13,7 +13,7 @@ from sqlalchemy import select
 
 from app.core.time_utils import utcnow
 from app.models.employee import Employee
-from app.models.leave_balance_entry import RECALCULATION, LeaveBalanceEntry
+from app.models.leave_balance_entry import ACCRUAL, RECALCULATION, LeaveBalanceEntry
 from app.modules.balances.service import accrue_leave, adjust_balance
 from app.modules.employees import employee_service
 from tests.modules.auth.factories import (
@@ -78,6 +78,7 @@ async def test_fr_bal_003_changing_the_hire_date_recalculates_in_the_same_reques
 ) -> None:
     ctx, employee, admin, department = await _setup(db_session)
     await _accrue_now(db_session, ctx)
+    old_steps = [e for e in await _events(db_session, employee.id) if e.entry_type == ACCRUAL]
     new_hire = HIRED + datetime.timedelta(days=10)
 
     response = await api_client.put(
@@ -90,11 +91,13 @@ async def test_fr_bal_003_changing_the_hire_date_recalculates_in_the_same_reques
     recalculations = [
         e for e in await _events(db_session, employee.id) if e.entry_type == RECALCULATION
     ]
-    assert len(recalculations) == 1
-    assert recalculations[0].quantity < 0
-    assert recalculations[0].actor_account_id == admin.id  # аутентифицированный аккаунт
-    assert HIRED.strftime("%d.%m.%Y") in recalculations[0].reason
-    assert new_hire.strftime("%d.%m.%Y") in recalculations[0].reason
+    # T-M2-32: закрытие - зеркало на каждый прежний шаг начисления.
+    assert len(recalculations) == len(old_steps) > 1
+    for event in recalculations:
+        assert event.quantity < 0
+        assert event.actor_account_id == admin.id  # аутентифицированный аккаунт
+        assert HIRED.strftime("%d.%m.%Y") in event.reason
+        assert new_hire.strftime("%d.%m.%Y") in event.reason
 
 
 async def test_fr_bal_003_changing_a_field_that_does_not_affect_the_norm_recalculates_nothing(

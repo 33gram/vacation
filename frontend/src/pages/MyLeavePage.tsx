@@ -86,6 +86,10 @@ export function MyLeavePage() {
     }
   }
 
+  const loadedBalances = query.data?.balances ?? [];
+  const notHired =
+    loadedBalances.length > 0 && loadedBalances.every((balance) => balance.working_year_start === null);
+
   return (
     <Space direction="vertical" size="large" style={{ width: "100%" }}>
       <div>
@@ -106,6 +110,14 @@ export function MyLeavePage() {
             disabledDate={(day) => day.format(REQUEST_DAY_FORMAT) > utcToday()}
           />
         </Space>
+        {notHired && (
+          // Одна строка в шапке, а не в каждом блоке вида: рабочего года нет у ВСЕХ видов сразу
+          // (год - свойство даты и даты приёма, не вида), а блоков столько, сколько видов с
+          // остатком. Сервер отдаёт `None` только при дате раньше приёма (`GET /balances`).
+          <Typography.Paragraph type="secondary" style={{ margin: 0 }}>
+            На эту дату сотрудник ещё не принят: рабочего года нет, остаток нулевой.
+          </Typography.Paragraph>
+        )}
       </div>
       {renderBody(query)}
     </Space>
@@ -178,12 +190,6 @@ function LeaveTypeCard({ balance }: { balance: LeaveTypeBalance }) {
           {formatAmount(balance.total_balance, balance.unit)}
         </Descriptions.Item>
       </Descriptions>
-      {balance.working_year_start === null && (
-        // Рабочего года нет, только когда дата раньше даты приёма (`GET /balances`, `T-M2-31`).
-        <Typography.Paragraph type="secondary">
-          На эту дату сотрудник ещё не принят: рабочего года нет, остаток нулевой.
-        </Typography.Paragraph>
-      )}
       <Typography.Title level={5}>История</Typography.Title>
       <Table<HistoryRow>
         size="small"

@@ -682,6 +682,43 @@ describe("balance on a date (T-M2-31, BR-8)", () => {
     expect(within(screen.getByLabelText("Ежегодный оплачиваемый отпуск")).getByText("Рабочий год")).toBeInTheDocument();
   });
 
+  it("before the hire date with TWO leave types the note is said ONCE, in the header, not in every block (Р-3)", async () => {
+    // Рабочего года нет у всех видов сразу: это свойство даты, а не вида.
+    const noYear = (overrides: Parameters<typeof leaveTypeBalanceResponse>[0]) =>
+      leaveTypeBalanceResponse({
+        working_year_start: null,
+        working_year_end: null,
+        balance: "0",
+        total_balance: "0",
+        history: [],
+        ...overrides,
+      });
+    mockBackend({ role: "employee" }, (asOf) =>
+      asOf === null
+        ? { status: 200, body: balancesResponse() }
+        : {
+            status: 200,
+            body: balancesResponse(
+              [
+                noYear({ leave_type_id: 1, name: "Ежегодный оплачиваемый отпуск" }),
+                noYear({ leave_type_id: 2, name: "Дополнительный отпуск" }),
+              ],
+              { as_of: asOf },
+            ),
+          },
+    );
+    renderApp("/my-leave");
+    await screen.findByLabelText("Ежегодный оплачиваемый отпуск");
+
+    await pick("2026-01-05");
+
+    await screen.findByLabelText("Дополнительный отпуск");
+    expect(screen.getAllByText(/ещё не принят/)).toHaveLength(1);
+    for (const name of ["Ежегодный оплачиваемый отпуск", "Дополнительный отпуск"]) {
+      expect(within(screen.getByLabelText(name)).queryByText(/ещё не принят/)).not.toBeInTheDocument();
+    }
+  });
+
   it("the hire date itself is an ordinary date: a working year, no note (Р-3)", async () => {
     mockBackend({ role: "employee" }, (asOf) => ({
       status: 200,

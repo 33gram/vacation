@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider, focusManager, onlineManager } from "@tanstack/react-query";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { setAccessToken } from "../app/auth";
 import { SessionProvider } from "../app/SessionContext";
@@ -31,11 +31,15 @@ function deferred<T>() {
 /** Моки `/me` и остатка; `onBalances` отвечает на каждый `GET .../balances` и считает их. */
 function mockBackend(
   me: Parameters<typeof meResponse>[0],
-  onBalances: () => Reply | Promise<Reply> = () => ({ status: 200, body: balancesResponse() }),
+  onBalances: (asOf: string | null) => Reply | Promise<Reply> = () => ({
+    status: 200,
+    body: balancesResponse(),
+  }),
 ) {
-  const calls = { balances: 0 };
+  // `asOf` - параметр `as_of` каждого запроса остатка в порядке отправки (`null` - не отправлен).
+  const calls = { balances: 0, asOf: [] as (string | null)[] };
   setAccessToken("token");
-  setFetchHandler((method, pathname) => {
+  setFetchHandler((method, pathname, _init, search) => {
     if (method === "GET" && pathname === "/api/auth/me") {
       return { status: 200, body: meResponse({ employee_id: EMPLOYEE_ID, ...me }) };
     }
@@ -43,7 +47,8 @@ function mockBackend(
     // который ушёл бы без карточки), а не только своего.
     if (method === "GET" && /^\/api\/employees\/[^/]+\/balances$/.test(pathname)) {
       calls.balances += 1;
-      return onBalances();
+      calls.asOf.push(search.get("as_of"));
+      return onBalances(search.get("as_of"));
     }
     return null;
   });
@@ -310,11 +315,14 @@ describe("my leave (T-M2-13, FR-BAL-002)", () => {
 
       const { container } = renderApp("/my-leave");
 
-      await waitFor(() => {
-        expect(container.querySelector(".ant-skeleton")).not.toBeNull();
-      });
+      // T-M2-31: шапка с выбором даты видна и во время загрузки - при смене даты каркас
+      // заменяет блоки, а элемент остаётся на месте (до этого заголовок прятался). Ждём САМУ
+      // страницу: каркас оболочки (`/me`) был раньше и тоже `.ant-skeleton`.
+      expect(await screen.findByText("Мой отпуск", { selector: "h3" })).toBeInTheDocument();
+      expect(screen.getByLabelText("Остаток на дату")).toBeInTheDocument();
+      expect(container.querySelector("[data-skeleton-block]")).not.toBeNull();
       expect(container.querySelector(".ant-spin")).toBeNull();
-      expect(screen.queryByText("Мой отпуск", { selector: "h3" })).not.toBeInTheDocument();
+      expect(screen.queryByLabelText("Ежегодный оплачиваемый отпуск")).not.toBeInTheDocument();
 
       await act(async () => {
         gate.resolve({ status: 200, body: balancesResponse() });
@@ -530,4 +538,229 @@ describe("start page (ui.md §2.3)", () => {
       expect(await screen.findByText("Разделы этой роли ещё не готовы")).toBeInTheDocument();
     },
   );
+});
+
+
+describe("balance on a date (T-M2-31, BR-8)", () => {
+  /** Часовой пояс и «сейчас» задаются тестом: от них зависят и граница «сегодня», и формат
+   * отправки. Фальшивыми делаются только часы `Date` - таймеры react-query и `waitFor` живые. */
+  function at(tz: string, nowUtc: string) {
+    vi.stubEnv("TZ", tz);
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(nowUtc));
+  }
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllEnvs(); // возвращает TZ, каким был
+  });
+
+  async function pick(day: string) {
+    // Ввод текстом в формате элемента (ДД.ММ.ГГГГ) и Enter - так же, как это делает человек.
+    const input = await screen.findByLabelText("Остаток на дату");
+    const [y, m, d] = day.split("-");
+    fireEvent.change(input, { target: { value: `${d}.${m}.${y}` } });
+    fireEvent.keyDown(input, { key: "Enter", keyCode: 13 });
+  }
+
+  it("asks WITHOUT a date by default, so the server answers for its own today", async () => {
+    const calls = mockBackend({ role: "employee" });
+
+    renderApp("/my-leave");
+    await screen.findByLabelText("Ежегодный оплачиваемый отпуск");
+
+    expect(calls.asOf).toEqual([null]);
+  });
+
+  it("sends the CHOSEN date as YYYY-MM-DD in a zone east of UTC, not a day earlier (Р-2)", async () => {
+    at("Asia/Tokyo", "2026-10-26T03:00:00Z");
+    // Предусловие теста: пояс действительно применён (иначе тест зелёный на любом коде).
+    expect(new Date(2026, 9, 20).getTimezoneOffset()).toBe(-540);
+    const calls = mockBackend({ role: "employee" });
+    renderApp("/my-leave");
+    await screen.findByLabelText("Ежегодный оплачиваемый отпуск");
+
+    await pick("2026-10-20");
+
+    await waitFor(() => expect(calls.asOf).toEqual([null, "2026-10-20"]));
+  });
+
+  it("sends the chosen date unchanged in a zone west of UTC as well", async () => {
+    at("America/Los_Angeles", "2026-10-26T20:00:00Z");
+    expect(new Date(2026, 9, 20).getTimezoneOffset()).toBe(420);
+    const calls = mockBackend({ role: "employee" });
+    renderApp("/my-leave");
+    await screen.findByLabelText("Ежегодный оплачиваемый отпуск");
+
+    await pick("2026-10-20");
+
+    await waitFor(() => expect(calls.asOf).toEqual([null, "2026-10-20"]));
+  });
+
+  it("clearing the date goes back to a request without a date", async () => {
+    const calls = mockBackend({ role: "employee" });
+    renderApp("/my-leave");
+    await screen.findByLabelText("Ежегодный оплачиваемый отпуск");
+    await pick("2026-03-20");
+    await waitFor(() => expect(calls.asOf).toEqual([null, "2026-03-20"]));
+
+    const clear = document.querySelector(".ant-picker-clear") as HTMLElement;
+    fireEvent.mouseDown(clear);
+    fireEvent.click(clear);
+
+    await waitFor(() => expect(calls.asOf[calls.asOf.length - 1]).toBeNull());
+  });
+
+  /** Ячейка панели выбора за день `YYYY-MM-DD` и признак «недоступна». */
+  function cell(day: string): HTMLElement | null {
+    return document.querySelector(`td[title="${day}"]`);
+  }
+  function openPanel() {
+    const input = screen.getByLabelText("Остаток на дату");
+    fireEvent.mouseDown(input);
+    fireEvent.focus(input);
+    fireEvent.click(input);
+  }
+
+  it("dates after TODAY IN UTC are unavailable, and UTC today itself is available (east of UTC, Р-1)", async () => {
+    // 27.10 01:00 в Токио, но 26.10 16:00 по UTC: сервер считает сегодня 26.10, поэтому
+    // местное «27.10» уже будущее для него и должно быть недоступно.
+    at("Asia/Tokyo", "2026-10-26T16:00:00Z");
+    mockBackend({ role: "employee" });
+    renderApp("/my-leave");
+    await screen.findByLabelText("Ежегодный оплачиваемый отпуск");
+
+    openPanel();
+
+    await waitFor(() => expect(cell("2026-10-26")).not.toBeNull());
+    expect(cell("2026-10-26")).not.toHaveClass("ant-picker-cell-disabled");
+    expect(cell("2026-10-27")).toHaveClass("ant-picker-cell-disabled");
+  });
+
+  it("the same boundary west of UTC: UTC today is already tomorrow there, and it is available (Р-1)", async () => {
+    // 26.10 20:00 в Лос-Анджелесе, но 27.10 03:00 по UTC: сегодня сервера - 27.10.
+    at("America/Los_Angeles", "2026-10-27T03:00:00Z");
+    mockBackend({ role: "employee" });
+    renderApp("/my-leave");
+    await screen.findByLabelText("Ежегодный оплачиваемый отпуск");
+
+    openPanel();
+
+    await waitFor(() => expect(cell("2026-10-27")).not.toBeNull());
+    expect(cell("2026-10-27")).not.toHaveClass("ant-picker-cell-disabled");
+    expect(cell("2026-10-28")).toHaveClass("ant-picker-cell-disabled");
+  });
+
+  it("a date before the hire date: the screen says the employee was not hired yet (Р-3)", async () => {
+    const calls = mockBackend({ role: "employee" }, (asOf) =>
+      asOf === null
+        ? { status: 200, body: balancesResponse() }
+        : {
+            status: 200,
+            body: balancesResponse(
+              [
+                leaveTypeBalanceResponse({
+                  working_year_start: null,
+                  working_year_end: null,
+                  balance: "0",
+                  total_balance: "0",
+                  history: [],
+                }),
+              ],
+              { as_of: asOf },
+            ),
+          },
+    );
+    renderApp("/my-leave");
+    const block = await screen.findByLabelText("Ежегодный оплачиваемый отпуск");
+    expect(within(block).queryByText(/ещё не принят/)).not.toBeInTheDocument();
+
+    await pick("2026-01-05");
+
+    await waitFor(() => expect(calls.asOf).toEqual([null, "2026-01-05"]));
+    expect(await screen.findByText(/ещё не принят: рабочего года нет, остаток нулевой/)).toBeInTheDocument();
+    expect(within(screen.getByLabelText("Ежегодный оплачиваемый отпуск")).getByText("Рабочий год")).toBeInTheDocument();
+  });
+
+  it("the hire date itself is an ordinary date: a working year, no note (Р-3)", async () => {
+    mockBackend({ role: "employee" }, (asOf) => ({
+      status: 200,
+      body: balancesResponse(
+        [leaveTypeBalanceResponse({ working_year_start: "2026-03-10", balance: "0", total_balance: "0" })],
+        { as_of: asOf ?? "2026-10-26" },
+      ),
+    }));
+    renderApp("/my-leave");
+    await screen.findByLabelText("Ежегодный оплачиваемый отпуск");
+
+    await pick("2026-03-10");
+
+    expect(await screen.findByText("Остаток на 10.03.2026")).toBeInTheDocument();
+    expect(screen.queryByText(/ещё не принят/)).not.toBeInTheDocument();
+    expect(screen.getByText("10.03.2026 — 09.03.2027")).toBeInTheDocument();
+  });
+
+  it("a change of the date shows the skeleton in place of the blocks, keeps the control and does not keep the old numbers (Р-4)", async () => {
+    const second = deferred<Reply>();
+    mockBackend({ role: "employee" }, (asOf) =>
+      asOf === null
+        ? {
+            status: 200,
+            body: balancesResponse([leaveTypeBalanceResponse({ balance: "18.67", total_balance: "18.67" })]),
+          }
+        : second.promise,
+    );
+    const { container } = renderApp("/my-leave");
+    await screen.findByLabelText("Ежегодный оплачиваемый отпуск");
+    const controlBefore = screen.getByLabelText("Остаток на дату");
+
+    await pick("2026-04-02");
+
+    await waitFor(() => expect(container.querySelector("[data-skeleton-block]")).not.toBeNull());
+    expect(screen.queryByLabelText("Ежегодный оплачиваемый отпуск")).not.toBeInTheDocument();
+    expect(screen.queryByText("18,67 кал. дн.")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Остаток на дату")).toBe(controlBefore); // не размонтирован
+
+    await act(async () => {
+      second.resolve({
+        status: 200,
+        body: balancesResponse([leaveTypeBalanceResponse({ balance: "2.33", total_balance: "2.33" })], {
+          as_of: "2026-04-02",
+        }),
+      });
+    });
+    expect((await screen.findAllByText("2,33 кал. дн.")).length).toBe(2);
+    expect(container.querySelector("[data-skeleton-block]")).toBeNull();
+    expect(screen.getByText("Остаток на 02.04.2026")).toBeInTheDocument(); // дата - та, что применил сервер
+  });
+
+  it("shows the date the SERVER applied, not the one that was typed (Р-1)", async () => {
+    mockBackend({ role: "employee" }, (asOf) => ({
+      status: 200,
+      body: balancesResponse([leaveTypeBalanceResponse()], { as_of: asOf === null ? "2026-10-26" : "2026-04-01" }),
+    }));
+    renderApp("/my-leave");
+    expect(await screen.findByText("Остаток на 26.10.2026")).toBeInTheDocument();
+
+    await pick("2026-04-02");
+
+    expect(await screen.findByText("Остаток на 01.04.2026")).toBeInTheDocument();
+  });
+
+  it("one request per change of the date, and none by itself afterwards (the GET writes to the journal)", async () => {
+    const calls = mockBackend({ role: "employee" });
+    renderApp("/my-leave");
+    await screen.findByLabelText("Ежегодный оплачиваемый отпуск");
+    await pick("2026-04-02");
+    await waitFor(() => expect(calls.balances).toBe(2));
+    await screen.findByLabelText("Ежегодный оплачиваемый отпуск");
+
+    focusManager.setFocused(true);
+    onlineManager.setOnline(true);
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+
+    expect(calls.balances).toBe(2);
+  });
 });

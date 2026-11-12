@@ -637,6 +637,22 @@ describe("balance on a date (T-M2-31, BR-8)", () => {
     expect(cell("2026-10-27")).toHaveClass("ant-picker-cell-disabled");
   });
 
+  it("the boundary at a moment where the UTC date and the MOSCOW date differ (T-M2-34 must not pass silently)", async () => {
+    // 13.11 01:00 в Москве, но 12.11 22:00 по UTC. Сдвиг границы на +3 часа (Москва) тест
+    // Токио (16:00Z) и Лос-Анджелеса (03:00Z) не замечал: сутки они не пересекают, этот - пересекает.
+    at("Europe/Moscow", "2026-11-12T22:00:00Z");
+    expect(new Date(2026, 10, 12).getTimezoneOffset()).toBe(-180);
+    mockBackend({ role: "employee" });
+    renderApp("/my-leave");
+    await screen.findByLabelText("Ежегодный оплачиваемый отпуск");
+
+    openPanel();
+
+    await waitFor(() => expect(cell("2026-11-12")).not.toBeNull());
+    expect(cell("2026-11-12")).not.toHaveClass("ant-picker-cell-disabled");
+    expect(cell("2026-11-13")).toHaveClass("ant-picker-cell-disabled");
+  });
+
   it("the same boundary west of UTC: UTC today is already tomorrow there, and it is available (Р-1)", async () => {
     // 26.10 20:00 в Лос-Анджелесе, но 27.10 03:00 по UTC: сегодня сервера - 27.10.
     at("America/Los_Angeles", "2026-10-27T03:00:00Z");

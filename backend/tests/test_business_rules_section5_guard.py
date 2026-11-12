@@ -85,6 +85,8 @@ _BR_KEYS: dict[str, tuple[str, ...]] = {
     "BR-5": ("min_leave_part_days",),
     "BR-6": ("leave_usage_deadline_months",),
     "BR-7": ("compensation_threshold_days",),
+    # BR-12 (требования v1.30, T-M2-34): не норма ТК РФ, но параметр раздела 5 с идентификатором.
+    "BR-12": ("business_timezone",),
 }
 
 # Ключи, источник которых - не раздел 5, а FR-* (идентификатор должен
@@ -273,10 +275,10 @@ def test_rule_with_a_number_added_to_section5_is_reported() -> None:
     text = _REQUIREMENTS_PATH.read_text(encoding="utf-8")
     anchor = "| BR-8 |"
     assert anchor in text
-    extended = text.replace(anchor, "| BR-12 | Новое правило | Не менее 5 дней. |\n" + anchor, 1)
+    extended = text.replace(anchor, "| BR-99 | Новое правило | Не менее 5 дней. |\n" + anchor, 1)
 
     assert find_gaps(extended, _preset()) == [
-        "правило раздела 5 с числом без отображения в ключи: 'BR-12'"
+        "правило раздела 5 с числом без отображения в ключи: 'BR-99'"
     ]
 
 
@@ -285,7 +287,7 @@ def test_rule_without_a_number_needs_no_key() -> None:
     text = _REQUIREMENTS_PATH.read_text(encoding="utf-8")
     anchor = "| BR-8 |"
     extended = text.replace(
-        anchor, "| BR-12 | Новое правило | По ст. 130 ТК РФ, без срока. |\n" + anchor, 1
+        anchor, "| BR-99 | Новое правило | По ст. 130 ТК РФ, без срока. |\n" + anchor, 1
     )
 
     assert find_gaps(extended, _preset()) == []
@@ -324,15 +326,15 @@ def test_description_that_loses_its_source_is_reported() -> None:
 def test_description_naming_a_longer_rule_id_does_not_count_as_naming_the_rule() -> None:
     text = _REQUIREMENTS_PATH.read_text(encoding="utf-8")
     extended = text.replace(
-        "| BR-8 |", "| BR-12 | Новое правило | Не менее 5 дней. |\n| BR-8 |", 1
+        "| BR-8 |", "| BR-99 | Новое правило | Не менее 5 дней. |\n| BR-8 |", 1
     )
 
-    problems = find_gaps(extended, {**_preset(), "annual_leave_days": "BR-12: другое правило."})
+    problems = find_gaps(extended, {**_preset(), "annual_leave_days": "BR-99: другое правило."})
 
-    # Именно BR-12 (правило без ключа) и именно BR-1 (описание его не называет);
+    # Именно BR-99 (правило без ключа) и именно BR-1 (описание его не называет);
     # подстрочное сравнение промолчало бы про второе.
     assert problems == [
-        "правило раздела 5 с числом без отображения в ключи: 'BR-12'",
+        "правило раздела 5 с числом без отображения в ключи: 'BR-99'",
         "ключ 'annual_leave_days': description не называет BR-1",
     ]
 

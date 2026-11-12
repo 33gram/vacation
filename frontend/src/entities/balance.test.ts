@@ -6,8 +6,10 @@ import {
   entryTypeLabel,
   formatAmount,
   formatQuantity,
+  historyRows,
   unitLabel,
 } from "./balance";
+import { accrualYearResponse, balanceEntryResponse, leaveTypeBalanceResponse } from "../test-utils/fixtures";
 
 describe("balance display helpers (FR-BAL-002)", () => {
   it("formats the server's decimal string without any arithmetic", () => {
@@ -41,5 +43,71 @@ describe("balance display helpers (FR-BAL-002)", () => {
     // Значение вне союза (рассинхрон версий бэкенда и фронтенда) в тип не вписывается: `as` нужен
     // ровно здесь, чтобы смоделировать ответ в обход схемы.
     expect(entryTypeLabel("something_new" as EntryType)).toBe("something_new");
+  });
+});
+
+describe("history rows (T-M2-30, ui.md §6)", () => {
+  it("puts the newest first and does not change the order of the response it was given", () => {
+    const balance = leaveTypeBalanceResponse({
+      history: [
+        balanceEntryResponse({ id: 1, entry_date: "2026-01-05" }),
+        balanceEntryResponse({ id: 2, entry_date: "2026-05-02" }),
+      ],
+      accrual_years: [accrualYearResponse({ last_accrual_date: "2026-03-01" })],
+    });
+
+    expect(historyRows(balance).map((row) => row.entry_date)).toEqual([
+      "2026-05-02",
+      "2026-03-01",
+      "2026-01-05",
+    ]);
+    expect(balance.history.map((entry) => entry.id)).toEqual([1, 2]); // вход не переставлен
+  });
+
+  it("on the same date puts the later written event first and the folded accruals below events", () => {
+    const rows = historyRows(
+      leaveTypeBalanceResponse({
+        history: [
+          balanceEntryResponse({ id: 7, entry_date: "2026-10-24" }),
+          balanceEntryResponse({ id: 9, entry_date: "2026-10-24" }),
+        ],
+        accrual_years: [accrualYearResponse({ last_accrual_date: "2026-10-24" })],
+      }),
+    );
+
+    expect(rows.map((row) => row.key)).toEqual(["event-9", "event-7", "accrual-year-2026-03-10"]);
+  });
+
+  it("puts the later working year first when two folded rows have the same date", () => {
+    // СИНТЕТИЧЕСКИЙ случай: ответ сервера такого не даёт (даты шагов одного сотрудника
+    // различны, `last_accrual_date` разных рабочих годов не совпадает). Проверяется само правило
+    // разрыва, а не поведение API: результат не должен зависеть от порядка во входе.
+    const years = [
+      accrualYearResponse({ working_year_start: "2025-03-10", last_accrual_date: "2026-02-10" }),
+      accrualYearResponse({ working_year_start: "2026-03-10", last_accrual_date: "2026-02-10" }),
+    ];
+
+    const forward = historyRows(leaveTypeBalanceResponse({ history: [], accrual_years: years }));
+    const backward = historyRows(
+      leaveTypeBalanceResponse({ history: [], accrual_years: [...years].reverse() }),
+    );
+
+    expect(forward.map((row) => row.key)).toEqual(["accrual-year-2026-03-10", "accrual-year-2025-03-10"]);
+    expect(backward.map((row) => row.key)).toEqual(forward.map((row) => row.key));
+  });
+
+  it("carries the server's sum of a folded year as it came, without adding anything", () => {
+    const rows = historyRows(
+      leaveTypeBalanceResponse({
+        history: [],
+        accrual_years: [
+          accrualYearResponse({ working_year_start: "2025-03-10", accrued: "27.96" }),
+          accrualYearResponse({ working_year_start: "2026-03-10", accrued: "18.67" }),
+        ],
+      }),
+    );
+
+    expect(rows.map((row) => row.quantity).sort()).toEqual(["18.67", "27.96"]);
+    expect(rows.every((row) => row.folded && row.id === null && row.actor_name === null)).toBe(true);
   });
 });

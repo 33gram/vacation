@@ -414,6 +414,33 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /**
+         * AccrualYearOut
+         * @description Начисления одного рабочего года, свёрнутые сервером (`T-M2-30`, `FR-BAL-002`):
+         *     сумма событий `accrual` года на дату запроса. Это агрегат, а не событие: у него нет
+         *     ни `id`, ни причины, ни автора, и в `history` он не входит. Клиент итог не считает,
+         *     а показывает как пришёл. Год без событий `accrual` (например, только начальный
+         *     остаток) в списке отсутствует.
+         */
+        AccrualYearOut: {
+            /**
+             * Working Year Start
+             * Format: date
+             */
+            working_year_start: string;
+            /**
+             * Working Year End
+             * Format: date
+             */
+            working_year_end: string;
+            /** Accrued */
+            accrued: string;
+            /**
+             * Last Accrual Date
+             * Format: date
+             */
+            last_accrual_date: string;
+        };
         /** BalanceAdjustOut */
         BalanceAdjustOut: {
             /** Leave Type Id */
@@ -844,6 +871,8 @@ export interface components {
             total_balance: string;
             /** History */
             history: components["schemas"]["BalanceEntryOut"][];
+            /** Accrual Years */
+            accrual_years: components["schemas"]["AccrualYearOut"][];
         };
         /** LeaveTypeCreate */
         LeaveTypeCreate: {

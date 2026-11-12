@@ -1,9 +1,11 @@
 import type { components } from "../api/generated/schema";
+import { formatDate } from "../app/format";
 import type { Unit } from "./leaveType";
 
 export type EmployeeBalances = components["schemas"]["EmployeeBalancesOut"];
 export type LeaveTypeBalance = components["schemas"]["LeaveTypeBalanceOut"];
 export type BalanceEntry = components["schemas"]["BalanceEntryOut"];
+export type AccrualYear = components["schemas"]["AccrualYearOut"];
 
 // ОДИН псевдоним `Unit` на фронтенде - из `leaveType.ts`: на бэкенде схема остатка берёт `Unit`
 // из схемы вида, и направление то же. Расхождение полей `LeaveTypeBalanceOut.unit` и
@@ -69,4 +71,69 @@ export function formatQuantity(value: string, { signed = false } = {}): string {
 
 export function formatAmount(value: string, unit: Unit, options?: { signed?: boolean }): string {
   return `${formatQuantity(value, options)} ${unitLabel(unit)}`;
+}
+
+/** Строка таблицы истории: событие журнала ИЛИ свёрнутые начисления рабочего года
+ * (`T-M2-30`, `ui.md` §6). `folded` - признак второго; у него нет причины-события и автора:
+ * год может содержать начисления с разными авторами (пересчёт несёт автора), поэтому в «Кто»
+ * у свёрнутой строки прочерк, а подробности остаются в журнале. */
+export interface HistoryRow {
+  key: string;
+  id: number | null; // `null` у свёрнутой строки: это агрегат, а не событие
+  year_start: string | null; // начало рабочего года свёрнутой строки; `null` у события
+  entry_date: string;
+  entry_type: EntryType;
+  quantity: string;
+  reason: string | null;
+  actor_name: string | null;
+  folded: boolean;
+}
+
+/** Строки истории вида: события (`history`, без начислений) и свёрнутые начисления по годам
+ * (`accrual_years`), СВЕЖИЕ СВЕРХУ: по дате по убыванию; при равной дате выше событие,
+ * записанное позже (по `id`), а свёрнутая строка - ниже событий той же даты (начисление
+ * записывается до корректировки, `FR-BAL-004`). Сортировка - не арифметика: даты сравниваются
+ * как ISO-строки, количества не трогаются (итог года присылает сервер, `FR-BAL-002`). Порядок
+ * ответа - по возрастанию - не меняется: сортируется здесь, в одном месте. */
+export function historyRows(balance: LeaveTypeBalance): HistoryRow[] {
+  const events: HistoryRow[] = balance.history.map((entry) => ({
+    key: `event-${entry.id}`,
+    id: entry.id,
+    year_start: null,
+    entry_date: entry.entry_date,
+    entry_type: entry.entry_type,
+    quantity: entry.quantity,
+    reason: entry.reason,
+    actor_name: entry.actor_name,
+    folded: false,
+  }));
+  const folded: HistoryRow[] = balance.accrual_years.map((year) => ({
+    key: `accrual-year-${year.working_year_start}`,
+    id: null,
+    year_start: year.working_year_start,
+    entry_date: year.last_accrual_date,
+    entry_type: "accrual",
+    quantity: year.accrued,
+    reason: `Начислено за рабочий год ${formatDate(year.working_year_start)} — ${formatDate(year.working_year_end)}`,
+    actor_name: null,
+    folded: true,
+  }));
+  return [...events, ...folded].sort((a, b) => {
+    // Даты сравниваются СТРОКОЙ: схема отдаёт `Format: date`, то есть `YYYY-MM-DD` фиксированной
+    // ширины (год, месяц и день с ведущими нулями), и порядок строк совпадает с порядком дат.
+    if (a.entry_date !== b.entry_date) {
+      return a.entry_date < b.entry_date ? 1 : -1;
+    }
+    if (a.folded !== b.folded) {
+      return a.folded ? 1 : -1;
+    }
+    if (a.folded && b.folded) {
+      // Две свёрнутые строки с равной датой: позже начавшийся рабочий год выше. Случай СЕГОДНЯ
+      // недостижим (даты шагов у одного сотрудника различны, `last_accrual_date` разных
+      // рабочих годов не совпадает), правило нужно ради предсказуемости, а не против живого
+      // дефекта: порядок не должен зависеть от стабильности `sort` и порядка ответа.
+      return (a.year_start ?? "") < (b.year_start ?? "") ? 1 : -1;
+    }
+    return (b.id ?? 0) - (a.id ?? 0);
+  });
 }

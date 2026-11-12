@@ -185,6 +185,58 @@ async def get_balances_by_working_year(
     }
 
 
+@dataclass(frozen=True)
+class AccrualYearSummary:
+    """Начисления рабочего года, свёрнутые (`T-M2-30`)."""
+
+    working_year_start: datetime.date
+    working_year_end: datetime.date
+    accrued: Decimal
+    last_accrual_date: datetime.date
+
+
+async def get_accrual_years(
+    session: AsyncSession,
+    employee_id: int,
+    leave_type_id: int,
+    *,
+    as_of: datetime.date | None = None,
+) -> list[AccrualYearSummary]:
+    """Начисления по рабочим годам (`T-M2-30`): сумма событий `accrual` года, конец года
+    (самый поздний, как в `recalculate_balance`: исключаемые дни сдвигают его) и дата
+    последнего начисления; по возрастанию начала года. Отсечение `as_of` и суммирование
+    `quantity` - те же, что у `get_balance`; `recalculation` в сумму НЕ входит (он остаётся
+    отдельной строкой истории), поэтому число - «сколько начислено», а не остаток. Год без
+    событий `accrual` не возвращается."""
+    query = (
+        select(
+            LeaveBalanceEntry.working_year_start,
+            func.max(LeaveBalanceEntry.working_year_end),
+            func.sum(LeaveBalanceEntry.quantity),
+            func.max(LeaveBalanceEntry.entry_date),
+        )
+        .where(
+            LeaveBalanceEntry.employee_id == employee_id,
+            LeaveBalanceEntry.leave_type_id == leave_type_id,
+            LeaveBalanceEntry.entry_type == ACCRUAL,
+        )
+        .group_by(LeaveBalanceEntry.working_year_start)
+        .order_by(LeaveBalanceEntry.working_year_start)
+    )
+    if as_of is not None:
+        query = query.where(LeaveBalanceEntry.entry_date <= as_of)
+    rows = (await session.execute(query)).all()
+    return [
+        AccrualYearSummary(
+            working_year_start=start,
+            working_year_end=end,
+            accrued=Decimal(total),
+            last_accrual_date=last,
+        )
+        for start, end, total, last in rows
+    ]
+
+
 async def get_total_balance(
     session: AsyncSession,
     employee_id: int,
@@ -207,17 +259,22 @@ async def list_entries(
     leave_type_id: int | None = None,
     *,
     as_of: datetime.date | None = None,
+    include_accruals: bool = True,
 ) -> list[LeaveBalanceEntry]:
     """История событий сотрудника (`FR-BAL-002`): по дате события, при
     равных датах — в порядке записи. У события есть тип, количество со
     знаком, причина и автор (`actor_account_id`; имя автора по аккаунту
     подставляет слой эндпоинта). `as_of` - только события с `entry_date` не позже
-    этой даты (то же отсечение, что у `get_balance(as_of=)`, делается в SQL)."""
+    этой даты (то же отсечение, что у `get_balance(as_of=)`, делается в SQL).
+    `include_accruals=False` (`T-M2-30`) - без событий `accrual`: их показывает свёртка
+    по годам `get_accrual_years`."""
     query = select(LeaveBalanceEntry).where(LeaveBalanceEntry.employee_id == employee_id)
     if leave_type_id is not None:
         query = query.where(LeaveBalanceEntry.leave_type_id == leave_type_id)
     if as_of is not None:
         query = query.where(LeaveBalanceEntry.entry_date <= as_of)
+    if not include_accruals:
+        query = query.where(LeaveBalanceEntry.entry_type != ACCRUAL)
     result = await session.execute(
         query.order_by(LeaveBalanceEntry.entry_date, LeaveBalanceEntry.id)
     )

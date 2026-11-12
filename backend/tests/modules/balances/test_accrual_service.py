@@ -15,15 +15,17 @@ import pytest
 from sqlalchemy import func, select, text
 
 from app.models.employee import Employee
-from app.models.leave_balance_entry import ACCRUAL, LeaveBalanceEntry
+from app.models.leave_balance_entry import ACCRUAL, INITIAL_IMPORT, LeaveBalanceEntry
 from app.modules.balances.service import (
     MAIN_LEAVE_TYPE_CODE,
     BalanceEntryError,
     accrue_leave,
     adjust_balance,
+    get_accrual_years,
     get_balance,
     get_balances_by_working_year,
     get_total_balance,
+    list_entries,
 )
 from tests.modules.balances.helpers import Context, make_context
 
@@ -404,3 +406,102 @@ async def test_br_8_total_balance_of_an_employee_without_events_is_zero(db_sessi
     ctx = await _hired(db_session)
 
     assert await get_total_balance(db_session, ctx.employee_id, ctx.leave_type_id) == 0
+
+
+# --- свёртка начислений по рабочим годам (T-M2-30) --------------------------------
+
+
+async def _years(db_session, ctx: Context, **kw):
+    return await get_accrual_years(db_session, ctx.employee_id, ctx.leave_type_id, **kw)
+
+
+async def test_t_m2_30_the_accrual_years_sum_the_steps_with_the_year_bounds_and_the_last_date(
+    db_session,
+) -> None:
+    ctx = await _hired(db_session)
+    await _accrue(db_session, ctx, D(2026, 10, 24))  # восемь шагов, 24.03 ... 24.10
+
+    (year,) = await _years(db_session, ctx)
+
+    assert (year.working_year_start, year.working_year_end) == (YEAR_START, D(2027, 3, 10))
+    assert year.accrued == Decimal("18.67")
+    assert year.last_accrual_date == D(2026, 10, 24)
+
+
+async def test_t_m2_30_the_sum_follows_a_later_accrual_and_a_cut_date(db_session) -> None:
+    ctx = await _hired(db_session)
+    await _accrue(db_session, ctx, D(2026, 12, 10))  # девять шагов, последний 24.11
+
+    (full,) = await _years(db_session, ctx)
+    (cut,) = await _years(db_session, ctx, as_of=D(2026, 10, 24))
+
+    assert (full.accrued, full.last_accrual_date) == (Decimal("21.00"), D(2026, 11, 24))
+    assert (cut.accrued, cut.last_accrual_date) == (Decimal("18.67"), D(2026, 10, 24))
+    assert await _years(db_session, ctx, as_of=D(2026, 3, 23)) == []  # до первого шага
+
+
+async def test_t_m2_30_the_year_sum_is_the_balance_of_the_year_when_only_accruals_exist(
+    db_session,
+) -> None:
+    # Одни и те же правила суммирования, что у `get_balance`: при журнале из одних начислений
+    # итог года совпадает с остатком года на каждую дату.
+    ctx = await _hired(db_session)
+    await _accrue(db_session, ctx, D(2026, 12, 10))
+
+    for day in (D(2026, 3, 24), D(2026, 6, 1), D(2026, 11, 24), D(2026, 12, 10)):
+        (year,) = await _years(db_session, ctx, as_of=day)
+        balance = await get_balance(
+            db_session, ctx.employee_id, ctx.leave_type_id, YEAR_START, as_of=day
+        )
+        assert year.accrued == balance, day
+
+
+async def test_t_m2_30_other_event_types_are_not_summed_and_the_history_can_leave_accruals_out(
+    db_session,
+) -> None:
+    ctx = await _hired(db_session)
+    await _accrue(db_session, ctx, D(2026, 10, 24))
+    await adjust_balance(
+        db_session,
+        employee_id=ctx.employee_id,
+        leave_type_id=ctx.leave_type_id,
+        working_year_start=YEAR_START,
+        working_year_end=D(2027, 3, 10),
+        quantity=Decimal("3"),
+        reason="Перенос",
+        actor_account_id=ctx.actor_id,
+        entry_date=D(2026, 10, 24),
+    )
+
+    (year,) = await _years(db_session, ctx)
+    kept = await list_entries(
+        db_session, ctx.employee_id, ctx.leave_type_id, include_accruals=False
+    )
+    everything = await list_entries(db_session, ctx.employee_id, ctx.leave_type_id)
+
+    assert year.accrued == Decimal("18.67")  # корректировка +3 в итог начислений не входит
+    assert [e.entry_type for e in kept] == ["manual_adjustment"]
+    assert len(everything) == 9 and everything[0].entry_type == ACCRUAL  # по умолчанию - все
+
+
+async def test_t_m2_30_a_year_without_accrual_events_and_an_employee_without_events_are_absent(
+    db_session,
+) -> None:
+    ctx = await _hired(db_session)
+    assert await _years(db_session, ctx) == []  # сотрудник без событий
+
+    db_session.add(
+        LeaveBalanceEntry(
+            employee_id=ctx.employee_id,
+            leave_type_id=ctx.leave_type_id,
+            working_year_start=YEAR_START,
+            working_year_end=D(2027, 3, 10),
+            entry_type=INITIAL_IMPORT,
+            quantity=Decimal("12.5"),
+            entry_date=D(2026, 4, 1),
+            actor_account_id=ctx.actor_id,
+        )
+    )
+    await db_session.flush()
+
+    assert await _years(db_session, ctx) == []  # начальный остаток - не начисление

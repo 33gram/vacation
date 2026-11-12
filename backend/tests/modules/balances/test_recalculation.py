@@ -105,23 +105,28 @@ async def _balance(db_session, ctx: Context, year_start: datetime.date) -> Decim
 # --- FR-BAL-003/1: исходы единственного WHEN ----------------------------------
 
 
-async def test_fr_bal_003_a_nonzero_difference_writes_one_event_with_reason_and_author(
+async def test_fr_bal_003_a_nonzero_difference_closes_each_old_step_with_reason_and_author(
     db_session,
 ) -> None:
     ctx = await _hired(db_session, D(2026, 3, 10))
-    await _accrue(db_session, ctx, AS_OF)  # 18,67 за год с 10.03.2026
+    await _accrue(db_session, ctx, AS_OF)  # 18,67 за год с 10.03.2026: восемь шагов
+    old_steps = [e for e in await _events(db_session, ctx) if e.entry_type == ACCRUAL]
     await _set_hire(db_session, ctx, D(2026, 3, 20))
 
     result = await _recalculate(db_session, ctx, D(2026, 3, 10), D(2026, 3, 20))
 
     recalculations = [e for e in await _events(db_session, ctx) if e.entry_type == RECALCULATION]
-    assert len(recalculations) == 1
-    (event,) = recalculations
-    assert event.quantity == Decimal("-18.67")  # РАЗНОСТЬ, закрывающая год, а не итог
-    assert event.actor_account_id == ctx.actor_id
-    # Журнал объясняет себя: прежняя и новая дата названы в причине.
-    assert "10.03.2026" in event.reason and "20.03.2026" in event.reason
-    assert result.closed_years == {D(2026, 3, 10): Decimal("-18.67")}
+    # T-M2-32: зеркало на КАЖДЫЙ прежний шаг - та же дата, та же величина с минусом.
+    assert len(recalculations) == len(old_steps) == 8
+    assert [(e.entry_date, e.quantity) for e in sorted(recalculations, key=lambda e: e.entry_date)] == [
+        (step.entry_date, -step.quantity) for step in old_steps
+    ]
+    for event in recalculations:
+        assert event.actor_account_id == ctx.actor_id
+        # Журнал объясняет себя: прежняя и новая дата названы в причине.
+        assert "10.03.2026" in event.reason and "20.03.2026" in event.reason
+    assert sum(e.quantity for e in recalculations) == Decimal("-18.67")
+    assert result.closed_years == {D(2026, 3, 10): Decimal("-18.67")}  # итог года, не событие
 
 
 async def test_fr_bal_003_the_old_year_is_closed_and_the_new_year_is_accrued(db_session) -> None:
@@ -534,9 +539,11 @@ async def test_fr_bal_003_every_event_born_of_a_recalculation_has_author_and_rea
     await _recalculate(db_session, ctx, D(2026, 3, 10), D(2026, 3, 20))
 
     born = [e for e in await _events(db_session, ctx) if e.id not in before]
-    # Закрытие одно, начислений по новой дате - по событию на шаг (T-M2-21).
-    assert len([e for e in born if e.entry_type == RECALCULATION]) == 1
-    assert len([e for e in born if e.entry_type == ACCRUAL]) == len(born) - 1 > 1
+    # Закрытий - по зеркалу на прежний шаг (T-M2-32), начислений по новой дате - по
+    # событию на шаг (T-M2-21).
+    closings = [e for e in born if e.entry_type == RECALCULATION]
+    assert len(closings) == 8
+    assert len([e for e in born if e.entry_type == ACCRUAL]) == len(born) - 8 > 1
     assert all(e.actor_account_id == ctx.actor_id and e.reason for e in born)
 
 

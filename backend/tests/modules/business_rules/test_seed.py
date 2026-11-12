@@ -36,6 +36,8 @@ _EXPECTED = {
     # 0009 (T-M2-05)
     "month_rounding_threshold_days": ("15", "integer"),
     "unpaid_leave_days_counted_in_service": ("14", "integer"),
+    # 0011 (T-M2-34)
+    "business_timezone": ("Europe/Moscow", "timezone"),
 }
 
 

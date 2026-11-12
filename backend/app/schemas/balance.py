@@ -6,9 +6,8 @@ import datetime
 from decimal import Decimal
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field
 
-from app.core.time_utils import utcnow
 from app.models.leave_balance_entry import LEAVE_BALANCE_ENTRY_TYPES
 from app.schemas.leave_type import Unit
 
@@ -68,6 +67,9 @@ class LeaveTypeBalanceOut(BaseModel):
 class EmployeeBalancesOut(BaseModel):
     employee_id: int
     as_of: datetime.date
+    # Бизнес-день СЕРВЕРА (`NFR-LOC-002`): клиент берёт из него верхнюю границу выбора даты и не
+    # считает «сегодня» по своим часам. Не то же, что `as_of` (дата показа, по умолчанию он же).
+    today: datetime.date
     balances: list[LeaveTypeBalanceOut]
 
 
@@ -82,17 +84,10 @@ class BalanceAdjustRequest(BaseModel):
     entry_date: datetime.date | None = Field(
         default=None,
         description=(
-            "Дата, на которую действует корректировка; по умолчанию сегодня (UTC). Не может "
-            "быть в будущем: корректировка фиксирует уже случившееся."
+            "Дата, на которую действует корректировка; по умолчанию бизнес-день (NFR-LOC-002). "
+            "Не может быть в будущем: корректировка фиксирует уже случившееся (отказ 400)."
         ),
     )
-
-    @field_validator("entry_date")
-    @classmethod
-    def _not_in_the_future(cls, value: datetime.date | None) -> datetime.date | None:
-        if value is not None and value > utcnow().date():
-            raise ValueError("Дата корректировки не может быть в будущем.")
-        return value
 
 
 class BalanceAdjustOut(BaseModel):

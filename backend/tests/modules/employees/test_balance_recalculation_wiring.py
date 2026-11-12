@@ -9,13 +9,15 @@ from __future__ import annotations
 
 import datetime
 
-from sqlalchemy import select
+import pytest
+from sqlalchemy import select, text
 
-from app.core.time_utils import utcnow
 from app.models.employee import Employee
 from app.models.leave_balance_entry import ACCRUAL, RECALCULATION, LeaveBalanceEntry
 from app.modules.balances.service import accrue_leave, adjust_balance
+from app.modules.business_rules import business_day
 from app.modules.employees import employee_service
+from tests.business_day import seeded_business_today
 from tests.modules.auth.factories import (
     bearer_header,
     make_account,
@@ -24,7 +26,7 @@ from tests.modules.auth.factories import (
 )
 from tests.modules.balances.helpers import make_context
 
-TODAY = utcnow().date()  # тот же источник, что в update_employee
+TODAY = seeded_business_today()  # тот же день, что у update_employee (T-M2-34)
 HIRED = TODAY - datetime.timedelta(days=200)
 
 
@@ -267,3 +269,39 @@ async def test_fr_bal_003_a_field_outside_the_set_does_not_call_the_recalculatio
 
     assert response.status_code == 200
     assert calls == []
+
+
+@pytest.mark.parametrize(
+    ("zone", "expected"), [("Europe/Moscow", "2026-11-13"), ("UTC", "2026-11-12")]
+)
+async def test_t_m2_34_the_recalculation_date_is_the_business_day_of_the_organization_zone(
+    db_session, api_client, monkeypatch: pytest.MonkeyPatch, zone: str, expected: str
+) -> None:
+    # Один момент (22:00Z 12.11), два пояса: дата расчёта - бизнес-день, а не UTC-день.
+    ctx, employee, admin, department = await _setup(db_session)
+    await db_session.execute(
+        text("UPDATE business_rules_config SET value = :zone WHERE key = 'business_timezone'"),
+        {"zone": zone},
+    )
+    monkeypatch.setattr(
+        business_day, "utcnow", lambda: datetime.datetime(2026, 11, 12, 22, 0, tzinfo=datetime.UTC)
+    )
+    seen: list[datetime.date] = []
+
+    async def _spy(session, *, as_of, **kwargs):
+        seen.append(as_of)
+
+    monkeypatch.setattr(employee_service, "recalculate_balance", _spy)
+
+    response = await api_client.put(
+        f"/api/employees/{employee.id}",
+        json=_payload(
+            employee,
+            department.id,
+            hire_date=(HIRED + datetime.timedelta(days=10)).isoformat(),
+        ),
+        headers=bearer_header(admin),
+    )
+
+    assert response.status_code == 200
+    assert [day.isoformat() for day in seen] == [expected]

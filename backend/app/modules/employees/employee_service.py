@@ -19,7 +19,6 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import hash_password
-from app.core.time_utils import utcnow
 from app.models.account import Account
 from app.models.department import Department
 from app.models.employee import Employee
@@ -27,6 +26,7 @@ from app.modules.auth.password_policy import validate_password_strength
 from app.modules.auth.rbac import is_in_management_chain, list_subordinate_employee_ids
 from app.modules.auth.repository import get_account_by_employee_id
 from app.modules.balances.service import recalculate_balance
+from app.modules.business_rules.business_day import business_today
 from app.modules.business_rules.service import PASSWORD_MIN_LENGTH, get_int
 from app.modules.employees.unique_violations import (
     UniqueValueConflictError,
@@ -417,10 +417,9 @@ async def update_employee(
             session,
             employee_id=employee.id,
             actor_account_id=actor_account_id,
-            # Дата расчёта - из единого источника времени проекта (UTC), как и
-            # остальные метки системы; бизнес-дата в местном поясе - отдельное
-            # решение, не принятое здесь.
-            as_of=utcnow().date(),
+            # Дата расчёта - БИЗНЕС-ДЕНЬ (пояс организации, `NFR-LOC-002`), как у чтения
+            # остатка: даты шагов закрытия и догона зависят от неё (`T-M2-34`).
+            as_of=await business_today(session),
             changes=changes,
         )
 

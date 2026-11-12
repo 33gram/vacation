@@ -49,3 +49,21 @@ async def test_the_application_refuses_to_start_naming_the_missing_key(
             pass
 
     assert "password_min_length" in str(excinfo.value)
+
+
+async def test_the_application_refuses_to_start_with_a_garbage_time_zone(
+    patched_lifespan, db_session
+) -> None:
+    # T-M2-34: форма верна, и CHECK базы её пропускает; зоны нет - это видит только сервис.
+    await db_session.execute(
+        text(
+            "UPDATE business_rules_config SET value = 'Europe/Moskva' "
+            "WHERE key = 'business_timezone'"
+        )
+    )
+
+    with pytest.raises(BusinessRulesConfigError) as excinfo:
+        async with main.lifespan(main.app):
+            pass
+
+    assert "business_timezone" in str(excinfo.value)

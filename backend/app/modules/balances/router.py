@@ -31,7 +31,6 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.time_utils import utcnow
 from app.db.session import get_db_session
 from app.models.account import Account
 from app.models.leave_type import LeaveType
@@ -49,6 +48,7 @@ from app.modules.balances.service import (
     list_entries,
     list_leave_type_ids_with_events,
 )
+from app.modules.business_rules.business_day import business_today
 from app.modules.employees import employee_service
 from app.schemas.balance import (
     AccrualYearOut,
@@ -72,7 +72,7 @@ async def get_employee_balances(
     as_of: datetime.date | None = Query(
         default=None,
         description=(
-            "Дата показа остатка (BR-8); по умолчанию сегодня (UTC). Это только ФИЛЬТР "
+            "Дата показа остатка (BR-8); по умолчанию бизнес-день (NFR-LOC-002). Это только ФИЛЬТР "
             "показа: журнал по ней не меняется, начисление идёт до сегодняшнего дня."
         ),
     ),
@@ -86,7 +86,7 @@ async def get_employee_balances(
         raise HTTPException(
             status.HTTP_403_FORBIDDEN, "Недостаточно прав для просмотра остатка сотрудника"
         )
-    today = utcnow().date()
+    today = await business_today(session)
     on_date = as_of or today
     # Ленивое начисление перед чтением (T-M2-19) ВСЕГДА до сегодняшнего дня (и не дальше
     # даты увольнения - это решает модуль): запрос на прошлую дату журнал задним числом
@@ -192,7 +192,9 @@ async def get_employee_balances(
                 ],
             )
         )
-    return EmployeeBalancesOut(employee_id=employee_id, as_of=on_date, balances=out)
+    return EmployeeBalancesOut(
+        employee_id=employee_id, as_of=on_date, today=today, balances=out
+    )
 
 
 @router.post(
@@ -210,8 +212,16 @@ async def adjust_employee_balance(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Сотрудник не найден")
     if await session.get(LeaveType, payload.leave_type_id) is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Вид отпуска не найден")
-    today = utcnow().date()
+    today = await business_today(session)
     entry_date = payload.entry_date or today
+    # Не в будущем: корректировка фиксирует уже случившееся. Проверка здесь, а не в схеме:
+    # бизнес-день зависит от параметра в базе (`NFR-LOC-002`), а валидатор схемы синхронный и
+    # сессии не имеет (T-M2-34, Ф-4). Префикс `entry_date:` - машиночитаемый (`CLAUDE.md`
+    # «Соглашения»); код отказа 400, а не 422: бизнес-правило, не форма запроса.
+    if entry_date > today:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, "entry_date: Дата корректировки не может быть в будущем."
+        )
     try:
         # Корректировка возвращает новый остаток - это чтение, по которому принимается
         # решение, поэтому начисление идёт и перед ней (T-M2-19).

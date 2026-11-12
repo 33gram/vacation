@@ -31,6 +31,11 @@
   `parse_stored_value`, а не отдельной логикой, иначе запись и чтение
   разойдутся в понимании допустимого.
 
+ТРЕТИЙ ТИП `timezone` (`T-M2-34`): имя зоны IANA. Форму проверяют база (CHECK) и сервис одним
+шаблоном `TIMEZONE_FORM`; существование зоны - только сервис, через `zoneinfo` и базу зон
+процесса (пакет `tzdata` - прямая зависимость `backend`, системный каталог образа не единственный
+источник). Читатель - `get_timezone`; бизнес-день из него считает `business_day.business_today`.
+
 ГРАНИЦЫ. Строка в таблице, которой нет в `RULES`, читателем не видна и
 стартовой проверкой не охватывается: реестр — единственное место, где у
 ключа есть диапазон. Добавление параметра = строка в таблице + запись в
@@ -40,7 +45,9 @@
 from __future__ import annotations
 
 import datetime
+import functools
 import re
+import zoneinfo
 from dataclasses import dataclass
 from typing import Any
 
@@ -49,7 +56,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import BCRYPT_MAX_INPUT_BYTES
 from app.core.time_utils import utcnow
-from app.models.business_rule_config import INTEGER, MONTH_DAY, BusinessRuleConfig
+from app.models.business_rule_config import (
+    INTEGER,
+    MONTH_DAY,
+    TIMEZONE,
+    TIMEZONE_FORM,
+    BusinessRuleConfig,
+)
 
 # Имена ключей — константами, чтобы опечатка в строке не превращалась в
 # «ключ отсутствует» только в рантайме.
@@ -71,6 +84,8 @@ MONTH_ROUNDING_THRESHOLD_DAYS = "month_rounding_threshold_days"
 # `excluded_unpaid_leave_days(..., counted_limit=<этот параметр>)`. `T-M2-19`
 # называет его и оговаривает, что до M3 `excluded_days` передаётся нулём.
 UNPAID_LEAVE_DAYS_COUNTED_IN_SERVICE = "unpaid_leave_days_counted_in_service"
+# T-M2-34 (миграция 0011), NFR-LOC-002, BR-12: пояс организации, по которому считается бизнес-день.
+BUSINESS_TIMEZONE = "business_timezone"
 
 
 class BusinessRuleError(Exception):
@@ -148,10 +163,34 @@ RULES: dict[str, RuleSpec] = {
         RuleSpec(MONTH_ROUNDING_THRESHOLD_DAYS, INTEGER, 1, 31),
         # 0..366: 0 - ни один день отпуска без содержания в стаж не входит.
         RuleSpec(UNPAID_LEAVE_DAYS_COUNTED_IN_SERVICE, INTEGER, 0, 366),
+        # Имя зоны IANA; диапазона нет - годность решает `zoneinfo` (`parse_stored_value`).
+        RuleSpec(BUSINESS_TIMEZONE, TIMEZONE),
     )
 }
 
-RuleValue = int | MonthDay
+RuleValue = int | MonthDay | zoneinfo.ZoneInfo
+
+
+@functools.cache
+def _known_zone_names() -> frozenset[str]:
+    """Имена зон, которые знает база зон процесса (системный каталог и пакет `tzdata`).
+    Членство проверяется ПЕРЕД `ZoneInfo(...)`: на файловой системе без учёта регистра
+    (macOS) `ZoneInfo("europe/moscow")` нашёл бы зону, а на Linux - нет, и годность значения
+    зависела бы от машины. Кэш на процесс: набор зон за жизнь процесса не меняется."""
+    return frozenset(zoneinfo.available_timezones())
+
+
+def _parse_timezone(key: str, value: str) -> zoneinfo.ZoneInfo:
+    # Форма - тем же шаблоном, что `CHECK` базы (`TIMEZONE_FORM`): сервис не мягче неё. `fullmatch`,
+    # а не `match`: завершающий перевод строки не проходит ни здесь, ни в базе.
+    if not re.fullmatch(TIMEZONE_FORM, value):
+        raise BusinessRuleError(key, f"{value!r} is not a time zone name (form)")
+    if value not in _known_zone_names():
+        raise BusinessRuleError(key, f"{value!r} is not a known time zone")
+    try:
+        return zoneinfo.ZoneInfo(value)
+    except (zoneinfo.ZoneInfoNotFoundError, ValueError, OSError):
+        raise BusinessRuleError(key, f"{value!r} is not a known time zone") from None
 
 
 def parse_stored_value(key: str, value: str, value_type: str) -> RuleValue:
@@ -164,6 +203,8 @@ def parse_stored_value(key: str, value: str, value_type: str) -> RuleValue:
         raise BusinessRuleError(
             key, f"stored value_type {value_type!r}, the registry expects {spec.value_type!r}"
         )
+    if spec.value_type == TIMEZONE:
+        return _parse_timezone(key, value)
     if spec.value_type == INTEGER:
         if not (value.isascii() and value.isdigit()):
             raise BusinessRuleError(key, f"{value!r} is not a non-negative integer")
@@ -242,6 +283,13 @@ async def get_month_day(session: AsyncSession, key: str) -> MonthDay:
     return value
 
 
+async def get_timezone(session: AsyncSession, key: str) -> zoneinfo.ZoneInfo:
+    value = (await get_rules(session, key))[key]
+    if not isinstance(value, zoneinfo.ZoneInfo):
+        raise BusinessRuleError(key, "is not a timezone rule")
+    return value
+
+
 async def validate_all(session: AsyncSession) -> None:
     """Стартовая проверка: каждый ключ реестра существует и разбирается.
     Собирает ВСЕ проблемы и отказывает одним `BusinessRulesConfigError`."""
@@ -291,12 +339,20 @@ def _canonical(value: RuleValue) -> str:
     """Каноническая запись разобранного значения (то, что принимает CHECK таблицы)."""
     if isinstance(value, MonthDay):
         return f"{value.month:02d}-{value.day:02d}"
+    if isinstance(value, zoneinfo.ZoneInfo):
+        # `key` задан у зон из базы зон; зона без ключа (из файла) сюда не попадает.
+        return str(value.key)
     return str(value)
 
 
 def _invalid_value_text(spec: RuleSpec) -> str:
     if spec.value_type == INTEGER:
         return f"значение недопустимо, нужно целое число от {spec.minimum} до {spec.maximum}"
+    if spec.value_type == TIMEZONE:
+        return (
+            "значение недопустимо, нужно имя часового пояса IANA, например Europe/Moscow "
+            "или UTC (без пробелов, латиницей)"
+        )
     return "значение недопустимо, нужна дата в формате ММ-ДД (например, 12-17), без 29 февраля"
 
 

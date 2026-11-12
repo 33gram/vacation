@@ -125,7 +125,7 @@ export function balancesResponse(
   balances: LeaveTypeBalanceOut[] = [leaveTypeBalanceResponse()],
   overrides: Partial<EmployeeBalancesOut> = {},
 ): EmployeeBalancesOut {
-  return { employee_id: 7, as_of: "2026-10-26", balances, ...overrides };
+  return { employee_id: 7, as_of: "2026-10-26", today: "2026-10-26", balances, ...overrides };
 }
 
 

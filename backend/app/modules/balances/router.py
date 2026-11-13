@@ -48,7 +48,7 @@ from app.modules.balances.service import (
     list_entries,
     list_leave_type_ids_with_events,
 )
-from app.modules.business_rules.business_day import business_today
+from app.modules.business_rules.business_day import business_today, business_zone
 from app.modules.employees import employee_service
 from app.schemas.balance import (
     AccrualYearOut,
@@ -86,13 +86,15 @@ async def get_employee_balances(
         raise HTTPException(
             status.HTTP_403_FORBIDDEN, "Недостаточно прав для просмотра остатка сотрудника"
         )
-    today = await business_today(session)
+    # Пояс читается ОДИН раз и идёт и в «сегодня», и в барьер начисления (PR #198).
+    zone = await business_zone(session)
+    today = await business_today(session, zone=zone)
     on_date = as_of or today
     # Ленивое начисление перед чтением (T-M2-19) ВСЕГДА до сегодняшнего дня (и не дальше
     # даты увольнения - это решает модуль): запрос на прошлую дату журнал задним числом
     # не меняет, запрос на будущую - не пишет вперёд и показывает записанное, прогноз не
     # считается. Отказ начисления не перехватывается: устаревшее число молча не отдаётся.
-    await accrue_before_read(session, employee_id=employee_id, as_of=today)
+    await accrue_before_read(session, employee_id=employee_id, as_of=today, zone=zone)
     await session.commit()
 
     # Набор видов (FR-BAL-002: «по каждому применимому виду оплачиваемого отпуска») -
@@ -212,7 +214,8 @@ async def adjust_employee_balance(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Сотрудник не найден")
     if await session.get(LeaveType, payload.leave_type_id) is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Вид отпуска не найден")
-    today = await business_today(session)
+    zone = await business_zone(session)
+    today = await business_today(session, zone=zone)
     entry_date = payload.entry_date or today
     # Не в будущем: корректировка фиксирует уже случившееся. Проверка здесь, а не в схеме:
     # бизнес-день зависит от параметра в базе (`NFR-LOC-002`), а валидатор схемы синхронный и
@@ -225,7 +228,7 @@ async def adjust_employee_balance(
     try:
         # Корректировка возвращает новый остаток - это чтение, по которому принимается
         # решение, поэтому начисление идёт и перед ней (T-M2-19).
-        await accrue_before_read(session, employee_id=employee_id, as_of=today)
+        await accrue_before_read(session, employee_id=employee_id, as_of=today, zone=zone)
         year_start, year_end = await get_working_year(session, employee_id, entry_date)
         balance = await adjust_balance(
             session,

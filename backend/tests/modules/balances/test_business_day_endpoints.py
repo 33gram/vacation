@@ -90,6 +90,50 @@ def _url(employee_id: int, suffix: str = "") -> str:
     return f"/api/employees/{employee_id}/balances{suffix}"
 
 
+@pytest.fixture
+def zone_reads(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Каждое чтение параметра пояса (`get_timezone` в `business_day`) за тест."""
+    reads: list[str] = []
+    original = business_day.get_timezone
+
+    async def counting(session, key):
+        reads.append(key)
+        return await original(session, key)
+
+    monkeypatch.setattr(business_day, "get_timezone", counting)
+    return reads
+
+
+async def test_one_get_reads_the_zone_parameter_once_not_twice(
+    db_session, api_client, zone_reads
+) -> None:
+    # PR #198 review (П-5): раньше `business_today` роутера и барьер начисления читали пояс по
+    # отдельности - между двумя чтениями администратор мог сменить пояс, и «сегодня» с датой
+    # карточки оказались бы из разных поясов внутри ОДНОГО ответа.
+    ctx, employee, own = await _employee(db_session, MOSCOW_DAY - datetime.timedelta(days=200))
+
+    response = await api_client.get(_url(employee.id), headers=bearer_header(own))
+
+    assert response.status_code == 200
+    assert zone_reads == ["business_timezone"]
+
+
+async def test_one_adjustment_reads_the_zone_parameter_once_not_twice(
+    db_session, api_client, zone_reads
+) -> None:
+    ctx, employee, own = await _employee(db_session, MOSCOW_DAY - datetime.timedelta(days=200))
+    hr = await _hr(db_session)
+
+    response = await api_client.post(
+        _url(employee.id, "/adjust"),
+        json={"leave_type_id": ctx.leave_type_id, "quantity": "1", "reason": "Причина"},
+        headers=bearer_header(hr),
+    )
+
+    assert response.status_code == 200
+    assert zone_reads == ["business_timezone"]
+
+
 async def test_the_answer_names_the_server_business_day_and_the_default_date_is_it(
     db_session, api_client
 ) -> None:

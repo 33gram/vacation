@@ -26,7 +26,7 @@ from app.modules.auth.password_policy import validate_password_strength
 from app.modules.auth.rbac import is_in_management_chain, list_subordinate_employee_ids
 from app.modules.auth.repository import get_account_by_employee_id
 from app.modules.balances.service import recalculate_balance
-from app.modules.business_rules.business_day import business_today
+from app.modules.business_rules.business_day import business_today, business_zone
 from app.modules.business_rules.service import PASSWORD_MIN_LENGTH, get_int
 from app.modules.employees.unique_violations import (
     UniqueValueConflictError,
@@ -413,14 +413,17 @@ async def update_employee(
         if getattr(employee, name) != previous[name]
     }
     if changes:
+        # Пояс читается один раз: и для «сегодня», и для даты карточки в барьере (PR #198).
+        zone = await business_zone(session)
         await recalculate_balance(
             session,
             employee_id=employee.id,
             actor_account_id=actor_account_id,
             # Дата расчёта - БИЗНЕС-ДЕНЬ (пояс организации, `NFR-LOC-002`), как у чтения
             # остатка: даты шагов закрытия и догона зависят от неё (`T-M2-34`).
-            as_of=await business_today(session),
+            as_of=await business_today(session, zone=zone),
             changes=changes,
+            zone=zone,
         )
 
     try:

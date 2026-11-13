@@ -305,3 +305,34 @@ async def test_t_m2_34_the_recalculation_date_is_the_business_day_of_the_organiz
 
     assert response.status_code == 200
     assert [day.isoformat() for day in seen] == [expected]
+
+
+async def test_pr198_a_hire_date_change_reads_the_zone_parameter_once_not_twice(
+    db_session, api_client, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # PR #198 review (П-5): `update_employee` узнаёт бизнес-день и передаёт пояс в пересчёт, где
+    # барьер начисления берёт дату карточки, - один запрос параметра, а не два (иначе «сегодня» и
+    # дата карточки могли бы оказаться из разных поясов внутри одной операции).
+    ctx, employee, admin, department = await _setup(db_session)
+    await _accrue_now(db_session, ctx)
+    reads: list[str] = []
+    original = business_day.get_timezone
+
+    async def counting(session, key):
+        reads.append(key)
+        return await original(session, key)
+
+    monkeypatch.setattr(business_day, "get_timezone", counting)
+
+    response = await api_client.put(
+        f"/api/employees/{employee.id}",
+        json=_payload(
+            employee,
+            department.id,
+            hire_date=(HIRED + datetime.timedelta(days=10)).isoformat(),
+        ),
+        headers=bearer_header(admin),
+    )
+
+    assert response.status_code == 200
+    assert reads == ["business_timezone"]

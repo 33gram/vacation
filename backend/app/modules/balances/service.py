@@ -40,6 +40,7 @@ T-M2-08, `FR-BAL-001`, `FR-BAL-002`, `FR-BAL-004`).
 from __future__ import annotations
 
 import datetime
+import zoneinfo
 from collections.abc import Mapping
 from dataclasses import dataclass
 from decimal import Decimal
@@ -65,6 +66,7 @@ from app.modules.balances.accrual import (
     working_year_start_on,
     working_year_starts,
 )
+from app.modules.business_rules.business_day import business_date_of
 from app.modules.business_rules.service import (
     ANNUAL_LEAVE_DAYS,
     MONTH_ROUNDING_THRESHOLD_DAYS,
@@ -552,6 +554,7 @@ async def accrue_all_working_years(
     leave_type_id: int,
     as_of: datetime.date,
     attribution: AccrualAttribution | None = None,
+    zone: zoneinfo.ZoneInfo | None = None,
 ) -> CatchUpResult:
     """Догоняет начисление по ВСЕМ рабочим годам от даты приёма до `as_of`,
     вызывая `accrue_leave` по каждому (своей арифметики и своей записи в журнал
@@ -562,7 +565,8 @@ async def accrue_all_working_years(
     (это не ошибка читающего кода): (1) закрытые начальным остатком
     (`AccrualClosedError`); (2) БАРЬЕР против выдуманного остатка (решение
     заказчика, `T-M2-19`): годы, ЗАКОНЧИВШИЕСЯ до появления карточки сотрудника в
-    Системе (`employees.created_at`, дата в UTC). Смысл: Система ведёт остаток с
+    Системе (`employees.created_at`; дата - ДЕНЬ ОРГАНИЗАЦИИ по параметру пояса,
+    `business_date_of`, `T-M2-40`). Смысл: Система ведёт остаток с
     момента, как узнала о сотруднике, прошлое приходит начальным остатком
     (`initial_import`, `T-M1-36`), а не вычисляется. Граница: год, закончившийся
     ПОСЛЕ появления карточки (в том числе карточка заведена внутри первого
@@ -591,7 +595,9 @@ async def accrue_all_working_years(
         # включительно, ст. 84.1 ТК РФ): право за время после увольнения не
         # возникает, а `T-M1-37` фиксирует остаток именно на эту дату.
         as_of = min(as_of, employee.termination_date)
-    card_date = employee.created_at.astimezone(datetime.UTC).date()
+    # `zone` - пояс, уже прочитанный вызывающим (один запрос параметра на операцию, PR #198);
+    # без него `business_date_of` читает параметр сам.
+    card_date = await business_date_of(session, employee.created_at, zone=zone)
     import_year = await _latest_import_year(session, employee_id, leave_type_id)
     starts = working_year_starts(employee.hire_date, as_of)
     accrued: dict[datetime.date, Decimal] = {}
@@ -646,6 +652,7 @@ async def recalculate_balance(
     actor_account_id: int | None,
     as_of: datetime.date,
     changes: Mapping[str, tuple[object, object]],
+    zone: zoneinfo.ZoneInfo | None = None,
 ) -> RecalculationResult:
     """Пересчёт остатка при смене даты приёма (`FR-BAL-003`, `T-M2-07`).
 
@@ -856,6 +863,7 @@ async def recalculate_balance(
         employee_id=employee_id,
         leave_type_id=leave_type_id,
         as_of=as_of,
+        zone=zone,
         attribution=AccrualAttribution(
             actor_account_id=actor_account_id,
             reason_prefix=(
@@ -906,7 +914,11 @@ async def _write_recalculation(
 
 
 async def accrue_before_read(
-    session: AsyncSession, *, employee_id: int, as_of: datetime.date
+    session: AsyncSession,
+    *,
+    employee_id: int,
+    as_of: datetime.date,
+    zone: zoneinfo.ZoneInfo | None = None,
 ) -> CatchUpResult:
     """Ленивое начисление при чтении (`T-M2-19`, решение заказчика): догоняет
     начисление по основному виду на дату `as_of` через `accrue_all_working_years`
@@ -933,7 +945,7 @@ async def accrue_before_read(
             f"В справочнике нет основного вида отпуска {MAIN_LEAVE_TYPE_CODE!r}."
         )
     return await accrue_all_working_years(
-        session, employee_id=employee_id, leave_type_id=leave_type_id, as_of=as_of
+        session, employee_id=employee_id, leave_type_id=leave_type_id, as_of=as_of, zone=zone
     )
 
 

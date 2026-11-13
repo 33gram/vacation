@@ -65,6 +65,7 @@ from app.modules.balances.accrual import (
     working_year_start_on,
     working_year_starts,
 )
+from app.modules.business_rules.business_day import business_date_of
 from app.modules.business_rules.service import (
     ANNUAL_LEAVE_DAYS,
     MONTH_ROUNDING_THRESHOLD_DAYS,
@@ -562,7 +563,8 @@ async def accrue_all_working_years(
     (это не ошибка читающего кода): (1) закрытые начальным остатком
     (`AccrualClosedError`); (2) БАРЬЕР против выдуманного остатка (решение
     заказчика, `T-M2-19`): годы, ЗАКОНЧИВШИЕСЯ до появления карточки сотрудника в
-    Системе (`employees.created_at`, дата в UTC). Смысл: Система ведёт остаток с
+    Системе (`employees.created_at`; дата - ДЕНЬ ОРГАНИЗАЦИИ по параметру пояса,
+    `business_date_of`, `T-M2-40`). Смысл: Система ведёт остаток с
     момента, как узнала о сотруднике, прошлое приходит начальным остатком
     (`initial_import`, `T-M1-36`), а не вычисляется. Граница: год, закончившийся
     ПОСЛЕ появления карточки (в том числе карточка заведена внутри первого
@@ -591,7 +593,7 @@ async def accrue_all_working_years(
         # включительно, ст. 84.1 ТК РФ): право за время после увольнения не
         # возникает, а `T-M1-37` фиксирует остаток именно на эту дату.
         as_of = min(as_of, employee.termination_date)
-    card_date = employee.created_at.astimezone(datetime.UTC).date()
+    card_date = await business_date_of(session, employee.created_at)
     import_year = await _latest_import_year(session, employee_id, leave_type_id)
     starts = working_year_starts(employee.hire_date, as_of)
     accrued: dict[datetime.date, Decimal] = {}

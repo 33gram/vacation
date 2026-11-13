@@ -53,19 +53,9 @@ MEASURED_FILES = 82
 
 # `файл::текст вызова` -> (сколько раз найден, причина). Причина называет решение или задачу;
 # запись без причины недопустима.
-ALLOWED: dict[str, tuple[int, str]] = {
-    "modules/balances/service.py::employee.created_at.astimezone(datetime.UTC).date()": (
-        1,
-        "T-M2-40 (найдено при заведении сторожа, не из перечня T-M2-34): "
-        "`accrue_all_working_years` берёт `card_date` - UTC-дату сохранённой МЕТКИ "
-        "времени создания карточки - и сравнивает с датами рабочих лет "
-        "(`next_start <= card_date`: пропускается ли ЦЕЛЫЙ рабочий год). Механизм "
-        "иной, чем у пяти мест T-M2-34: метка переведена в дату не в поясе "
-        "организации. Закреплено намеренно тестом "
-        "`test_barrier_the_card_date_is_taken_in_utc_not_in_the_local_zone` "
-        "(T-M2-19, до `NFR-LOC-002`); решение - в T-M2-40, не молчаливая правка.",
-    ),
-}
+ALLOWED: dict[str, tuple[int, str]] = {}
+# История: единственная запись существовала ради `balances/service.py` (`card_date` по UTC);
+# `T-M2-40` перевёл её на `business_date_of`, запись снята, перечень пуст.
 
 _CLOCK_CALLS = {"utcnow", "now", "today", "fromtimestamp", "utcfromtimestamp"}
 _UTC_NAMES = {"UTC", "utc"}
@@ -154,25 +144,29 @@ def _found_counts() -> dict[str, int]:
     return counts
 
 
+def _offenders(found: dict[str, int], allowed: dict[str, tuple[int, str]]) -> list[str]:
+    offenders = []
+    for key, count in sorted(found.items()):
+        permitted, reason = allowed.get(key, (0, ""))
+        if count > permitted or not reason.strip():
+            offenders.append(f"{key} (найдено {count}, разрешено {permitted})")
+    return offenders
+
+
+def _stale(found: dict[str, int], allowed: dict[str, tuple[int, str]]) -> list[str]:
+    return [key for key, (count, _reason) in allowed.items() if found.get(key, 0) < count]
+
+
 def test_the_guard_looks_at_the_whole_application_not_at_an_empty_set() -> None:
     assert len(_app_files()) >= MEASURED_FILES
 
 
 def test_every_clock_date_is_allowed_exactly_and_with_a_reason() -> None:
-    offenders = []
-    for key, count in sorted(_found_counts().items()):
-        allowed, reason = ALLOWED.get(key, (0, ""))
-        if count > allowed or not reason.strip():
-            offenders.append(f"{key} (найдено {count}, разрешено {allowed})")
-
-    assert offenders == []
+    assert _offenders(_found_counts(), ALLOWED) == []
 
 
 def test_the_allowed_list_has_no_stale_entry() -> None:
-    found = _found_counts()
-    stale = [key for key, (count, _reason) in ALLOWED.items() if found.get(key, 0) < count]
-
-    assert stale == []
+    assert _stale(_found_counts(), ALLOWED) == []
 
 
 def test_business_date_itself_is_not_reported() -> None:
@@ -222,19 +216,28 @@ def test_calls_that_are_not_a_clock_date_are_not_reported() -> None:
 
 def test_an_exception_covers_only_its_own_call_not_the_whole_file() -> None:
     # Измерено ревью PR #197: запись на файл пропускала `zz = date.today()` в том же файле.
-    key = "modules/balances/service.py::employee.created_at.astimezone(datetime.UTC).date()"
+    # Синтетический перечень: реальный пуст (`T-M2-40`).
+    known = "modules/x.py::employee.created_at.astimezone(datetime.UTC).date()"
+    allowed = {known: (1, "причина")}
     source = (
         "employee.created_at.astimezone(datetime.UTC).date()\n"
         "zz = datetime.date.today()\n"
         "employee.created_at.astimezone(datetime.UTC).date()\n"
     )
-    counts: dict[str, int] = {}
+    found: dict[str, int] = {}
     for _line, _rule, text in find_clock_dates(source):
-        full = f"modules/balances/service.py::{text}"
-        counts[full] = counts.get(full, 0) + 1
+        key = f"modules/x.py::{text}"
+        found[key] = found.get(key, 0) + 1
 
-    assert counts[key] == 2  # тот же текст сверх разрешённого числа повторов (1) - краснит
-    assert (
-        counts["modules/balances/service.py::datetime.date.today()"] == 1
-    )  # новый вызов - краснит
-    assert ALLOWED[key][0] == 1
+    assert _offenders(found, allowed) == [
+        "modules/x.py::datetime.date.today() (найдено 1, разрешено 0)",  # новый вызов
+        f"{known} (найдено 2, разрешено 1)",  # тот же текст сверх разрешённого числа
+    ]
+
+
+def test_an_entry_without_a_reason_and_a_stale_entry_are_reported() -> None:
+    key = "modules/x.py::datetime.date.today()"
+
+    assert _offenders({key: 1}, {key: (1, "  ")}) == [f"{key} (найдено 1, разрешено 1)"]
+    assert _stale({}, {key: (1, "причина")}) == [key]
+    assert _stale({key: 1}, {key: (1, "причина")}) == []

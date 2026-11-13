@@ -1,6 +1,6 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Alert, Button, DatePicker, Descriptions, Row, Col, Modal, Space, Typography } from "antd";
-import dayjs from "dayjs";
+import dayjs, { type Dayjs } from "dayjs";
 import { useMemo, useState } from "react";
 import { useParams } from "react-router-dom";
 
@@ -8,6 +8,7 @@ import { apiClient } from "../api/client";
 import { detailText } from "../api/errors";
 import { formatDate } from "../app/format";
 import { ErrorLoadingState, LoadingState } from "../app/states";
+import { useBusinessDay } from "../app/useBusinessDay";
 import { EmployeeForm } from "../components/EmployeeForm";
 import type { EmployeeFormValues } from "../components/EmployeeForm";
 import { parseEmployeeFormError } from "../components/employeeFormError";
@@ -53,7 +54,23 @@ export function EmployeeCardPage() {
   const queryClient = useQueryClient();
   const [isEditing, setIsEditing] = useState(false);
   const [isDeactivateModalOpen, setIsDeactivateModalOpen] = useState(false);
-  const [terminationDate, setTerminationDate] = useState(() => dayjs());
+  // Дата увольнения: значение по умолчанию - БИЗНЕС-ДЕНЬ из сессии (`T-M2-38`, `NFR-LOC-002`), а
+  // не часы браузера. День берётся СНИМКОМ на момент ОТКРЫТИЯ окна (`openedDay`) и дальше сам не
+  // меняется: `me` перезапрашивается при возврате фокуса, и без снимка дата сменилась бы под
+  // рукой (измерено ревью PR #197: 31.12.2026 -> 01.01.2027). Выбор пользователя (`pickedDate`,
+  // `null` - не выбирал) перекрывает умолчание; при каждом открытии он сбрасывается, снимок новый.
+  // День неизвестен (`today` не пришёл или не дата) - поле пусто, подтверждение выключено.
+  // ГРАНИЦА ОБЪЁМА: меняется только значение по умолчанию; допустимость будущей даты увольнения
+  // здесь НЕ решается и ограничений в элемент не добавлено.
+  const businessDay = useBusinessDay();
+  const [openedDay, setOpenedDay] = useState<string | null>(null);
+  const [pickedDate, setPickedDate] = useState<Dayjs | null>(null);
+  const terminationDate = pickedDate ?? (openedDay === null ? null : dayjs(openedDay, "YYYY-MM-DD"));
+  const openDeactivateModal = () => {
+    setOpenedDay(businessDay);
+    setPickedDate(null);
+    setIsDeactivateModalOpen(true);
+  };
   const [deactivateError, setDeactivateError] = useState<string | null>(null);
   const [deactivating, setDeactivating] = useState(false);
 
@@ -130,6 +147,9 @@ export function EmployeeCardPage() {
   // `EmployeeUpdate`/`handleSubmit` выше про деактивацию ничего не знает,
   // и наоборот — этот запрос никогда не идёт вместе с PUT.
   const handleDeactivate = async () => {
+    if (terminationDate === null) {
+      return;
+    }
     setDeactivateError(null);
     setDeactivating(true);
     const { data, error } = await apiClient.POST("/api/employees/{employee_id}/deactivate", {
@@ -162,7 +182,7 @@ export function EmployeeCardPage() {
         {!isEditing && (
           <Space>
             {employee.employment_status === "active" && (
-              <Button danger onClick={() => setIsDeactivateModalOpen(true)}>
+              <Button danger onClick={openDeactivateModal}>
                 Деактивировать
               </Button>
             )}
@@ -178,7 +198,7 @@ export function EmployeeCardPage() {
         onCancel={() => setIsDeactivateModalOpen(false)}
         confirmLoading={deactivating}
         okText="Деактивировать"
-        okButtonProps={{ danger: true }}
+        okButtonProps={{ danger: true, disabled: terminationDate === null }}
         cancelText="Отмена"
       >
         <Typography.Paragraph>
@@ -189,7 +209,7 @@ export function EmployeeCardPage() {
           aria-label="Дата увольнения"
           format="DD.MM.YYYY"
           value={terminationDate}
-          onChange={(value) => value && setTerminationDate(value)}
+          onChange={(value) => value && setPickedDate(value)}
           style={{ width: "100%", marginTop: 8 }}
         />
         {deactivateError && (

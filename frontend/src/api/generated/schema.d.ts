@@ -154,7 +154,8 @@ export interface paths {
          * @description Доступен и до смены первичного пароля (`get_current_account_
          *     allowing_password_change`, T-M1-46) — сам `must_change_password`
          *     приходит только отсюда, гейтить чтение этого поля им самим было бы
-         *     противоречием.
+         *     противоречием. `today` - бизнес-день (`NFR-LOC-002`): интерфейс узнаёт «сегодня» сервера
+         *     отсюда, один раз на сессию (решение 38 раздела 13 требований).
          */
         get: operations["me_api_auth_me_get"];
         put?: never;
@@ -1024,6 +1025,11 @@ export interface components {
             login: string | null;
             /** Embedded Mode */
             embedded_mode: boolean;
+            /**
+             * Today
+             * Format: date
+             */
+            today: string;
         };
         /** PasswordChangeRequest */
         PasswordChangeRequest: {

@@ -688,6 +688,21 @@ describe("balance on a date (T-M2-31, BR-8)", () => {
     expect(screen.getByLabelText("Остаток на дату")).not.toBeDisabled();
   });
 
+  it("an answer WITHOUT today keeps the control OFF: no boundary must not mean an open boundary (PR #196 review)", async () => {
+    // Клиент тело ответа во время выполнения не проверяет (T-M2-25): тип говорит «поле
+    // обязательно», а сервер старой версии его не пришлёт. Приведение типа - как у
+    // `unitLabel("weeks" as Unit)`.
+    const { today: _omitted, ...withoutToday } = balancesResponse();
+    mockBackend({ role: "employee" }, () => ({
+      status: 200,
+      body: withoutToday as unknown as ReturnType<typeof balancesResponse>,
+    }));
+    renderApp("/my-leave");
+    await screen.findByLabelText("Ежегодный оплачиваемый отпуск");
+
+    expect(screen.getByLabelText("Остаток на дату")).toBeDisabled();
+  });
+
   it("when the first load fails the control stays OFF until a retry answers (T-M2-34)", async () => {
     let attempt = 0;
     mockBackend({ role: "employee" }, () =>

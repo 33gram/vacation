@@ -78,8 +78,12 @@ export function MyLeavePage() {
   // выключался на время загрузки новой даты; обновление состояния во время рендера - паттерн
   // «adjusting state on prop change» из документации React (как в `ProductionCalendarPage`).
   const [serverToday, setServerToday] = useState<string | null>(null);
-  if (query.data && query.data.today !== serverToday) {
-    setServerToday(query.data.today);
+  // `today` проверяется во время выполнения: тип обещает поле, но тело ответа клиент не проверяет
+  // (`T-M2-25`), а отсутствующее значение не должно снимать границу - «дня нет» значит
+  // «неизвестен», элемент выключен.
+  const reportedToday = typeof query.data?.today === "string" ? query.data.today : null;
+  if (query.data && reportedToday !== serverToday) {
+    setServerToday(reportedToday);
   }
 
   // ОСОЗНАННЫЙ второй рубеж (защита в глубину), а не забытая проверка: основная защита -

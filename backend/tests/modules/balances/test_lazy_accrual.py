@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import datetime
+import zoneinfo
 from decimal import Decimal
 
 import pytest
@@ -167,7 +168,8 @@ async def test_barrier_the_reason_names_the_card_date_of_the_organization(db_ses
 
     reason = result.skipped[D(2025, 3, 10)]
     # Метка 09.03 22:00 UTC показана днём организации (Москва) - 10.03.2026, не UTC-днём 09.03.
-    assert "(10.03.2026)" in reason and "09.03.2026)" not in reason.split("(")[-1]
+    assert "(10.03.2026)" in reason
+    assert "(09.03.2026)" not in reason
     assert "закончился до появления карточки" in reason
 
 
@@ -176,8 +178,12 @@ async def test_barrier_a_year_computed_before_a_change_of_the_zone_keeps_its_eve
 ) -> None:
     # Граница T-M2-40: журнал добавляемый, задним числом не переписывается. Год вычислен при
     # поясе UTC (карточка 09.03 по UTC), затем пояс сменили на Москву, где этот год уже
-    # «закончился до появления карточки»: события остаются, остаток прежний, повторного
-    # начисления нет (идемпотентность по уже начисленной сумме), а год теперь назван пропущенным.
+    # «закончился до появления карточки». ПРОВЕРЯЕТСЯ ПРОГОНОМ ИТОГ: события остаются, их число и
+    # общий остаток прежние, год назван пропущенным. ИДЕМПОТЕНТНОСТЬ `accrue_leave` здесь НЕ
+    # исполняется: барьер не доходит до его вызова, и отсутствие повторной записи следует из
+    # чтения кода. Сама идемпотентность проверена своими тестами:
+    # `test_accrual_service.py::test_fr_bal_001_a_repeated_call_for_the_same_date_writes_nothing` и
+    # `test_accrual_step_dates.py::test_a_repeated_call_writes_nothing_and_a_call_a_year_later_...`.
     ctx = await _employee(db_session, D(2025, 3, 10), _utc(2026, 3, 9, 22))
     await _set_zone(db_session, "UTC")
     first = await _catch_up(db_session, ctx)
@@ -356,3 +362,23 @@ async def test_terminated_without_a_termination_date_is_a_loud_refusal(db_sessio
         await _catch_up(db_session, ctx)
 
     assert await _count(db_session, ctx) == 0
+
+
+async def test_barrier_an_explicit_zone_is_used_and_the_parameter_is_not_read_again(
+    db_session,
+) -> None:
+    # PR #198 review (П-5): вызывающий, который уже знает пояс организации, передаёт его - внутри
+    # ОДНОГО запроса «сегодня» и дата карточки не могут оказаться из разных поясов. Параметр в базе
+    # - UTC (год вычислялся бы), переданный пояс - Москва: исход следует за ПЕРЕДАННЫМ поясом.
+    ctx = await _employee(db_session, D(2025, 3, 10), _utc(2026, 3, 9, 22))
+    await _set_zone(db_session, "UTC")
+
+    result = await accrue_all_working_years(
+        db_session,
+        employee_id=ctx.employee_id,
+        leave_type_id=ctx.leave_type_id,
+        as_of=AS_OF,
+        zone=zoneinfo.ZoneInfo("Europe/Moscow"),
+    )
+
+    assert D(2025, 3, 10) in result.skipped

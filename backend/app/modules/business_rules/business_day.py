@@ -24,6 +24,7 @@
 from __future__ import annotations
 
 import datetime
+import zoneinfo
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -31,14 +32,28 @@ from app.core.time_utils import business_date, utcnow
 from app.modules.business_rules.service import BUSINESS_TIMEZONE, get_timezone
 
 
-async def business_date_of(session: AsyncSession, moment: datetime.datetime) -> datetime.date:
+async def business_zone(session: AsyncSession) -> zoneinfo.ZoneInfo:
+    """Пояс организации - ЕДИНСТВЕННОЕ чтение параметра `business_timezone`. Вызывающий, которому
+    нужно и «сегодня», и дата метки в одной операции, читает пояс ОДИН раз и передаёт его дальше
+    (`zone=`): между двумя чтениями администратор мог бы сменить пояс, и внутри одного ответа
+    «сегодня» и дата карточки оказались бы из разных поясов (PR #198 review)."""
+    return await get_timezone(session, BUSINESS_TIMEZONE)
+
+
+async def business_date_of(
+    session: AsyncSession, moment: datetime.datetime, *, zone: zoneinfo.ZoneInfo | None = None
+) -> datetime.date:
     """Календарная дата ПРОИЗВОЛЬНОЙ метки времени в поясе организации (`T-M2-40`): сохранённая
     метка (`created_at` и подобные, в UTC) читается как дата ЭТИМ же читателем параметра, а не
     переводом в UTC и не вторым чтением параметра в другом модуле. Момент обязан быть с поясом
-    (`business_date` отказывает наивному)."""
-    return business_date(moment, await get_timezone(session, BUSINESS_TIMEZONE))
+    (`business_date` отказывает наивному). `zone` - уже известный вызывающему пояс; без него
+    параметр читается здесь (граница: такой вызов в одной операции с другим чтением пояса даёт
+    два чтения)."""
+    return business_date(moment, zone if zone is not None else await business_zone(session))
 
 
-async def business_today(session: AsyncSession) -> datetime.date:
+async def business_today(
+    session: AsyncSession, *, zone: zoneinfo.ZoneInfo | None = None
+) -> datetime.date:
     """Бизнес-день на этот момент: текущее UTC-время, переведённое в пояс организации."""
-    return await business_date_of(session, utcnow())
+    return await business_date_of(session, utcnow(), zone=zone)

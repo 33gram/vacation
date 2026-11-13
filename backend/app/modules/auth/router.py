@@ -14,6 +14,7 @@ from app.modules.auth.embedded_mode import is_embedded_mode
 from app.modules.auth.password_policy import get_password_policy_hints, validate_password_strength
 from app.modules.auth.rbac import get_current_account_allowing_password_change
 from app.modules.auth.tokens import AuthResult
+from app.modules.business_rules.business_day import business_today
 from app.modules.business_rules.service import PASSWORD_MIN_LENGTH, get_int
 from app.schemas.auth import (
     LoginRequest,
@@ -193,7 +194,8 @@ async def me(
     """Доступен и до смены первичного пароля (`get_current_account_
     allowing_password_change`, T-M1-46) — сам `must_change_password`
     приходит только отсюда, гейтить чтение этого поля им самим было бы
-    противоречием."""
+    противоречием. `today` - бизнес-день (`NFR-LOC-002`): интерфейс узнаёт «сегодня» сервера
+    отсюда, один раз на сессию (решение 38 раздела 13 требований)."""
     return MeResponse(
         id=account.id,
         role=account.role,
@@ -202,4 +204,5 @@ async def me(
         employee_id=account.employee_id,
         login=account.login,
         embedded_mode=await is_embedded_mode(session),
+        today=await business_today(session),
     )

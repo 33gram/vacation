@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import datetime
+
 from pydantic import BaseModel, Field, SecretStr
 
 from app.modules.auth.password_policy import MAX_PASSWORD_LENGTH_CHARS
@@ -36,6 +38,9 @@ class MeResponse(BaseModel):
     employee_id: int | None
     login: str | None
     embedded_mode: bool
+    # Бизнес-день сервера на момент ответа (`NFR-LOC-002`, `T-M2-36`/`T-M2-38`): интерфейс берёт из
+    # него значения дат по умолчанию и держит на сессию. Не то же, что `today` в ответе остатка.
+    today: datetime.date
 
 
 class PasswordChangeRequest(BaseModel):

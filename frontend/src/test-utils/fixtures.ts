@@ -11,6 +11,10 @@ type LeaveTypeBalanceOut = components["schemas"]["LeaveTypeBalanceOut"];
 type BalanceEntryOut = components["schemas"]["BalanceEntryOut"];
 type AccrualYearOut = components["schemas"]["AccrualYearOut"];
 
+/** Бизнес-день сервера по умолчанию в ответе `me` (T-M2-36/T-M2-38): тесты, которым нужен год
+ * или дата «сегодня», берут её отсюда, а не из часов браузера. */
+export const SESSION_TODAY = "2026-10-26";
+
 export function meResponse(overrides: Partial<MeResponse> = {}): MeResponse {
   return {
     id: 1,
@@ -20,6 +24,7 @@ export function meResponse(overrides: Partial<MeResponse> = {}): MeResponse {
     employee_id: 1,
     login: null,
     embedded_mode: false,
+    today: SESSION_TODAY,
     ...overrides,
   };
 }

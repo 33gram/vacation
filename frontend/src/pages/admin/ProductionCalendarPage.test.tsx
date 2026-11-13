@@ -1,14 +1,16 @@
 import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { setAccessToken } from "../../app/auth";
 import { daysInYear, isWeekendDate } from "../../entities/productionCalendar";
 import { setFetchHandler } from "../../test-utils/fetchMock";
-import { meResponse } from "../../test-utils/fixtures";
+import { meResponse, SESSION_TODAY } from "../../test-utils/fixtures";
 import { renderApp } from "../../test-utils/renderApp";
 
-const CURRENT_YEAR = new Date().getFullYear();
+// Год - из бизнес-дня сессии (`T-M2-36`), как у страницы; часы браузера в тестах не участвуют
+// (раньше здесь было `new Date().getFullYear()` - правка существующего теста по задаче).
+const CURRENT_YEAR = Number(SESSION_TODAY.slice(0, 4));
 
 /** Полностью заполненный год ("рабочий" везде, кроме суббот/воскресений)
  * — фикстура для тестов правки/сохранения, где сам факт «год не пуст и
@@ -28,14 +30,17 @@ function ddmmyyyy(isoDate: string): string {
 
 function mockBackend(
   daysByYear: Record<number, { date: string; day_type: string }[]>,
-  options: { role?: string; getStatus?: number } = {},
+  options: { role?: string; getStatus?: number; me?: Record<string, unknown> } = {},
 ) {
   setAccessToken("token");
   setFetchHandler((method, pathname) => {
     if (method === "GET" && pathname === "/api/auth/me") {
       return {
         status: 200,
-        body: meResponse({ role: options.role ?? "system_admin", must_change_password: false }),
+        body: {
+          ...meResponse({ role: options.role ?? "system_admin", must_change_password: false }),
+          ...options.me,
+        },
       };
     }
     const match = pathname.match(/^\/api\/admin\/production-calendar\/(\d+)$/);
@@ -430,5 +435,89 @@ describe("422 validation errors (T-M2-28)", () => {
       await screen.findByText("date: Неверная дата, нужен формат ГГГГ-ММ-ДД. day_type: Недопустимое значение."),
     ).toBeInTheDocument();
     expect(screen.queryByText("Не удалось сохранить календарь.")).not.toBeInTheDocument();
+  });
+});
+
+
+describe("the year comes from the server's business day, not the browser clock (T-M2-36)", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllEnvs();
+  });
+
+  function browserClock(nowUtc: string) {
+    vi.stubEnv("TZ", "UTC");
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(nowUtc));
+  }
+
+  it("the session day is 31.12 and the browser is already in the next year: the default is the session year, the list is [year, year + 1]", async () => {
+    browserClock("2027-01-01T12:00:00Z");
+    const requested: number[] = [];
+    setFetchHandler((method, pathname) => {
+      if (method === "GET" && pathname === "/api/auth/me") {
+        return { status: 200, body: meResponse({ role: "system_admin", today: "2026-12-31" }) };
+      }
+      const match = pathname.match(/^\/api\/admin\/production-calendar\/(\d+)$/);
+      if (method === "GET" && match) {
+        requested.push(Number(match[1]));
+        return { status: 200, body: { year: Number(match[1]), days: [] } };
+      }
+      return null;
+    });
+    setAccessToken("token");
+    const user = userEvent.setup();
+
+    renderApp("/admin/production-calendar");
+    await screen.findByText("Календарь на 2026 год не заполнен");
+    await user.click(screen.getByRole("combobox", { name: "Год" }));
+
+    expect(requested).toEqual([2026]);
+    expect(await screen.findByTitle("2027")).toBeInTheDocument();
+    expect(screen.queryByTitle("2025")).not.toBeInTheDocument();
+  });
+
+  it("the session day is already 01.01 and the browser is still in the old year: the default is the NEW year", async () => {
+    browserClock("2026-12-31T12:00:00Z");
+    mockBackend({}, { me: { today: "2027-01-01" } });
+    const user = userEvent.setup();
+
+    renderApp("/admin/production-calendar");
+    await screen.findByText("Календарь на 2027 год не заполнен");
+    await user.click(screen.getByRole("combobox", { name: "Год" }));
+
+    expect(await screen.findByTitle("2028")).toBeInTheDocument();
+    expect(screen.queryByTitle("2026")).not.toBeInTheDocument();
+  });
+
+  it("a session answer WITHOUT today: no browser-clock year is invented, an error with Retry instead (Ф-1)", async () => {
+    browserClock("2026-06-15T12:00:00Z");
+    let meCalls = 0;
+    const requested: string[] = [];
+    setFetchHandler((method, pathname) => {
+      if (method === "GET" && pathname === "/api/auth/me") {
+        meCalls += 1;
+        const { today, ...withoutToday } = meResponse({ role: "system_admin" });
+        return { status: 200, body: meCalls === 1 ? withoutToday : { ...withoutToday, today } };
+      }
+      if (method === "GET" && pathname.startsWith("/api/admin/production-calendar/")) {
+        requested.push(pathname);
+        return { status: 200, body: { year: 2026, days: [] } };
+      }
+      return null;
+    });
+    setAccessToken("token");
+    const user = userEvent.setup();
+
+    renderApp("/admin/production-calendar");
+    const retry = await screen.findByRole("button", { name: "Повторить" });
+    expect(requested).toEqual([]); // без дня ни одного запроса календаря, год по часам не выдуман
+    expect(screen.queryByRole("combobox", { name: "Год" })).not.toBeInTheDocument();
+
+    await user.click(retry);
+
+    expect(await screen.findByText("Календарь на 2026 год не заполнен")).toBeInTheDocument();
+    expect(meCalls).toBe(2); // «Повторить» перезапросило сессию
+    expect(requested).toEqual(["/api/admin/production-calendar/2026"]); // год - из дня сессии, не июнь
   });
 });

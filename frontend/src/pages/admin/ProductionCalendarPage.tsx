@@ -5,6 +5,7 @@ import { useMemo, useState } from "react";
 import { apiClient } from "../../api/client";
 import { detailText } from "../../api/errors";
 import { formatDate } from "../../app/format";
+import { useBusinessDay } from "../../app/useBusinessDay";
 import { EmptyState, ErrorLoadingState, LoadingState } from "../../app/states";
 import {
   buildYearGrid,
@@ -110,11 +111,15 @@ function MonthGrid({
   );
 }
 
-const CURRENT_YEAR = new Date().getFullYear();
 // «Минимум текущий и следующий» (T-M1-22) — T-M8-03 загружает календарь
 // именно на эти два года; больше двух лет вперёд/назад в M1 не требуется,
-// и добавлять их было бы не тем, что просит задача.
-const YEAR_OPTIONS = [CURRENT_YEAR, CURRENT_YEAR + 1];
+// и добавлять их было бы не тем, что просит задача. «Текущий» - год БИЗНЕС-ДНЯ из
+// сессии (`T-M2-36`, `NFR-LOC-002`), а не часов браузера; он вычисляется в рендере, а не
+// при загрузке модуля (константа модуля пережила бы и смену дня сессии, и смену года).
+function yearOptions(today: string): number[] {
+  const current = Number(today.slice(0, 4));
+  return [current, current + 1];
+}
 
 /** Год как отдельный компонент, смонтированный с `key={year}`
  * (`ProductionCalendarPage` ниже) — переключение года ПОЛНОСТЬЮ
@@ -321,7 +326,23 @@ function ProductionCalendarYearView({ year }: { year: number }) {
  * способ стереть готовый календарь одним кликом ради экономии, которая
  * при частичном заполнении и так уже есть через это же действие. */
 export function ProductionCalendarPage() {
-  const [year, setYear] = useState(CURRENT_YEAR);
+  const today = useBusinessDay();
+  const queryClient = useQueryClient();
+  const [pickedYear, setPickedYear] = useState<number | null>(null);
+
+  // День неизвестен (`today` не пришёл): года по умолчанию нет, а подставлять год по часам
+  // браузера нельзя (`ui.md` §3). «Повторить» перезапрашивает сессию.
+  if (today === null) {
+    return (
+      <div>
+        <Typography.Title level={3}>Производственный календарь</Typography.Title>
+        <ErrorLoadingState onRetry={() => void queryClient.refetchQueries({ queryKey: ["me"] })} />
+      </div>
+    );
+  }
+  const options = yearOptions(today);
+  // Выбранный год, которого нет в перечне (день сессии сменил год), уступает году по умолчанию.
+  const year = pickedYear !== null && options.includes(pickedYear) ? pickedYear : options[0];
 
   return (
     <div>
@@ -329,8 +350,8 @@ export function ProductionCalendarPage() {
       <Select
         aria-label="Год"
         value={year}
-        onChange={setYear}
-        options={YEAR_OPTIONS.map((option) => ({ value: option, label: String(option) }))}
+        onChange={setPickedYear}
+        options={options.map((option) => ({ value: option, label: String(option) }))}
         style={{ width: 120, marginBottom: 16 }}
       />
       <ProductionCalendarYearView key={year} year={year} />

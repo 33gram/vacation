@@ -147,6 +147,7 @@ async def test_with_the_utc_zone_the_same_moment_accrues_only_up_to_the_utc_day(
 async def test_an_adjustment_dated_the_moscow_day_is_accepted_and_the_next_day_refused(
     db_session, api_client
 ) -> None:
+    # FR-BAL-004/2: граница - бизнес-день (по Москве 13.11 - сегодня, 14.11 - будущее).
     ctx, employee, own = await _employee(db_session, MOSCOW_DAY - datetime.timedelta(days=200))
     hr = await _hr(db_session)
 

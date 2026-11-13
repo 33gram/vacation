@@ -676,6 +676,7 @@ async def test_fr_bal_004_an_adjustment_for_a_missing_employee_is_404(
 async def test_fr_bal_004_an_adjustment_dated_in_the_future_is_refused_with_400(
     db_session, api_client
 ) -> None:
+    # FR-BAL-004/2: дата позже бизнес-дня отклоняется отказом 400, событие не пишется.
     ctx, employee, own = await _setup(db_session)
     hr = await _account(db_session, "hr_admin", "hr-future@company.local")
 

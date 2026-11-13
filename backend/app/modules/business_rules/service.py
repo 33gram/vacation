@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import datetime
 import functools
+import importlib.resources
 import re
 import zoneinfo
 from dataclasses import dataclass
@@ -171,13 +172,29 @@ RULES: dict[str, RuleSpec] = {
 RuleValue = int | MonthDay | zoneinfo.ZoneInfo
 
 
+# Имена, которые есть в индексе базы зон, но зоной не являются. Причина общая: `Factory` - заглушка
+# базы зон (смещение 0, сокращение «-00»), по ней нельзя считать календарь. Список не ведётся
+# наугад: `test_timezone_rule.py` перебирает ВЕСЬ индекс и требует, чтобы правило «сокращение -00 на
+# всех пробных датах» давало ровно этот набор.
+NOT_A_ZONE: dict[str, str] = {
+    "Factory": "placeholder of the tz database (offset 0, abbreviation '-00'), not a zone",
+}
+
+
 @functools.cache
 def _known_zone_names() -> frozenset[str]:
-    """Имена зон, которые знает база зон процесса (системный каталог и пакет `tzdata`).
-    Членство проверяется ПЕРЕД `ZoneInfo(...)`: на файловой системе без учёта регистра
-    (macOS) `ZoneInfo("europe/moscow")` нашёл бы зону, а на Linux - нет, и годность значения
-    зависела бы от машины. Кэш на процесс: набор зон за жизнь процесса не меняется."""
-    return frozenset(zoneinfo.available_timezones())
+    """Допустимые имена зон: индекс пакета `tzdata` (прямая зависимость `backend`, версия
+    закреплена замком) минус `NOT_A_ZONE`. ИМЕННО индекс пакета, а не `available_timezones()` и не
+    голый `ZoneInfo`: системный каталог образа содержит имена, которых нет в пакете (`localtime` -
+    это `/etc/localtime`, зона САМОГО развёртывания), и годность значения, а с ней и результат
+    расчёта зависели бы от образа - прямо против `NFR-LOC-002`. Индекс пакета один и тот же в
+    любом образе; регистр не прощается (на файловой системе без учёта регистра `ZoneInfo` принял
+    бы `europe/moscow`). ГРАНИЦА: имя берётся из индекса пакета, но сами ПРАВИЛА зоны `ZoneInfo`
+    читает из системного каталога, если там есть такой файл, иначе из пакета - версия правил
+    может различаться между образами, имя - нет. Кэш на процесс: пакет за жизнь процесса не
+    меняется."""
+    index = importlib.resources.files("tzdata").joinpath("zones").read_text(encoding="utf-8")
+    return frozenset(index.split()) - NOT_A_ZONE.keys()
 
 
 def _parse_timezone(key: str, value: str) -> zoneinfo.ZoneInfo:

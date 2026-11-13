@@ -8,8 +8,10 @@
 
 from __future__ import annotations
 
+import datetime
 import importlib.util
 import re
+import time
 import zoneinfo
 from pathlib import Path
 
@@ -20,6 +22,7 @@ from sqlalchemy.exc import IntegrityError
 from app.models.business_rule_config import TIMEZONE_FORM
 from app.modules.business_rules.service import (
     BUSINESS_TIMEZONE,
+    NOT_A_ZONE,
     BusinessRuleError,
     BusinessRulesConfigError,
     RuleValuesInvalidError,
@@ -225,3 +228,72 @@ async def test_the_seed_restores_a_missing_key_with_the_default(db_session) -> N
     await _run_seed(db_session)
 
     assert await _zone_rows(db_session) == [("Europe/Moscow", "timezone")]
+
+
+# --- Псевдоимена зон (PR #196 review, П-1) ---------------------------------------------------
+# `localtime` есть в наборе системного каталога образа и берётся из `/etc/localtime`, то есть
+# значение и его результат зависели бы от РАЗВЁРТЫВАНИЯ; `Factory` - заглушка базы зон
+# (смещение 0, сокращение «-00»). Оба проходят форму и раньше проходили проверку.
+
+
+def _index_names() -> set[str]:
+    import importlib.resources
+
+    index = importlib.resources.files("tzdata").joinpath("zones").read_text(encoding="utf-8")
+    return set(index.split())
+
+
+@pytest.mark.parametrize("name", ["localtime", "Factory"])
+def test_a_pseudo_name_is_refused(name: str) -> None:
+    with pytest.raises(BusinessRuleError) as excinfo:
+        parse_stored_value(BUSINESS_TIMEZONE, name, "timezone")
+
+    assert excinfo.value.key == BUSINESS_TIMEZONE
+
+
+@pytest.mark.parametrize("name", ["localtime", "Factory"])
+def test_a_pseudo_name_is_refused_whatever_the_image_and_the_process_zone_are(
+    name: str, tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import importlib.resources
+
+    # Имитация образа, где системный каталог зон содержит `localtime` (и `Factory`), а процесс
+    # живёт в другом поясе: значение обязано отвергаться и здесь, и в образе без них.
+    moscow = importlib.resources.files("tzdata.zoneinfo.Europe").joinpath("Moscow").read_bytes()
+    for pseudo in ("localtime", "Factory"):
+        (tmp_path / pseudo).write_bytes(moscow)
+    monkeypatch.setenv("TZ", "Asia/Tokyo")
+    time.tzset()
+    zoneinfo.reset_tzpath(to=[str(tmp_path)])
+    zoneinfo.ZoneInfo.clear_cache()
+    try:
+        # Предусловие: в такой среде голый `ZoneInfo` имя ПРИНИМАЕТ - тест не пуст.
+        assert zoneinfo.ZoneInfo(name).utcoffset(datetime.datetime(2026, 1, 1)) is not None
+        with pytest.raises(BusinessRuleError):
+            parse_stored_value(BUSINESS_TIMEZONE, name, "timezone")
+    finally:
+        zoneinfo.reset_tzpath()
+        zoneinfo.ZoneInfo.clear_cache()
+        monkeypatch.undo()
+        time.tzset()
+
+
+def _is_placeholder(name: str) -> bool:
+    zone = zoneinfo.ZoneInfo(name)
+    samples = [datetime.datetime(year, month, 1) for year in (1990, 2010, 2026) for month in (1, 7)]
+    return all(zone.tzname(moment) == "-00" for moment in samples)
+
+
+def test_the_list_of_names_that_are_not_zones_is_exactly_what_the_tz_database_marks_so() -> None:
+    # Сторож не слепнет: перебор ВСЕХ имён индекса пакета `tzdata`. Правило отсечения -
+    # сокращение «-00» на всех пробных датах (так база зон помечает «зоны нет»); оно должно
+    # дать ровно `NOT_A_ZONE`. Новая заглушка в обновлении `tzdata` покраснит тест, а не пройдёт
+    # молча; зона, не попавшая под правило, но лишняя в списке, тоже.
+    found = {name for name in _index_names() if _is_placeholder(name)}
+
+    assert found == set(NOT_A_ZONE)
+
+
+def test_every_name_of_the_package_index_except_the_placeholders_is_accepted() -> None:
+    for name in sorted(_index_names() - set(NOT_A_ZONE)):
+        assert parse_stored_value(BUSINESS_TIMEZONE, name, "timezone").key == name

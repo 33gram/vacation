@@ -1,4 +1,5 @@
-import { fireEvent, screen, within } from "@testing-library/react";
+import { focusManager } from "@tanstack/react-query";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -474,6 +475,95 @@ describe("the default termination date is the server's business day (T-M2-38)", 
 
     await screen.findByText("Уволен", { exact: false });
     expect(sent).toEqual(["2026-10-26"]);
+  });
+
+  it("the window takes the day as a SNAPSHOT at opening: a later answer of me does not move the date under the hand (PR #197 review)", async () => {
+    setAccessToken("token");
+    let meCalls = 0;
+    const sent: string[] = [];
+    setFetchHandler((method, pathname, init) => {
+      if (method === "GET" && pathname === "/api/auth/me") {
+        meCalls += 1;
+        // Первый ответ - 31.12, после возврата фокуса - уже 01.01.
+        const today = meCalls === 1 ? "2026-12-31" : "2027-01-01";
+        return { status: 200, body: meResponse({ role: "hr_admin", today }) };
+      }
+      if (method === "GET" && pathname === "/api/departments") return { status: 200, body: DEPARTMENTS };
+      if (method === "GET" && pathname === "/api/employees") return { status: 200, body: [MANAGER, EMPLOYEE] };
+      if (method === "GET" && pathname === "/api/employees/2") return { status: 200, body: EMPLOYEE };
+      if (method === "POST" && pathname === "/api/employees/2/deactivate") {
+        const body = JSON.parse(init.body as string) as { termination_date: string };
+        sent.push(body.termination_date);
+        return { status: 200, body: { ...EMPLOYEE, employment_status: "terminated", termination_date: body.termination_date } };
+      }
+      return null;
+    });
+    const user = userEvent.setup();
+    renderApp("/employees/2");
+    await screen.findByRole("heading", { name: "Петров Пётр Петрович" });
+    await user.click(screen.getByRole("button", { name: "Деактивировать" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByLabelText("Дата увольнения")).toHaveValue("31.12.2026");
+
+    // Возврат фокуса на вкладку при открытом окне: `me` перезапрошен и отвечает новым днём.
+    act(() => {
+      focusManager.setFocused(false);
+      focusManager.setFocused(true);
+    });
+    await waitFor(() => expect(meCalls).toBeGreaterThanOrEqual(2));
+    await new Promise((resolve) => setTimeout(resolve, 50)); // ответ дошёл до сессии
+
+    expect(within(dialog).getByLabelText("Дата увольнения")).toHaveValue("31.12.2026");
+    await user.click(within(dialog).getByRole("button", { name: "Деактивировать" }));
+    await screen.findByText("Уволен", { exact: false });
+    expect(sent).toEqual(["2026-12-31"]);
+  });
+
+  it("the window opened AGAIN takes a new snapshot: the new day, and an earlier pick is dropped (PR #197 review)", async () => {
+    setAccessToken("token");
+    let meCalls = 0;
+    setFetchHandler((method, pathname) => {
+      if (method === "GET" && pathname === "/api/auth/me") {
+        meCalls += 1;
+        const today = meCalls === 1 ? "2026-12-31" : "2027-01-01";
+        return { status: 200, body: meResponse({ role: "hr_admin", today }) };
+      }
+      if (method === "GET" && pathname === "/api/departments") return { status: 200, body: DEPARTMENTS };
+      if (method === "GET" && pathname === "/api/employees") return { status: 200, body: [MANAGER, EMPLOYEE] };
+      if (method === "GET" && pathname === "/api/employees/2") return { status: 200, body: EMPLOYEE };
+      return null;
+    });
+    const user = userEvent.setup();
+    renderApp("/employees/2");
+    await screen.findByRole("heading", { name: "Петров Пётр Петрович" });
+    await user.click(screen.getByRole("button", { name: "Деактивировать" }));
+    let dialog = await screen.findByRole("dialog");
+    const input = within(dialog).getByLabelText("Дата увольнения");
+    fireEvent.change(input, { target: { value: "15.03.2027" } });
+    fireEvent.keyDown(input, { key: "Enter", keyCode: 13 });
+    await waitFor(() => expect(input).toHaveValue("15.03.2027")); // выбор пользователя перекрывает умолчание
+
+    await user.click(within(dialog).getByRole("button", { name: "Отмена" }));
+    act(() => {
+      focusManager.setFocused(false);
+      focusManager.setFocused(true);
+    });
+    await waitFor(() => expect(meCalls).toBeGreaterThanOrEqual(2));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    // Закрытое окно остаётся в DOM скрытым: кнопка страницы - первая из одноимённых.
+    await user.click(screen.getAllByRole("button", { name: "Деактивировать" })[0]);
+    dialog = await screen.findByRole("dialog");
+
+    expect(within(dialog).getByLabelText("Дата увольнения")).toHaveValue("01.01.2027");
+  });
+
+  it("a session day that is not a calendar date leaves the date empty (PR #197 review, Д-3)", async () => {
+    const { today: _omitted, ...rest } = meResponse({ role: "hr_admin" });
+    mockCard({ ...rest, today: "2026-02-30" });
+    const { dialog } = await openDialog();
+
+    expect(within(dialog).getByLabelText("Дата увольнения")).toHaveValue("");
+    expect(within(dialog).getByRole("button", { name: "Деактивировать" })).toBeDisabled();
   });
 
   it("a session answer WITHOUT today: the date is empty, the button is off until a date is chosen (Ф-1)", async () => {

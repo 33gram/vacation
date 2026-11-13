@@ -55,14 +55,22 @@ export function EmployeeCardPage() {
   const [isEditing, setIsEditing] = useState(false);
   const [isDeactivateModalOpen, setIsDeactivateModalOpen] = useState(false);
   // Дата увольнения: значение по умолчанию - БИЗНЕС-ДЕНЬ из сессии (`T-M2-38`, `NFR-LOC-002`), а
-  // не часы браузера. Выбор пользователя хранится отдельно (`null` - ещё не выбирал) и перекрывает
-  // умолчание; умолчание вычисляется в рендере, поэтому не залипает на значение момента монтирования.
-  // День неизвестен (`today` не пришёл) - поле пусто, подтверждение выключено до выбора даты.
+  // не часы браузера. День берётся СНИМКОМ на момент ОТКРЫТИЯ окна (`openedDay`) и дальше сам не
+  // меняется: `me` перезапрашивается при возврате фокуса, и без снимка дата сменилась бы под
+  // рукой (измерено ревью PR #197: 31.12.2026 -> 01.01.2027). Выбор пользователя (`pickedDate`,
+  // `null` - не выбирал) перекрывает умолчание; при каждом открытии он сбрасывается, снимок новый.
+  // День неизвестен (`today` не пришёл или не дата) - поле пусто, подтверждение выключено.
   // ГРАНИЦА ОБЪЁМА: меняется только значение по умолчанию; допустимость будущей даты увольнения
   // здесь НЕ решается и ограничений в элемент не добавлено.
   const businessDay = useBusinessDay();
+  const [openedDay, setOpenedDay] = useState<string | null>(null);
   const [pickedDate, setPickedDate] = useState<Dayjs | null>(null);
-  const terminationDate = pickedDate ?? (businessDay === null ? null : dayjs(businessDay, "YYYY-MM-DD"));
+  const terminationDate = pickedDate ?? (openedDay === null ? null : dayjs(openedDay, "YYYY-MM-DD"));
+  const openDeactivateModal = () => {
+    setOpenedDay(businessDay);
+    setPickedDate(null);
+    setIsDeactivateModalOpen(true);
+  };
   const [deactivateError, setDeactivateError] = useState<string | null>(null);
   const [deactivating, setDeactivating] = useState(false);
 
@@ -174,7 +182,7 @@ export function EmployeeCardPage() {
         {!isEditing && (
           <Space>
             {employee.employment_status === "active" && (
-              <Button danger onClick={() => setIsDeactivateModalOpen(true)}>
+              <Button danger onClick={openDeactivateModal}>
                 Деактивировать
               </Button>
             )}

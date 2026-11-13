@@ -12,7 +12,7 @@ export type BusinessRuleOut = components["schemas"]["BusinessRuleOut"];
  * ГРАНИЦА: сверяется число в этом исходнике, а не отрисовка страницы; в dev-контейнере `backend`
  * тест пропускается, пока `frontend/src` не скопирован туда вручную (compose его не монтирует),
  * выполняется в CI. */
-export const BUSINESS_RULES_FIELD_COUNT = 13;
+export const BUSINESS_RULES_FIELD_COUNT = 14;
 
 /** Как вводить значение: по `value_type` из ответа, а не по имени ключа. Тип, которого клиент не
  * знает, вводится текстом как есть - решает сервер. */

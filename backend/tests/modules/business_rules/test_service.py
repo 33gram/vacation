@@ -9,6 +9,8 @@
 
 from __future__ import annotations
 
+from zoneinfo import ZoneInfo
+
 import pytest
 from sqlalchemy import text
 
@@ -48,6 +50,7 @@ _EXPECTED_PARSED = {
     "lockout_duration_minutes": 15,
     "month_rounding_threshold_days": 15,
     "unpaid_leave_days_counted_in_service": 14,
+    "business_timezone": ZoneInfo("Europe/Moscow"),
 }
 
 

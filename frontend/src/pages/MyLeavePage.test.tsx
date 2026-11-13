@@ -622,11 +622,16 @@ describe("balance on a date (T-M2-31, BR-8)", () => {
     fireEvent.click(input);
   }
 
-  it("dates after TODAY IN UTC are unavailable, and UTC today itself is available (east of UTC, Р-1)", async () => {
-    // 27.10 01:00 в Токио, но 26.10 16:00 по UTC: сервер считает сегодня 26.10, поэтому
-    // местное «27.10» уже будущее для него и должно быть недоступно.
+  /** Ответ сервера с его бизнес-днём (`today`, `T-M2-34`): граница выбора берётся из него. */
+  function replyToday(today: string) {
+    return () => ({ status: 200, body: balancesResponse(undefined, { today }) });
+  }
+
+  it("dates after the SERVER's today are unavailable, and that day itself is available (east of UTC, Р-1)", async () => {
+    // 27.10 01:00 в Токио, но сервер называет сегодня 26.10 (T-M2-34: из ответа, а не по
+    // часам): местное «27.10» для него будущее и должно быть недоступно.
     at("Asia/Tokyo", "2026-10-26T16:00:00Z");
-    mockBackend({ role: "employee" });
+    mockBackend({ role: "employee" }, replyToday("2026-10-26"));
     renderApp("/my-leave");
     await screen.findByLabelText("Ежегодный оплачиваемый отпуск");
 
@@ -637,26 +642,107 @@ describe("balance on a date (T-M2-31, BR-8)", () => {
     expect(cell("2026-10-27")).toHaveClass("ant-picker-cell-disabled");
   });
 
-  it("the boundary at a moment where the UTC date and the MOSCOW date differ (T-M2-34 must not pass silently)", async () => {
-    // 13.11 01:00 в Москве, но 12.11 22:00 по UTC. Сдвиг границы на +3 часа (Москва) тест
-    // Токио (16:00Z) и Лос-Анджелеса (03:00Z) не замечал: сутки они не пересекают, этот - пересекает.
+  it("the boundary at a moment where the UTC date and the MOSCOW date differ: the server's Moscow day is available (T-M2-34)", async () => {
+    // 13.11 01:00 в Москве, но 12.11 22:00 по UTC. До T-M2-34 граница была UTC-«сегодня»
+    // (12.11), и тест ожидал «13.11 недоступно»; теперь бизнес-день сервера - по поясу
+    // организации (Москва), сервер отвечает today = 13.11, и ожидание ОБРАТНОЕ: 13.11 доступно,
+    // 14.11 - нет. Момент и предусловие пояса остались прежними, тест не ослаблен.
     at("Europe/Moscow", "2026-11-12T22:00:00Z");
     expect(new Date(2026, 10, 12).getTimezoneOffset()).toBe(-180);
-    mockBackend({ role: "employee" });
+    mockBackend({ role: "employee" }, replyToday("2026-11-13"));
     renderApp("/my-leave");
     await screen.findByLabelText("Ежегодный оплачиваемый отпуск");
 
     openPanel();
 
-    await waitFor(() => expect(cell("2026-11-12")).not.toBeNull());
-    expect(cell("2026-11-12")).not.toHaveClass("ant-picker-cell-disabled");
-    expect(cell("2026-11-13")).toHaveClass("ant-picker-cell-disabled");
+    await waitFor(() => expect(cell("2026-11-13")).not.toBeNull());
+    expect(cell("2026-11-13")).not.toHaveClass("ant-picker-cell-disabled");
+    expect(cell("2026-11-14")).toHaveClass("ant-picker-cell-disabled");
+  });
+
+  it("the boundary is the server's day even when the browser clock says another (T-M2-34)", async () => {
+    // Часы браузера отстают на шесть суток: по ним «сегодня» - 20.10, и граница по ним закрыла
+    // бы 21...26.10. Граница - ответ сервера (26.10). Месяц тот же, чтобы панель показала дни.
+    at("UTC", "2026-10-20T12:00:00Z");
+    mockBackend({ role: "employee" }, replyToday("2026-10-26"));
+    renderApp("/my-leave");
+    await screen.findByLabelText("Ежегодный оплачиваемый отпуск");
+
+    openPanel();
+
+    await waitFor(() => expect(cell("2026-10-26")).not.toBeNull());
+    expect(cell("2026-10-26")).not.toHaveClass("ant-picker-cell-disabled");
+    expect(cell("2026-10-27")).toHaveClass("ant-picker-cell-disabled");
+  });
+
+  it("before the first answer the control is OFF: the server's today is not known yet (T-M2-34)", async () => {
+    const gate = deferred<Reply>();
+    mockBackend({ role: "employee" }, () => gate.promise);
+    renderApp("/my-leave");
+
+    const picker = await screen.findByLabelText("Остаток на дату");
+    expect(picker).toBeDisabled();
+
+    gate.resolve({ status: 200, body: balancesResponse() });
+    await screen.findByLabelText("Ежегодный оплачиваемый отпуск");
+    expect(screen.getByLabelText("Остаток на дату")).not.toBeDisabled();
+  });
+
+  it("an answer WITHOUT today keeps the control OFF: no boundary must not mean an open boundary (PR #196 review)", async () => {
+    // Клиент тело ответа во время выполнения не проверяет (T-M2-25): тип говорит «поле
+    // обязательно», а сервер старой версии его не пришлёт. Приведение типа - как у
+    // `unitLabel("weeks" as Unit)`.
+    const { today: _omitted, ...withoutToday } = balancesResponse();
+    mockBackend({ role: "employee" }, () => ({
+      status: 200,
+      body: withoutToday as unknown as ReturnType<typeof balancesResponse>,
+    }));
+    renderApp("/my-leave");
+    await screen.findByLabelText("Ежегодный оплачиваемый отпуск");
+
+    expect(screen.getByLabelText("Остаток на дату")).toBeDisabled();
+  });
+
+  it("when the first load fails the control stays OFF until a retry answers (T-M2-34)", async () => {
+    let attempt = 0;
+    mockBackend({ role: "employee" }, () =>
+      ++attempt === 1 ? { status: 500, body: {} } : { status: 200, body: balancesResponse() },
+    );
+    renderApp("/my-leave");
+
+    await screen.findByRole("button", { name: /повторить/i });
+    expect(screen.getByLabelText("Остаток на дату")).toBeDisabled();
+
+    fireEvent.click(screen.getByRole("button", { name: /повторить/i }));
+    await screen.findByLabelText("Ежегодный оплачиваемый отпуск");
+    expect(screen.getByLabelText("Остаток на дату")).not.toBeDisabled();
+  });
+
+  it("a change of the date keeps the control ON with the same boundary while the skeleton shows (T-M2-34)", async () => {
+    const second = deferred<Reply>();
+    let calls = 0;
+    mockBackend({ role: "employee" }, () =>
+      ++calls === 1
+        ? { status: 200, body: balancesResponse(undefined, { today: "2026-10-26" }) }
+        : second.promise,
+    );
+    renderApp("/my-leave");
+    await screen.findByLabelText("Ежегодный оплачиваемый отпуск");
+
+    await pick("2026-10-20");
+    await waitFor(() => expect(document.querySelector("[data-skeleton-block]")).not.toBeNull());
+
+    expect(screen.getByLabelText("Остаток на дату")).not.toBeDisabled();
+    openPanel();
+    await waitFor(() => expect(cell("2026-10-26")).not.toBeNull());
+    expect(cell("2026-10-27")).toHaveClass("ant-picker-cell-disabled");
+    second.resolve({ status: 200, body: balancesResponse() });
   });
 
   it("the same boundary west of UTC: UTC today is already tomorrow there, and it is available (Р-1)", async () => {
     // 26.10 20:00 в Лос-Анджелесе, но 27.10 03:00 по UTC: сегодня сервера - 27.10.
     at("America/Los_Angeles", "2026-10-27T03:00:00Z");
-    mockBackend({ role: "employee" });
+    mockBackend({ role: "employee" }, replyToday("2026-10-27"));
     renderApp("/my-leave");
     await screen.findByLabelText("Ежегодный оплачиваемый отпуск");
 

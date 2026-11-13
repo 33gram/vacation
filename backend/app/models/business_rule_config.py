@@ -7,11 +7,21 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
 
-# `integer` — десятичное целое без знака; `month_day` — дата без года `ММ-ДД`.
-# Новый тип значения — единственный случай, требующий миграции (CHECK ниже).
+# `integer` — десятичное целое без знака; `month_day` — дата без года `ММ-ДД`; `timezone` — имя
+# часовой зоны IANA (`T-M2-34`, миграция `0011`). Новый тип значения — единственный случай,
+# требующий миграции (CHECK ниже).
 INTEGER = "integer"
 MONTH_DAY = "month_day"
-BUSINESS_RULE_VALUE_TYPES = (INTEGER, MONTH_DAY)
+TIMEZONE = "timezone"
+BUSINESS_RULE_VALUE_TYPES = (INTEGER, MONTH_DAY, TIMEZONE)
+
+# ФОРМА имени зоны, которую проверяет CHECK базы: ASCII, сегменты через `/`, внутри буквы, цифры,
+# `_`, `+`, `-` (`Europe/Moscow`, `UTC`, `Etc/GMT+3`, `America/Argentina/Buenos_Aires`). Это
+# форма, а не годность: существует ли зона, база знать не может, это проверяет сервис через
+# `zoneinfo` (`parse_stored_value`); сервис проверяет ту же форму тем же шаблоном ДО обращения к
+# `zoneinfo`, поэтому он не мягче базы. Второе место шаблона - миграция `0011` (она не
+# импортирует код приложения); совпадение двух мест держит тест `test_timezone_rule.py`.
+TIMEZONE_FORM = r"^[A-Za-z][A-Za-z0-9_+-]*(/[A-Za-z0-9_+-]+)*$"
 
 
 class BusinessRuleConfig(Base):
@@ -46,6 +56,10 @@ class BusinessRuleConfig(Base):
         CheckConstraint(
             "value_type <> 'month_day' " "OR value ~ '^(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$'",
             name="ck_business_rules_config_month_day_format",
+        ),
+        CheckConstraint(
+            f"value_type <> 'timezone' OR value ~ '{TIMEZONE_FORM}'",
+            name="ck_business_rules_config_timezone_format",
         ),
     )
 

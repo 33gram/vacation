@@ -20,6 +20,9 @@ dependencies = [
   "python-multipart>=0.0.9",
   "aiosmtplib>=3.0,<4",
   "openpyxl>=3.1,<4",
+  # Явная прямая зависимость (T-M2-34): `zoneinfo` читает пояс организации (NFR-LOC-002), и база
+  # зон не должна держаться на том, что её тянет `kombu`.
+  "tzdata>=2024.1",
 ]
 
 [project.optional-dependencies]

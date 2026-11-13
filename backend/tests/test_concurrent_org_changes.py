@@ -48,6 +48,7 @@ from app.modules.balances.service import accrue_before_read
 from app.modules.employees import department_service, employee_service
 from app.schemas.department import DepartmentUpdate
 from app.schemas.employee import EmployeeDeactivate, EmployeeUpdate
+from tests.business_day import seeded_business_today
 
 # `update_employee` требует автора только для пересчёта остатка при смене даты
 # приёма (T-M2-07); эти тесты дату не меняют, автор не используется.
@@ -487,7 +488,7 @@ async def test_concurrent_hire_date_edits_recalculate_from_the_committed_previou
     тест путь с цепочкой подчинения не гоняет."""
     engine = get_engine()
     marker = uuid.uuid4().hex[:12]
-    today = datetime.datetime.now(datetime.UTC).date()
+    today = seeded_business_today()  # пересчёт при смене даты приёма идёт по бизнес-дню (T-M2-34)
     original = today - datetime.timedelta(days=200)
     date_a = original + datetime.timedelta(days=10)
     date_b = original + datetime.timedelta(days=20)

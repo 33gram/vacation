@@ -473,7 +473,7 @@ export interface components {
             reason: string;
             /**
              * Entry Date
-             * @description Дата, на которую действует корректировка; по умолчанию сегодня (UTC). Не может быть в будущем: корректировка фиксирует уже случившееся.
+             * @description Дата, на которую действует корректировка; по умолчанию бизнес-день (NFR-LOC-002). Не может быть в будущем: корректировка фиксирует уже случившееся (отказ 400).
              */
             entry_date?: string | null;
         };
@@ -599,6 +599,11 @@ export interface components {
              * Format: date
              */
             as_of: string;
+            /**
+             * Today
+             * Format: date
+             */
+            today: string;
             /** Balances */
             balances: components["schemas"]["LeaveTypeBalanceOut"][];
         };
@@ -1383,7 +1388,7 @@ export interface operations {
     get_employee_balances_api_employees__employee_id__balances_get: {
         parameters: {
             query?: {
-                /** @description Дата показа остатка (BR-8); по умолчанию сегодня (UTC). Это только ФИЛЬТР показа: журнал по ней не меняется, начисление идёт до сегодняшнего дня. */
+                /** @description Дата показа остатка (BR-8); по умолчанию бизнес-день (NFR-LOC-002). Это только ФИЛЬТР показа: журнал по ней не меняется, начисление идёт до сегодняшнего дня. */
                 as_of?: string | null;
             };
             header?: never;

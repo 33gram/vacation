@@ -1,9 +1,9 @@
 """Эндпоинты остатка (T-M2-11, `FR-BAL-002`, `FR-BAL-004`) вместе с ленивым начислением
 при чтении (T-M2-19).
 
-Даты считаются от сегодняшней (UTC): эндпоинт берёт «сегодня» из единого источника
-времени. Точные суммы начисления проверены в `test_accrual_*`; здесь проверяется то,
-что делает слой API: доступ, состав ответа, ленивое начисление, корректировка.
+Даты считаются от бизнес-дня (пояс организации, `NFR-LOC-002`, T-M2-34): эндпоинт берёт
+«сегодня» из `business_today`. Точные суммы начисления проверены в `test_accrual_*`; здесь
+проверяется то, что делает слой API: доступ, состав ответа, ленивое начисление, корректировка.
 """
 
 from __future__ import annotations
@@ -14,7 +14,6 @@ from decimal import Decimal
 import pytest
 from sqlalchemy import select, text
 
-from app.core.time_utils import utcnow
 from app.models.employee import Employee
 from app.models.leave_balance_entry import (
     ACCRUAL,
@@ -24,10 +23,11 @@ from app.models.leave_balance_entry import (
 )
 from app.modules.balances.accrual import accrual_steps, compute_accrual, working_year_starts
 from app.modules.balances.service import LeaveTypeNotSeededError
+from tests.business_day import seeded_business_today
 from tests.modules.auth.factories import bearer_header, make_account, make_employee
 from tests.modules.balances.helpers import make_context
 
-TODAY = utcnow().date()
+TODAY = seeded_business_today()  # эндпоинт считает «сегодня» по бизнес-дню (T-M2-34)
 HIRED = TODAY - datetime.timedelta(days=200)
 
 
@@ -673,9 +673,10 @@ async def test_fr_bal_004_an_adjustment_for_a_missing_employee_is_404(
     assert response.status_code == 404
 
 
-async def test_fr_bal_004_an_adjustment_dated_in_the_future_is_rejected_by_the_schema(
+async def test_fr_bal_004_an_adjustment_dated_in_the_future_is_refused_with_400(
     db_session, api_client
 ) -> None:
+    # FR-BAL-004/2: дата позже бизнес-дня отклоняется отказом 400, событие не пишется.
     ctx, employee, own = await _setup(db_session)
     hr = await _account(db_session, "hr_admin", "hr-future@company.local")
 
@@ -690,7 +691,10 @@ async def test_fr_bal_004_an_adjustment_dated_in_the_future_is_rejected_by_the_s
         headers=bearer_header(hr),
     )
 
-    assert response.status_code == 422
+    # T-M2-34 (Ф-4): проверка перенесена из схемы (422) в роутер (400, префикс поля): бизнес-день
+    # зависит от параметра в базе, а валидатор схемы сессии не имеет.
+    assert response.status_code == 400
+    assert response.json()["detail"] == "entry_date: Дата корректировки не может быть в будущем."
     events = await _events(db_session, employee.id)
     assert [e for e in events if e.entry_type == MANUAL_ADJUSTMENT] == []
 

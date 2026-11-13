@@ -1,6 +1,6 @@
-import { screen, within } from "@testing-library/react";
+import { fireEvent, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { setAccessToken } from "../app/auth";
 import { setFetchHandler } from "../test-utils/fetchMock";
@@ -409,5 +409,92 @@ describe("422 validation errors (T-M2-28)", () => {
       await within(dialog).findByText("termination_date: Неверная дата, нужен формат ГГГГ-ММ-ДД."),
     ).toBeInTheDocument();
     expect(screen.queryByText("Не удалось деактивировать сотрудника.")).not.toBeInTheDocument();
+  });
+});
+
+
+describe("the default termination date is the server's business day (T-M2-38)", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllEnvs();
+  });
+
+  /** Бэкенд карточки; `me` - произвольное тело, чтобы можно было убрать `today`. Возвращает то,
+   * что ушло в `POST /deactivate`. */
+  function mockCard(me: Record<string, unknown>) {
+    setAccessToken("token");
+    const sent: string[] = [];
+    setFetchHandler((method, pathname, init) => {
+      if (method === "GET" && pathname === "/api/auth/me") {
+        return { status: 200, body: me };
+      }
+      if (method === "GET" && pathname === "/api/departments") {
+        return { status: 200, body: DEPARTMENTS };
+      }
+      if (method === "GET" && pathname === "/api/employees") {
+        return { status: 200, body: [MANAGER, EMPLOYEE] };
+      }
+      if (method === "GET" && pathname === "/api/employees/2") {
+        return { status: 200, body: EMPLOYEE };
+      }
+      if (method === "POST" && pathname === "/api/employees/2/deactivate") {
+        const body = JSON.parse(init.body as string) as { termination_date: string };
+        sent.push(body.termination_date);
+        return {
+          status: 200,
+          body: { ...EMPLOYEE, employment_status: "terminated", termination_date: body.termination_date },
+        };
+      }
+      return null;
+    });
+    return sent;
+  }
+
+  async function openDialog() {
+    const user = userEvent.setup();
+    renderApp("/employees/2");
+    await screen.findByRole("heading", { name: "Петров Пётр Петрович" });
+    await user.click(screen.getByRole("button", { name: "Деактивировать" }));
+    const dialog = await screen.findByRole("dialog");
+    return { user, dialog };
+  }
+
+  it.each([
+    ["the browser clock runs six days BEHIND", "2026-10-20T12:00:00Z"],
+    ["the browser clock runs six days AHEAD", "2026-11-01T12:00:00Z"],
+  ])("%s: the preset date is the session day, and exactly it is sent", async (_name, nowUtc) => {
+    vi.stubEnv("TZ", "UTC");
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(nowUtc));
+    const sent = mockCard(meResponse({ role: "hr_admin", today: "2026-10-26" }));
+    const { user, dialog } = await openDialog();
+
+    expect(within(dialog).getByLabelText("Дата увольнения")).toHaveValue("26.10.2026");
+    await user.click(within(dialog).getByRole("button", { name: "Деактивировать" }));
+
+    await screen.findByText("Уволен", { exact: false });
+    expect(sent).toEqual(["2026-10-26"]);
+  });
+
+  it("a session answer WITHOUT today: the date is empty, the button is off until a date is chosen (Ф-1)", async () => {
+    vi.stubEnv("TZ", "UTC");
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-06-15T12:00:00Z"));
+    const { today: _omitted, ...withoutToday } = meResponse({ role: "hr_admin" });
+    const sent = mockCard(withoutToday);
+    const { user, dialog } = await openDialog();
+
+    const input = within(dialog).getByLabelText("Дата увольнения");
+    const confirm = within(dialog).getByRole("button", { name: "Деактивировать" });
+    expect(input).toHaveValue(""); // часы браузера (15.06) не подставлены
+    expect(confirm).toBeDisabled();
+
+    fireEvent.change(input, { target: { value: "15.11.2026" } });
+    fireEvent.keyDown(input, { key: "Enter", keyCode: 13 });
+    await vi.waitFor(() => expect(confirm).toBeEnabled());
+    await user.click(confirm);
+
+    await screen.findByText("Уволен", { exact: false });
+    expect(sent).toEqual(["2026-11-15"]);
   });
 });

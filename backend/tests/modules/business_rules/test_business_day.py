@@ -119,3 +119,75 @@ async def test_business_today_without_the_key_is_refused_there_is_no_default(
         await business_today(db_session)
 
     assert excinfo.value.key == BUSINESS_TIMEZONE
+
+
+# --- Клаузы NFR-LOC-002 (PR #196 review, П-2) ----------------------------------------------
+
+
+async def _hr_actor(db_session):
+    from tests.modules.auth.factories import make_account, make_employee
+
+    holder = await make_employee(db_session, email="tz-edit@company.local")
+    return await make_account(db_session, employee_id=holder.id, role="hr_admin", auth_type="local")
+
+
+async def test_nfr_loc_002_an_admin_edit_takes_effect_at_the_next_call(db_session, clock) -> None:
+    from app.modules.business_rules.service import update_rules
+
+    clock(_utc(2026, 11, 12, 22, 0))
+    admin = await _hr_actor(db_session)
+
+    before = await business_today(db_session)
+    await update_rules(db_session, {BUSINESS_TIMEZONE: "UTC"}, actor_account_id=admin.id)
+    after = await business_today(db_session)
+
+    # Момент зафиксирован, подменён только параметр - и именно настоящей правкой.
+    assert (before, after) == (datetime.date(2026, 11, 13), datetime.date(2026, 11, 12))
+
+
+async def test_nfr_loc_002_a_change_of_the_zone_does_not_rewrite_the_journal(
+    db_session, clock
+) -> None:
+    from sqlalchemy import select
+
+    from app.models.employee import Employee
+    from app.models.leave_balance_entry import LeaveBalanceEntry
+    from app.modules.balances.service import accrue_before_read
+    from app.modules.business_rules.service import update_rules
+    from tests.modules.balances.helpers import make_context
+
+    clock(_utc(2026, 11, 12, 22, 0))
+    ctx = await make_context(db_session, "tzj")
+    employee = await db_session.get(Employee, ctx.employee_id)
+    employee.hire_date = datetime.date(2026, 4, 1)
+    employee.created_at = _utc(2026, 4, 1, 0, 0)
+    await db_session.flush()
+    admin = await _hr_actor(db_session)
+
+    async def journal() -> list[tuple]:
+        rows = await db_session.execute(
+            select(
+                LeaveBalanceEntry.id,
+                LeaveBalanceEntry.entry_type,
+                LeaveBalanceEntry.entry_date,
+                LeaveBalanceEntry.quantity,
+            )
+            .where(LeaveBalanceEntry.employee_id == employee.id)
+            .order_by(LeaveBalanceEntry.id)
+        )
+        return [tuple(row) for row in rows]
+
+    # Начисление до бизнес-дня ПО МОСКВЕ (13.11), затем пояс меняется на тот, где этот день - 12.11.
+    await accrue_before_read(
+        db_session, employee_id=employee.id, as_of=await business_today(db_session)
+    )
+    written = await journal()
+    assert written  # предусловие: события есть
+    await update_rules(db_session, {BUSINESS_TIMEZONE: "UTC"}, actor_account_id=admin.id)
+    await accrue_before_read(
+        db_session, employee_id=employee.id, as_of=await business_today(db_session)
+    )
+
+    # Ни одной удалённой, переписанной или добавленной строки, ни одного `recalculation`.
+    assert await journal() == written
+    assert all(row[1] != "recalculation" for row in await journal())

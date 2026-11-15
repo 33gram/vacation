@@ -71,7 +71,7 @@ router = APIRouter(
 
 _require_balance_editor = require_roles("hr_admin")
 
-@router.get("", response_model=EmployeeBalancesOut, responses=error_responses(404))
+@router.get("", response_model=EmployeeBalancesOut, responses=error_responses(400, 404))
 async def get_employee_balances(
     employee_id: int,
     as_of: datetime.date | None = Query(

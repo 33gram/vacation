@@ -1418,6 +1418,15 @@ export interface operations {
                     "application/json": components["schemas"]["EmployeeBalancesOut"];
                 };
             };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
             /** @description Unauthorized */
             401: {
                 headers: {

@@ -10,29 +10,55 @@ import packageText from "../../package.json?raw";
  * `import/no-extraneous-dependencies` в конфиге нет, плагин не добавлялся: новая зависимость требует
  * своего обоснования) его не ловят. Сторож ОБНАРУЖИВАЕТ: собирает голые спецификаторы импорта в
  * `frontend/src` (кроме `api/generated/**`), приводит к имени пакета (`@scope/name`, подпуть
- * `antd/es/table` -> `antd`) и сверяет с `package.json` на ДВУХ уровнях:
+ * `antd/es/table` -> `antd`, суффикс `?raw` отбрасывается) и сверяет с `package.json` на ДВУХ уровнях:
  *   - файлы ПРИЛОЖЕНИЯ - только `dependencies` (иначе промышленная сборка зависела бы от
  *     `devDependencies`: `import "vitest"` в приложении собирается у разработчика и ломается там,
  *     где ставят без devDependencies; сегодня `npm ci` в CI и в `frontend/Dockerfile` ставит всё,
  *     поэтому это защита от будущего дефекта, а не от нынешнего);
- *   - ТЕСТЫ (`*.test.*`, `test-utils/**`, `setupTests.*`) - `dependencies` или `devDependencies`.
- * Исключения - `ALLOWED` (пакет -> причина), проверка в обе стороны. Встроенные `node:*` и
- * относительные пути не считаются.
+ *   - ТЕСТЫ - `dependencies` или `devDependencies`. Тест - это `*.test.*`, `*.spec.*`,
+ *     `__tests__/**`, `test-utils/**` и корневой `setupTests.*`; всё остальное - приложение.
+ * Исключения - `ALLOWED` (пакет -> причина), проверка в обе стороны. Не считаются пакетом и
+ * пропускаются молча: относительные и абсолютные пути, `node:*`, `#...` (импорты пакета), `@/...`
+ * (подпись алиаса) и спецификаторы с `://`; алиасов в проекте нет (измерено: `tsconfig*.json` без
+ * `paths`), а появление алиаса сторож НЕ заметит - его придётся добавить сюда.
  *
  * Вторая проверка - по `package-lock.json`: КАЖДАЯ объявленная в `dependencies` зависимость стоит
- * в замке ровно одной копией (`node_modules/<имя>` без вложенных). Вторая копия `dayjs` развела бы
- * классы `Dayjs` приложения и `DatePicker`, вторая `react` сломала бы хуки. Расширение до «ни один
- * пакет не продублирован» отвергнуто: сегодня в замке 14 из 381 имён стоят в нескольких копиях
- * (`minimatch`, `semver`, `lru-cache`, ...), это транзитивные инструменты сборки и линтера с
- * несовместимыми мажорами, их объекты между приложением и библиотекой не ходят, а общий запрет
- * потребовал бы перечня из 14 исключений, который никто не читает.
+ * в замке ровно одной копией (`node_modules/<имя>` без вложенных). ОСНОВАНИЕ - ИЗМЕРЕННОЕ, не то,
+ * что предполагалось при заведении задачи: две копии `dayjs` НЕ разводят классы `Dayjs` (в 1.11.23
+ * `isDayjs(d)` = `d instanceof Dayjs || !!(d && d["$isDayjsObject"])`, `node_modules/dayjs/esm/index.js`
+ * строки 9-13: флаг введён, чтобы объект из другой копии проходил проверку). Опасности второй копии
+ * другие: реестр плагинов и локалей `dayjs` - состояние МОДУЛЯ (`dayjs.extend`, `dayjs/locale/*`),
+ * расширение одной копии не действует в другой; лишний размер бандла; расхождение версий. СЕГОДНЯ
+ * опасность только ВОЗМОЖНА: в `frontend/src` нет ни `dayjs.extend`, ни импорта `dayjs/plugin|locale`
+ * (измерено поиском). Для `react` две копии ломают хуки (документированное поведение React, здесь не
+ * измерялось). Ценность проверки от уточнения основания не зависит: одна копия - дешёвый инвариант.
+ * Расширение до «ни один пакет не продублирован» отвергнуто: сегодня в замке 14 из 381 имён стоят в
+ * нескольких копиях (`minimatch`, `semver`, `lru-cache`, ...), это транзитивные инструменты сборки и
+ * линтера с несовместимыми мажорами, а общий запрет потребовал бы перечня из 14 исключений.
  *
- * ГРАНИЦЫ (правило 8). Не видит: динамический `import("x")`, `require("x")`, спецификатор из
- * переменной, `vi.mock("x")`, `/// <reference types>` и импорт в `*.d.ts` без оператора импорта,
- * пакеты `@types/*` (тип подтягивается неявно, а не спецификатором); регулярные литералы с
- * кавычками (`/"/`) сбивают срезание комментариев. Встроенный модуль без префикса (`fs`) будет
- * считаться необъявленным пакетом. Сторож доказывает, что каждый ЛОВИМЫЙ импорт объявлен, а не что
- * объявленная версия подходит и не что пакет существует в реестре. */
+ * ОБЛАСТЬ - только `frontend/src` без `api/generated/**`. Вне её голые импорты есть (`e2e/*`,
+ * `vite.config.ts`, `eslint.config.js`, `playwright.config.ts`, `scripts/*`: `@eslint/js`,
+ * `@playwright/test`, `@vitejs/plugin-react`, `eslint-plugin-react-hooks`,
+ * `eslint-plugin-react-refresh`, `globals`, `typescript-eslint`, `vite`, `vitest`), и все объявлены в
+ * `devDependencies` (измерено) - пробела сегодня нет. Область не расширена: конфигам законны
+ * `devDependencies`, понадобился бы второй ярус «конфиги» без сегодняшнего дефекта.
+ *
+ * ГРАНИЦЫ (правило 8). НЕ ВИДИТ: динамический `import("x")`, `require("x")`, спецификатор из
+ * переменной, `vi.mock("x")`, `/// <reference types>` и импорты в `*.d.ts` без оператора импорта,
+ * пакеты `@types/*` (тип подтягивается неявно), `api/generated/**`; встроенный модуль без префикса
+ * `node:` сочтёт необъявленным пакетом. ЛОЖНОЕ СРАБАТЫВАНИЕ: строка JSX-текста, НАЧИНАЮЩАЯСЯ с
+ * `import x from "y"` (оператор распознаётся только в начале оператора: после `;`, `}` или начала
+ * строки; `<p>we import x from "dayjs"</p>` не срабатывает). РАЗБОР КОММЕНТАРИЕВ - посимвольный;
+ * регулярный литерал узнаётся по предыдущему значимому символу (`( , = : [ ! & | ? { } ;` или
+ * начало файла) и читается целиком, поэтому `//` и `/*` внутри него не съедают код. ОСТАЁТСЯ ПРОПУСК
+ * (опаснее ложного срабатывания): регулярный литерал после символа вне этого перечня (например,
+ * `return /\/*\/;`, после ключевого слова) сбивает срезание и может съесть настоящий импорт ниже.
+ * Измерено: регулярные литералы с `\/` в `frontend/src` есть (5 строк в 3 файлах), с `//` внутри -
+ * 2 (`key.replace(/^\.\.\//, "")` в двух сторожах), с `/*` - нет; до этой правки риск был живым, но
+ * безвредным (срезался остаток той же строки). Проверено прогоном ревью на синтетике (многострочные
+ * импорты, `export ... from`, `import type`, `with {type: "json"}`, подпуть глубиной три, шаблонные
+ * строки) - вошли в тесты ниже. Сторож не доказывает, что версия подходит и что пакет есть в
+ * реестре. */
 const SOURCES = import.meta.glob(
   ["../**/*.{ts,tsx,js,jsx,mts,mjs}", "!../api/generated/**"],
   { query: "?raw", import: "default", eager: true },
@@ -58,19 +84,30 @@ function address(key: string): string {
 }
 
 function isTestLevel(path: string): boolean {
-  return /\.test\.[a-z]+$/.test(path) || path.startsWith("test-utils/") || /^setupTests\./.test(path);
+  return (
+    /\.(?:test|spec)\.[a-z]+$/.test(path) ||
+    /(?:^|\/)__tests__\//.test(path) ||
+    path.startsWith("test-utils/") ||
+    /^setupTests\./.test(path)
+  );
 }
 
+/** Символы, после которых `/` начинает регулярный литерал, а не деление. */
+const BEFORE_REGEX = "(,=:[!&|?{};";
+
 /** Исходник без комментариев в двух видах ОДНОЙ длины: `plain` (строки как есть, из них читается
- * спецификатор) и `masked` (содержимое строк заменено на `\0`, по нему ищутся ключевые слова, чтобы
- * `import` внутри текста - `path="/employees/import"` - не принимался за оператор). Посимвольный
- * разбор, как в `browserClockGuard.test.ts`: маркер комментария внутри строки не срезает код. */
+ * спецификатор) и `masked` (содержимое строк и регулярных литералов заменено на `\0`, по нему
+ * ищутся ключевые слова, чтобы `import` внутри текста - `path="/employees/import"` - не принимался
+ * за оператор). Посимвольный разбор, как в `browserClockGuard.test.ts`: маркер комментария внутри
+ * строки или регулярного литерала не срезает код. */
 function stripComments(source: string): { plain: string; masked: string } {
   let plain = "";
   let masked = "";
-  const put = (text: string, hidden = false) => {
+  let previous = ""; // последний значимый символ кода (для различения деления и регулярного литерала)
+  // `opaque` - содержимое скрывается в `masked`: `plain` получает текст как есть.
+  const put = (text: string, opaque = false) => {
     plain += text;
-    masked += hidden ? "\0".repeat(text.length) : text;
+    masked += opaque ? "\0".repeat(text.length) : text;
   };
   let i = 0;
   while (i < source.length) {
@@ -91,19 +128,38 @@ function stripComments(source: string): { plain: string; masked: string } {
       }
       put(c);
       i += 1;
+      previous = c;
+    } else if (c === "/" && (previous === "" || BEFORE_REGEX.includes(previous))) {
+      // Регулярный литерал: до первого неэкранированного `/` вне класса `[...]`, не дальше конца строки.
+      put(c);
+      i += 1;
+      let inClass = false;
+      while (i < source.length && source[i] !== "\n" && (inClass || source[i] !== "/")) {
+        if (source[i] === "[") inClass = true;
+        if (source[i] === "]") inClass = false;
+        const step = source[i] === "\\" ? 2 : 1;
+        put(source.slice(i, i + step), true);
+        i += step;
+      }
+      put("/");
+      i += 1;
+      previous = "/";
     } else {
       put(c);
       i += 1;
+      if (!/\s/.test(c)) previous = c;
     }
   }
   return { plain, masked };
 }
 
-/** Имя пакета по спецификатору; `null` - не пакет (относительный путь, `node:`, абсолютный). */
+/** Имя пакета по спецификатору; `null` - не пакет (относительный и абсолютный путь, `node:`, `#...`,
+ * `@/...` - подпись алиаса, URL с `://`). Суффикс `?raw` и подобные отбрасываются. */
 function packageOf(specifier: string): string | null {
-  if (/^(?:\.|\/|node:)/.test(specifier)) return null;
-  const parts = specifier.split("/");
-  return specifier.startsWith("@") ? parts.slice(0, 2).join("/") : parts[0];
+  const bare = specifier.split("?")[0];
+  if (/^(?:\.|\/|#|@\/|node:)/.test(bare) || bare.includes("://")) return null;
+  const parts = bare.split("/");
+  return bare.startsWith("@") ? parts.slice(0, 2).join("/") : parts[0];
 }
 
 /** Имена пакетов, которые импортирует исходник: `import ... from "x"`, `export ... from "x"`,
@@ -111,8 +167,8 @@ function packageOf(specifier: string): string | null {
 function importedPackages(source: string): string[] {
   const { plain, masked } = stripComments(source);
   const patterns = [
-    /\b(?:import|export)\b[^'";`]*?\bfrom\s*["']\0+["']/g,
-    /\bimport\s*["']\0+["']/g,
+    /(?:^|[;}])[ \t]*(?:import|export)\b[^'";`]*?\bfrom\s*["']\0+["']/gm,
+    /(?:^|[;}])[ \t]*import\s*["']\0+["']/gm,
   ];
   const specifiers = patterns.flatMap((pattern) =>
     [...masked.matchAll(pattern)].map((m) => {
@@ -152,8 +208,7 @@ function violations(
 /** Пути записей замка, чей пакет называется `name` (`node_modules/x` и вложенные `.../node_modules/x`). */
 function lockCopies(packages: Record<string, unknown>, name: string): string[] {
   return Object.keys(packages).filter(
-    (key) => key.slice(key.lastIndexOf("node_modules/") + "node_modules/".length) === name &&
-      key.includes("node_modules/"),
+    (key) => key.slice(key.lastIndexOf("node_modules/") + "node_modules/".length) === name,
   );
 }
 
@@ -201,6 +256,51 @@ describe("dependency declaration guard (T-M2-35)", () => {
     expect(importedPackages('const t = "import a from \'dayjs\'";')).toEqual([]);
   });
 
+  it("reads what the review measured as correct: multi-line, export from, type, with, depth three", () => {
+    const source = [
+      'import {\n  a,\n  b,\n} from "react";',
+      'export * from "antd";',
+      'import type { T } from "dayjs";',
+      'import data from "./x.json" with { type: "json" };',
+      'import deep from "@scope/pkg/a/b/c";',
+      "const t = `import x from \"no-such\"`;",
+    ].join("\n");
+
+    expect(importedPackages(source)).toEqual(["react", "antd", "dayjs", "@scope/pkg"]);
+  });
+
+  it("drops a query suffix and does not take aliases, URLs and package imports for packages", () => {
+    const source = [
+      'import a from "pkg?raw";',
+      'import b from "../../package.json?raw";',
+      'import c from "#internal/x";',
+      'import d from "@/shared/y";',
+      'import e from "https://cdn.example/x.js";',
+    ].join("\n");
+
+    expect(importedPackages(source)).toEqual(["pkg"]);
+  });
+
+  it("does not take import in JSX text or in a regular literal for an import statement", () => {
+    expect(importedPackages('const a = <p>we import x from "dayjs"</p>;')).toEqual([]);
+    expect(importedPackages('const r = /import a from "dayjs"/;')).toEqual([]);
+  });
+
+  it("a regular literal with // or /* inside does not swallow the import below it", () => {
+    expect(importedPackages('const r = /\\/\\//;\nimport a from "dayjs";')).toEqual(["dayjs"]);
+    expect(importedPackages('const r = /\\/*\\//;\nimport a from "dayjs";')).toEqual(["dayjs"]);
+    expect(importedPackages('const r = x.replace(/[/*]/, "");\nimport a from "dayjs";')).toEqual([
+      "dayjs",
+    ]);
+  });
+
+  it("the known miss: a regular literal after a keyword still derails the comment stripping", () => {
+    // Граница из докстринга (ПРОПУСК): `return /\/*\/` читается как деление и открывает комментарий.
+    const source = 'function f() { return /\\/*\\/; }\nimport a from "dayjs";';
+
+    expect(importedPackages(source)).toEqual([]);
+  });
+
   it("every import is declared, and application files import only from dependencies", () => {
     expect(violations(FILES, MANIFEST, ALLOWED)).toEqual([]);
   });
@@ -217,6 +317,26 @@ describe("dependency declaration guard (T-M2-35)", () => {
       "pages/A.tsx: dayjs (нет ни в dependencies, ни в devDependencies, файл приложения)",
       "pages/A.tsx: no-such-pkg (нет ни в dependencies, ни в devDependencies, файл приложения)",
       "pages/A.tsx: vitest (только в devDependencies, а файл приложения)",
+    ]);
+  });
+
+  it("treats spec files and __tests__ as tests, everything else as the application", () => {
+    const manifest: Manifest = { dependencies: { react: "^18" }, devDependencies: { vitest: "^5" } };
+    const use = 'import { it } from "vitest";';
+    const files = {
+      "x.spec.ts": use,
+      "pages/y.spec.tsx": use,
+      "__tests__/z.ts": use,
+      "pages/__tests__/w.ts": use,
+      "test-utils/q.ts": use,
+      "setupTests.ts": use,
+      "pages/notatest.ts": use,
+      "pages/spec.ts": use,
+    };
+
+    expect(violations(files, manifest, {})).toEqual([
+      "pages/notatest.ts: vitest (только в devDependencies, а файл приложения)",
+      "pages/spec.ts: vitest (только в devDependencies, а файл приложения)",
     ]);
   });
 

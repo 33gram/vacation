@@ -622,88 +622,109 @@ describe("balance on a date (T-M2-31, BR-8)", () => {
     fireEvent.click(input);
   }
 
-  /** Ответ сервера с его бизнес-днём (`today`, `T-M2-34`): граница выбора берётся из него. */
-  function replyToday(today: string) {
-    return () => ({ status: 200, body: balancesResponse(undefined, { today }) });
+  /** Ответ сервера для `asOf`: признак прогноза называет СЕРВЕР по своему бизнес-дню `serverDay`
+   * (тест играет сервер; клиент в этом сравнении не участвует). */
+  function serverAt(serverDay: string) {
+    return (asOf: string | null) => {
+      const forecast = asOf !== null && asOf > serverDay;
+      return {
+        status: 200,
+        body: balancesResponse(
+          [
+            leaveTypeBalanceResponse(
+              forecast ? { balance: "21.00", total_balance: "21.00", forecast_accrual: "2.33" } : {},
+            ),
+          ],
+          { as_of: asOf ?? serverDay, today: serverDay, is_forecast: forecast },
+        ),
+      };
+    };
   }
+  const FORECAST_CAPTION = "Прогноз, в журнал не записано";
 
-  it("dates after the SERVER's today are unavailable, and that day itself is available (east of UTC, Р-1)", async () => {
-    // 27.10 01:00 в Токио, но сервер называет сегодня 26.10 (T-M2-34: из ответа, а не по
-    // часам): местное «27.10» для него будущее и должно быть недоступно.
-    at("Asia/Tokyo", "2026-10-26T16:00:00Z");
-    mockBackend({ role: "employee" }, replyToday("2026-10-26"));
+  // T-M2-33 (Ф-5): граница выбора даты по `today` из ответа (T-M2-34) ушла вместе с запретом
+  // будущей даты. Свойство, которое доказывали её тесты, - «клиент не считает бизнес-день сам, ни
+  // по часам браузера, ни по UTC» - теперь доказывается тем же приёмом на подписи прогноза: ТЕ ЖЕ
+  // моменты и пояса браузера, одна и та же выбранная дата, признак сервера включён - подпись есть,
+  // выключен - подписи нет. Ожидание сменилось с «ячейка недоступна» на «подпись по признаку»,
+  // ослабления нет: сравнения дат на клиенте по-прежнему нет, и тест на это краснеет, если оно
+  // появится (подпись пойдёт за часами браузера, а не за признаком).
+  const CLOCKS = [
+    // [название, пояс браузера, момент UTC, бизнес-день сервера, выбранная дата]
+    ["east of UTC (Tokyo: browser says 27.10, server says 26.10, Р-1)", "Asia/Tokyo", "2026-10-26T16:00:00Z", "2026-10-26", "2026-10-27"],
+    ["a moment where the UTC date and the MOSCOW date differ (T-M2-34)", "Europe/Moscow", "2026-11-12T22:00:00Z", "2026-11-13", "2026-11-14"],
+    ["a browser clock six days behind the server (T-M2-34)", "UTC", "2026-10-20T12:00:00Z", "2026-10-26", "2026-10-24"],
+    ["west of UTC (Los Angeles: UTC today is already tomorrow, Р-1)", "America/Los_Angeles", "2026-10-27T03:00:00Z", "2026-10-27", "2026-10-28"],
+  ] as const;
+
+  it.each(CLOCKS)(
+    "the forecast caption follows the SERVER's flag, not the browser clock: %s",
+    async (_name, zone, nowUtc, serverDay, chosen) => {
+      at(zone, nowUtc);
+      const flag = { forecast: false };
+      mockBackend({ role: "employee" }, (asOf) => {
+        const reply = serverAt(serverDay)(asOf);
+        // Признак задаёт тест, а не сравнение дат: при ТЕХ ЖЕ датах он включается и выключается.
+        const body = { ...reply.body, is_forecast: flag.forecast };
+        return { status: 200, body };
+      });
+      renderApp("/my-leave");
+      await screen.findByLabelText("Ежегодный оплачиваемый отпуск");
+
+      await pick(chosen);
+      await screen.findByText(`Остаток на ${chosen.split("-").reverse().join(".")}`);
+      await waitFor(() => expect(screen.queryByText(FORECAST_CAPTION)).not.toBeInTheDocument());
+
+      flag.forecast = true;
+      await pick(serverDay); // другая дата, тот же ответ с признаком: подпись есть
+      await screen.findByText(FORECAST_CAPTION);
+    },
+  );
+
+  it("the picker has NO upper bound: far dates are ordinary cells, whatever the answer said (T-M2-33)", async () => {
+    at("UTC", "2026-10-26T12:00:00Z");
+    mockBackend({ role: "employee" }, serverAt("2026-10-26"));
     renderApp("/my-leave");
     await screen.findByLabelText("Ежегодный оплачиваемый отпуск");
 
     openPanel();
 
     await waitFor(() => expect(cell("2026-10-26")).not.toBeNull());
-    expect(cell("2026-10-26")).not.toHaveClass("ant-picker-cell-disabled");
-    expect(cell("2026-10-27")).toHaveClass("ant-picker-cell-disabled");
+    expect(cell("2026-10-27")).not.toHaveClass("ant-picker-cell-disabled");
+    expect(cell("2026-10-31")).not.toHaveClass("ant-picker-cell-disabled");
   });
 
-  it("the boundary at a moment where the UTC date and the MOSCOW date differ: the server's Moscow day is available (T-M2-34)", async () => {
-    // 13.11 01:00 в Москве, но 12.11 22:00 по UTC. До T-M2-34 граница была UTC-«сегодня»
-    // (12.11), и тест ожидал «13.11 недоступно»; теперь бизнес-день сервера - по поясу
-    // организации (Москва), сервер отвечает today = 13.11, и ожидание ОБРАТНОЕ: 13.11 доступно,
-    // 14.11 - нет. Момент и предусловие пояса остались прежними, тест не ослаблен.
-    at("Europe/Moscow", "2026-11-12T22:00:00Z");
-    expect(new Date(2026, 10, 12).getTimezoneOffset()).toBe(-180);
-    mockBackend({ role: "employee" }, replyToday("2026-11-13"));
-    renderApp("/my-leave");
-    await screen.findByLabelText("Ежегодный оплачиваемый отпуск");
-
-    openPanel();
-
-    await waitFor(() => expect(cell("2026-11-13")).not.toBeNull());
-    expect(cell("2026-11-13")).not.toHaveClass("ant-picker-cell-disabled");
-    expect(cell("2026-11-14")).toHaveClass("ant-picker-cell-disabled");
-  });
-
-  it("the boundary is the server's day even when the browser clock says another (T-M2-34)", async () => {
-    // Часы браузера отстают на шесть суток: по ним «сегодня» - 20.10, и граница по ним закрыла
-    // бы 21...26.10. Граница - ответ сервера (26.10). Месяц тот же, чтобы панель показала дни.
-    at("UTC", "2026-10-20T12:00:00Z");
-    mockBackend({ role: "employee" }, replyToday("2026-10-26"));
-    renderApp("/my-leave");
-    await screen.findByLabelText("Ежегодный оплачиваемый отпуск");
-
-    openPanel();
-
-    await waitFor(() => expect(cell("2026-10-26")).not.toBeNull());
-    expect(cell("2026-10-26")).not.toHaveClass("ant-picker-cell-disabled");
-    expect(cell("2026-10-27")).toHaveClass("ant-picker-cell-disabled");
-  });
-
-  it("before the first answer the control is OFF: the server's today is not known yet (T-M2-34)", async () => {
+  it("the control is ON before the first answer: no boundary needs the server's day (T-M2-33)", async () => {
+    // Раньше (T-M2-34) здесь ожидалось «выключен»: граница выбора требовала бизнес-дня сервера.
+    // Границы нет - дню сервера нечего решать, и ожидание сменилось на «включён».
     const gate = deferred<Reply>();
     mockBackend({ role: "employee" }, () => gate.promise);
     renderApp("/my-leave");
 
     const picker = await screen.findByLabelText("Остаток на дату");
-    expect(picker).toBeDisabled();
+    expect(picker).not.toBeDisabled();
 
     gate.resolve({ status: 200, body: balancesResponse() });
     await screen.findByLabelText("Ежегодный оплачиваемый отпуск");
-    expect(screen.getByLabelText("Остаток на дату")).not.toBeDisabled();
   });
 
-  it("an answer WITHOUT today keeps the control OFF: no boundary must not mean an open boundary (PR #196 review)", async () => {
-    // Клиент тело ответа во время выполнения не проверяет (T-M2-25): тип говорит «поле
-    // обязательно», а сервер старой версии его не пришлёт. Приведение типа - как у
-    // `unitLabel("weeks" as Unit)`.
-    const { today: _omitted, ...withoutToday } = balancesResponse();
+  it("an answer WITHOUT the flag shows no forecast caption: a missing flag is not a forecast (PR #196 review, T-M2-33)", async () => {
+    // Клиент тело ответа во время выполнения не проверяет (T-M2-25): сервер старой версии
+    // признака не пришлёт. Раньше отсутствие `today` держало элемент выключенным, теперь
+    // отсутствие `is_forecast` не включает подпись - тот же принцип «нет данных - не выдумывать».
+    const { is_forecast: _omitted, ...withoutFlag } = balancesResponse();
     mockBackend({ role: "employee" }, () => ({
       status: 200,
-      body: withoutToday as unknown as ReturnType<typeof balancesResponse>,
+      body: withoutFlag as unknown as ReturnType<typeof balancesResponse>,
     }));
     renderApp("/my-leave");
     await screen.findByLabelText("Ежегодный оплачиваемый отпуск");
 
-    expect(screen.getByLabelText("Остаток на дату")).toBeDisabled();
+    expect(screen.queryByText(FORECAST_CAPTION)).not.toBeInTheDocument();
+    expect(screen.getByText("Остаток на 26.10.2026")).toBeInTheDocument();
   });
 
-  it("when the first load fails the control stays OFF until a retry answers (T-M2-34)", async () => {
+  it("when the first load fails the control stays available, and a retry answers (T-M2-33)", async () => {
     let attempt = 0;
     mockBackend({ role: "employee" }, () =>
       ++attempt === 1 ? { status: 500, body: {} } : { status: 200, body: balancesResponse() },
@@ -711,46 +732,103 @@ describe("balance on a date (T-M2-31, BR-8)", () => {
     renderApp("/my-leave");
 
     await screen.findByRole("button", { name: /повторить/i });
-    expect(screen.getByLabelText("Остаток на дату")).toBeDisabled();
+    expect(screen.getByLabelText("Остаток на дату")).not.toBeDisabled();
 
     fireEvent.click(screen.getByRole("button", { name: /повторить/i }));
     await screen.findByLabelText("Ежегодный оплачиваемый отпуск");
-    expect(screen.getByLabelText("Остаток на дату")).not.toBeDisabled();
   });
 
-  it("a change of the date keeps the control ON with the same boundary while the skeleton shows (T-M2-34)", async () => {
-    const second = deferred<Reply>();
-    let calls = 0;
-    mockBackend({ role: "employee" }, () =>
-      ++calls === 1
-        ? { status: 200, body: balancesResponse(undefined, { today: "2026-10-26" }) }
-        : second.promise,
-    );
-    renderApp("/my-leave");
-    await screen.findByLabelText("Ежегодный оплачиваемый отпуск");
+  describe("forecast on a future date (T-M2-33, FR-BAL-002/2, ui.md §6)", () => {
+    it("says in words: not in the journal, only accrual, requests and planned leave not counted, the journal date", async () => {
+      mockBackend({ role: "employee" }, serverAt("2026-10-26"));
+      renderApp("/my-leave");
+      await screen.findByLabelText("Ежегодный оплачиваемый отпуск");
+      expect(screen.queryByText(FORECAST_CAPTION)).not.toBeInTheDocument();
 
-    await pick("2026-10-20");
-    await waitFor(() => expect(document.querySelector("[data-skeleton-block]")).not.toBeNull());
+      await pick("2026-12-31");
 
-    expect(screen.getByLabelText("Остаток на дату")).not.toBeDisabled();
-    openPanel();
-    await waitFor(() => expect(cell("2026-10-26")).not.toBeNull());
-    expect(cell("2026-10-27")).toHaveClass("ant-picker-cell-disabled");
-    second.resolve({ status: 200, body: balancesResponse() });
-  });
+      await screen.findByText(FORECAST_CAPTION);
+      expect(screen.getByText(/только начисление по действующим правилам/)).toBeInTheDocument();
+      expect(screen.getByText(/заявки и запланированные отпуска не учтены/)).toBeInTheDocument();
+      expect(screen.getByText(/записаны по 26\.10\.2026 включительно/)).toBeInTheDocument();
+      expect(screen.getByText("Прогноз остатка на 31.12.2026")).toBeInTheDocument();
+    });
 
-  it("the same boundary west of UTC: UTC today is already tomorrow there, and it is available (Р-1)", async () => {
-    // 26.10 20:00 в Лос-Анджелесе, но 27.10 03:00 по UTC: сегодня сервера - 27.10.
-    at("America/Los_Angeles", "2026-10-27T03:00:00Z");
-    mockBackend({ role: "employee" }, replyToday("2026-10-27"));
-    renderApp("/my-leave");
-    await screen.findByLabelText("Ежегодный оплачиваемый отпуск");
+    it("marks the numbers as a forecast and shows the server's accrual line as sent, without arithmetic", async () => {
+      mockBackend({ role: "employee" }, () => ({
+        status: 200,
+        body: balancesResponse(
+          // Числа нарочно НЕ сходятся (21,00 - 18,67 не равно 9,99): клиент не вычисляет разность,
+          // он показывает то, что сказал сервер.
+          [leaveTypeBalanceResponse({ balance: "21.00", total_balance: "30.00", forecast_accrual: "9.99" })],
+          { as_of: "2026-12-31", is_forecast: true },
+        ),
+      }));
+      renderApp("/my-leave");
+      const block = await screen.findByLabelText("Ежегодный оплачиваемый отпуск");
 
-    openPanel();
+      expect(within(block).getByText("Остаток за текущий рабочий год (прогноз)")).toBeInTheDocument();
+      expect(within(block).getByText("Всего по всем рабочим годам (прогноз)")).toBeInTheDocument();
+      const accrual = within(block).getByText("Начислится к дате (в журнал не записано)");
+      expect(accrual.closest(".ant-descriptions-item")).toHaveTextContent("+9,99 кал. дн.");
+      expect(within(block).getByText("21 кал. дн.")).toBeInTheDocument();
+      expect(within(block).getByText("30 кал. дн.")).toBeInTheDocument();
+    });
 
-    await waitFor(() => expect(cell("2026-10-27")).not.toBeNull());
-    expect(cell("2026-10-27")).not.toHaveClass("ant-picker-cell-disabled");
-    expect(cell("2026-10-28")).toHaveClass("ant-picker-cell-disabled");
+    it("keeps the history RECORDED and names the journal date in its heading (Ф-2)", async () => {
+      mockBackend({ role: "employee" }, () => ({
+        status: 200,
+        body: balancesResponse(
+          [
+            leaveTypeBalanceResponse({
+              balance: "21.00",
+              total_balance: "21.00",
+              forecast_accrual: "2.33",
+              history: [],
+              accrual_years: [accrualYearResponse({ accrued: "18.67" })],
+            }),
+          ],
+          { as_of: "2026-12-31", today: "2026-10-26", is_forecast: true },
+        ),
+      }));
+      renderApp("/my-leave");
+      const block = await screen.findByLabelText("Ежегодный оплачиваемый отпуск");
+
+      expect(within(block).getByText("История (записано по 26.10.2026)")).toBeInTheDocument();
+      // Свёрнутое начисление года - записанная сумма сервера, рядом с прогнозом, а не вместо него.
+      expect(within(block).getByText(/18,67/)).toBeInTheDocument();
+    });
+
+    it("without the flag the screen is the usual one: no caption, no accrual line, plain labels", async () => {
+      mockBackend({ role: "employee" });
+      renderApp("/my-leave");
+      const block = await screen.findByLabelText("Ежегодный оплачиваемый отпуск");
+
+      expect(screen.queryByText(FORECAST_CAPTION)).not.toBeInTheDocument();
+      expect(within(block).queryByText(/Начислится к дате/)).not.toBeInTheDocument();
+      expect(within(block).getByText("Остаток за текущий рабочий год")).toBeInTheDocument();
+      expect(within(block).getByText("История")).toBeInTheDocument();
+    });
+
+    it("shows the server's refusal beyond the horizon as text, without the machine prefix", async () => {
+      mockBackend({ role: "employee" }, (asOf) =>
+        asOf === null
+          ? { status: 200, body: balancesResponse() }
+          : {
+              status: 400,
+              body: { detail: "as_of: Прогноз считается не дальше чем на 5 лет вперёд." },
+            },
+      );
+      renderApp("/my-leave");
+      await screen.findByLabelText("Ежегодный оплачиваемый отпуск");
+
+      await pick("2040-01-01");
+
+      await screen.findByText("Дата недоступна");
+      expect(screen.getByText("Прогноз считается не дальше чем на 5 лет вперёд.")).toBeInTheDocument();
+      expect(screen.queryByText(/as_of:/)).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /повторить/i })).not.toBeInTheDocument();
+    });
   });
 
   it("a date before the hire date: the screen says the employee was not hired yet (Р-3)", async () => {

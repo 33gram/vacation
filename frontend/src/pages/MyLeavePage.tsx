@@ -1,8 +1,9 @@
-import { Card, DatePicker, Descriptions, Space, Table, Typography } from "antd";
+import { Alert, Card, DatePicker, Descriptions, Space, Table, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import dayjs from "dayjs";
 import { useState } from "react";
 
+import { prefixedMessages } from "../api/errors";
 import { NO_ACCESS_MESSAGE } from "../app/accessMessage";
 import { formatDate } from "../app/format";
 import { EmptyState, ErrorLoadingState, LoadingState, NoAccessState } from "../app/states";
@@ -57,34 +58,29 @@ const REQUEST_DAY_FORMAT = "YYYY-MM-DD";
  * хранится строкой `YYYY-MM-DD` из `dayjs.format`, не через `toISOString` (тот сдвигает сутки
  * в половине зон).
  *
- * ВЕРХНЯЯ ГРАНИЦА - `today` ИЗ ОТВЕТА СЕРВЕРА, бизнес-день организации (`T-M2-34`,
- * `NFR-LOC-002`), а не часы браузера и не UTC: клиент «сегодня» не считает. Пока первого
- * ответа нет, граница неизвестна и элемент ВЫКЛЮЧЕН (`ui.md` §6); после первого ответа
- * бизнес-день запоминается и при смене даты (каркас, ответа ещё нет) элемент остаётся
- * включённым с прежней границей. ГРАНИЦЫ: (1) это единственная преграда будущей дате - сервер
- * её принимает (`T-M2-31`, Р-5) и покажет записанное, а не прогноз; (2) запомненный день
- * обновляется с каждым ответом: страница, открытая через полночь по поясу организации, держит
- * вчерашнюю границу до следующего ответа; (3) если первая загрузка упала, элемент выключен до
- * повтора. Экран не оговаривает, что на старых данных разработки остаток на прошлые даты может
- * быть занижен (годы, записанные одним куском до `T-M2-21`, и закрытые до `T-M2-32`) - это не
- * дефект экрана. */
+ * ПРОГНОЗ (`T-M2-33`, `FR-BAL-002/2`, `ui.md` §6): верхней границы у элемента НЕТ. Дата позже
+ * бизнес-дня - прогноз, и ЭТО РЕШАЕТ СЕРВЕР: признак `is_forecast` в ответе, а величину
+ * «начислится к дате» называет `forecast_accrual` каждого вида. Клиент дат не сравнивает,
+ * «сегодня» не считает и разности не вычисляет (`T-M2-13`, `NFR-LOC-002`): подпись показывается
+ * по признаку, не по часам браузера. Признак, которого в ответе нет (сервер старой версии),
+ * подписи не включает. Подпись говорит прямо: в журнал не записано, учтено только начисление,
+ * заявки и запланированные отпуска не учтены (их в Системе пока нет) - при появлении заявок её
+ * надо пересмотреть (`tasks.md`, `T-M3-05`). История и свёрнутые начисления остаются ЗАПИСАННЫМИ
+ * до `today` из ответа, и заголовок истории называет эту дату. Отказ 400 (дальше пяти лет
+ * вперёд) показывается текстом сервера. ГРАНИЦЫ: экран не оговаривает, что на старых данных
+ * разработки остаток на прошлые даты может быть занижен (годы, записанные одним куском до
+ * `T-M2-21`, и закрытые до `T-M2-32`) - это не дефект экрана. */
 export function MyLeavePage() {
   const me = useSession();
   const { hasEmployeeCard } = useAccess();
   const goHome = useGoHome();
   const [asOf, setAsOf] = useState<string | null>(null);
   const query = useMyBalancesQuery(me.employee_id, asOf);
-  // Бизнес-день сервера из последнего ответа (`T-M2-34`). Запоминается, чтобы элемент не
-  // выключался на время загрузки новой даты; обновление состояния во время рендера - паттерн
-  // «adjusting state on prop change» из документации React (как в `ProductionCalendarPage`).
-  const [serverToday, setServerToday] = useState<string | null>(null);
-  // `today` проверяется во время выполнения: тип обещает поле, но тело ответа клиент не проверяет
-  // (`T-M2-25`), а отсутствующее значение не должно снимать границу - «дня нет» значит
-  // «неизвестен», элемент выключен.
-  const reportedToday = typeof query.data?.today === "string" ? query.data.today : null;
-  if (query.data && reportedToday !== serverToday) {
-    setServerToday(reportedToday);
-  }
+  // Признак прогноза - ответ сервера; тело ответа клиент во время выполнения не проверяет
+  // (`T-M2-25`), поэтому включает подпись только строгое `true`: отсутствующий признак (сервер
+  // старой версии) подписи не включает.
+  const isForecast = query.data?.is_forecast === true;
+  const recordedThrough = typeof query.data?.today === "string" ? query.data.today : null;
 
   // ОСОЗНАННЫЙ второй рубеж (защита в глубину), а не забытая проверка: основная защита -
   // `RoleGuard` на маршруте, вторая - `enabled` в хуке запроса (без карточки он не уходит);
@@ -116,7 +112,9 @@ export function MyLeavePage() {
         </Typography.Title>
         <Space wrap align="center">
           <Typography.Text type="secondary">
-            {query.data ? `Остаток на ${formatDate(query.data.as_of)}` : "Остаток на дату"}
+            {query.data
+              ? `${isForecast ? "Прогноз остатка" : "Остаток"} на ${formatDate(query.data.as_of)}`
+              : "Остаток на дату"}
           </Typography.Text>
           <DatePicker
             aria-label="Остаток на дату"
@@ -125,13 +123,23 @@ export function MyLeavePage() {
             allowClear
             value={asOf === null ? null : dayjs(asOf, REQUEST_DAY_FORMAT)}
             onChange={(day) => setAsOf(day ? day.format(REQUEST_DAY_FORMAT) : null)}
-            // Пока «сегодня» сервера неизвестно - выключен (`ui.md` §6): своей границы у клиента нет.
-            disabled={serverToday === null}
-            disabledDate={(day) =>
-              serverToday !== null && day.format(REQUEST_DAY_FORMAT) > serverToday
-            }
+            // Границ нет (`T-M2-33`): позже бизнес-дня - прогноз, решает сервер.
           />
         </Space>
+        {isForecast && (
+          <Alert
+            type="info"
+            showIcon
+            style={{ marginTop: 8 }}
+            message="Прогноз, в журнал не записано"
+            description={
+              `Учтено только начисление по действующим правилам; заявки и запланированные отпуска не учтены.` +
+              (recordedThrough
+                ? ` Журнал и начисления ниже записаны по ${formatDate(recordedThrough)} включительно.`
+                : "")
+            }
+          />
+        )}
         {notHired && (
           // Одна строка в шапке, а не в каждом блоке вида: рабочего года нет у ВСЕХ видов сразу
           // (год - свойство даты и даты приёма, не вида), а блоков столько, сколько видов с
@@ -170,6 +178,14 @@ export function MyLeavePage() {
       );
     }
     if (q.isError) {
+      const failure = q.error;
+      if (failure instanceof BalancesLoadError && failure.status === 400) {
+        // Отказ по дате (дальше пяти лет вперёд, `FR-BAL-002/2`): текст сервера без машинного
+        // префикса `as_of:`; не «Не удалось загрузить», потому что повтор тот же отказ вернёт.
+        const message =
+          prefixedMessages(failure.detail, ["as_of"])?.[0]?.message ?? failure.detail ?? "";
+        return <Alert type="warning" showIcon message="Дата недоступна" description={message} />;
+      }
       // `cancelRefetch: false` задуман так, чтобы повторное нажатие, пока запрос в полёте, не
       // запускало второй (этот `GET` пишет в журнал). НЕ ПРОВЕРЕНО: тест от умолчания этот флаг
       // не отличает - после ошибки без данных кнопка исчезает под каркасом загрузки, и быстрые
@@ -188,14 +204,27 @@ export function MyLeavePage() {
     return (
       <>
         {balances.map((balance) => (
-          <LeaveTypeCard key={balance.leave_type_id} balance={balance} />
+          <LeaveTypeCard
+            key={balance.leave_type_id}
+            balance={balance}
+            forecast={isForecast}
+            recordedThrough={recordedThrough}
+          />
         ))}
       </>
     );
   }
 }
 
-function LeaveTypeCard({ balance }: { balance: LeaveTypeBalance }) {
+function LeaveTypeCard({
+  balance,
+  forecast,
+  recordedThrough,
+}: {
+  balance: LeaveTypeBalance;
+  forecast: boolean;
+  recordedThrough: string | null;
+}) {
   const yearRange =
     balance.working_year_start && balance.working_year_end
       ? `${formatDate(balance.working_year_start)} — ${formatDate(balance.working_year_end)}`
@@ -204,15 +233,25 @@ function LeaveTypeCard({ balance }: { balance: LeaveTypeBalance }) {
   return (
     <Card title={balance.name} aria-label={balance.name}>
       <Descriptions column={{ xs: 1, md: 3 }} size="small">
-        <Descriptions.Item label="Остаток за текущий рабочий год">
+        <Descriptions.Item label={`Остаток за текущий рабочий год${forecast ? " (прогноз)" : ""}`}>
           {formatAmount(balance.balance, balance.unit)}
         </Descriptions.Item>
         <Descriptions.Item label="Рабочий год">{yearRange}</Descriptions.Item>
-        <Descriptions.Item label="Всего по всем рабочим годам">
+        <Descriptions.Item label={`Всего по всем рабочим годам${forecast ? " (прогноз)" : ""}`}>
           {formatAmount(balance.total_balance, balance.unit)}
         </Descriptions.Item>
+        {forecast && balance.forecast_accrual != null && (
+          // Величину называет сервер: клиент разности записанного и прогноза не считает.
+          <Descriptions.Item label="Начислится к дате (в журнал не записано)">
+            {formatAmount(balance.forecast_accrual, balance.unit, { signed: true })}
+          </Descriptions.Item>
+        )}
       </Descriptions>
-      <Typography.Title level={5}>История</Typography.Title>
+      <Typography.Title level={5}>
+        {forecast && recordedThrough
+          ? `История (записано по ${formatDate(recordedThrough)})`
+          : "История"}
+      </Typography.Title>
       <Table<HistoryRow>
         size="small"
         rowKey="key"

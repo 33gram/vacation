@@ -120,6 +120,7 @@ export function leaveTypeBalanceResponse(
     working_year_end: "2027-03-09",
     balance: "18.67",
     total_balance: "18.67",
+    forecast_accrual: null,
     history: [balanceEntryResponse({ entry_type: "manual_adjustment" })],
     accrual_years: [],
     ...overrides,
@@ -130,7 +131,14 @@ export function balancesResponse(
   balances: LeaveTypeBalanceOut[] = [leaveTypeBalanceResponse()],
   overrides: Partial<EmployeeBalancesOut> = {},
 ): EmployeeBalancesOut {
-  return { employee_id: 7, as_of: "2026-10-26", today: "2026-10-26", balances, ...overrides };
+  return {
+    employee_id: 7,
+    as_of: "2026-10-26",
+    today: "2026-10-26",
+    is_forecast: false,
+    balances,
+    ...overrides,
+  };
 }
 
 

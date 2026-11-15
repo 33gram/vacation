@@ -59,6 +59,11 @@ class LeaveTypeBalanceOut(BaseModel):
     working_year_end: datetime.date | None
     balance: Decimal  # остаток за этот рабочий год на дату запроса
     total_balance: Decimal  # сумма по ВСЕМ рабочим годам на дату запроса
+    # ПРОГНОЗ (`T-M2-33`, `FR-BAL-002/2`): `None` - числа выше ЗАПИСАНЫ в журнале (дата не позже
+    # бизнес-дня); число (в том числе 0) - дата позже бизнес-дня, `balance` и `total_balance`
+    # РАСЧЁТНЫЕ, и это число - начисление, которое в них входит сверх записанного и в журнал не
+    # записано. Клиент разности не считает: величину называет сервер.
+    forecast_accrual: Decimal | None
     # События БЕЗ начислений, по возрастанию даты; начисления - в `accrual_years` (`T-M2-30`).
     history: list[BalanceEntryOut]
     accrual_years: list[AccrualYearOut]  # по возрастанию начала года
@@ -70,6 +75,10 @@ class EmployeeBalancesOut(BaseModel):
     # Бизнес-день СЕРВЕРА (`NFR-LOC-002`): клиент берёт из него верхнюю границу выбора даты и не
     # считает «сегодня» по своим часам. Не то же, что `as_of` (дата показа, по умолчанию он же).
     today: datetime.date
+    # `True` - `as_of` позже бизнес-дня (`today`): числа остатка РАСЧЁТНЫЕ (прогноз, только
+    # начисление; заявки и запланированные отпуска не учтены), `history` и `accrual_years` -
+    # записанное до `today`. Признак называет сервер: клиент дат не сравнивает (`T-M2-13`).
+    is_forecast: bool
     balances: list[LeaveTypeBalanceOut]
 
 

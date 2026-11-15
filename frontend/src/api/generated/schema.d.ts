@@ -605,6 +605,8 @@ export interface components {
              * Format: date
              */
             today: string;
+            /** Is Forecast */
+            is_forecast: boolean;
             /** Balances */
             balances: components["schemas"]["LeaveTypeBalanceOut"][];
         };
@@ -875,6 +877,8 @@ export interface components {
             balance: string;
             /** Total Balance */
             total_balance: string;
+            /** Forecast Accrual */
+            forecast_accrual: string | null;
             /** History */
             history: components["schemas"]["BalanceEntryOut"][];
             /** Accrual Years */
@@ -1394,7 +1398,7 @@ export interface operations {
     get_employee_balances_api_employees__employee_id__balances_get: {
         parameters: {
             query?: {
-                /** @description Дата показа остатка (BR-8); по умолчанию бизнес-день (NFR-LOC-002). Это только ФИЛЬТР показа: журнал по ней не меняется, начисление идёт до сегодняшнего дня. */
+                /** @description Дата показа остатка (BR-8); по умолчанию бизнес-день (NFR-LOC-002). Журнал по ней не меняется, начисление идёт до бизнес-дня. Дата позже бизнес-дня - ПРОГНОЗ (FR-BAL-002/2, is_forecast=true): записанное плюс начисление без записи, заявки и запланированные отпуска не учтены; дальше пяти лет вперёд - отказ 400. */
                 as_of?: string | null;
             };
             header?: never;

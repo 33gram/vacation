@@ -12,7 +12,17 @@ M0, который давно состоялся) ловится механич�
 ГРАНИЦА (правило 8): проверяется СУЩЕСТВОВАНИЕ цели, а не то, что документ о
 ней говорит и что она делает; не проверяются ни флаги, ни переменные команды
 (`make lock-backend LOCK_UPGRADE=...`), ни упоминания целей без слова `make`
-(«цель `test-e2e`»), ни другие документы (`docs/*`, `.github/*`). Порог
+(«цель `test-e2e`»), ни другие документы (`docs/*`, `.github/*`).
+
+Разбор имени цели не видит (измерено ревью PR #202): `make -s ghost` (флаг
+между `make` и целью), перенос строки сразу после слова `make` (продолжение
+команды), ссылку вида `[make ghost](x)` (в тексте ссылки нет обратных кавычек;
+в её адресе и подписи код не ищется) - в этих формах несуществующая цель
+пройдёт незамеченной. Проверка ОДНОСТОРОННЯЯ по замыслу: цель, которая есть в
+`Makefile`, но не названа в документах (`lock-backend`, `openapi-export`),
+сторож не ищет, и полнота таблицы команд в README не заявлена. Документы,
+которые сторож обязан читать, - README.md и CLAUDE.md; исчезнувший файл
+краснит тест, а не пропускается молча. Порог
 (`_MIN_MENTIONS`) защищает от молчаливого нуля: если разбор перестанет находить
 упоминания в README, тест краснеет, а не проходит пустым.
 """
@@ -96,8 +106,11 @@ def test_every_make_target_named_in_the_docs_exists() -> None:
         "разбор перестал находить упоминания или они пропали из README"
     )
     for document in (_README, _CLAUDE):
-        if document.is_file():
-            missing = find_missing_make_targets(document.read_text(encoding="utf-8"), makefile)
-            assert not missing, (
-                f"{document.name} называет цели, которых нет в Makefile: {sorted(missing)}"
-            )
+        assert document.is_file(), (
+            f"{document.name} не найден по пути {document}: сторож читает его по замыслу, "
+            "исчезнувший документ не должен молча оставлять проверку пустой"
+        )
+        missing = find_missing_make_targets(document.read_text(encoding="utf-8"), makefile)
+        assert not missing, (
+            f"{document.name} называет цели, которых нет в Makefile: {sorted(missing)}"
+        )

@@ -48,6 +48,7 @@ down:
 # контейнер не исполняет `lifespan`, поэтому работает и тогда, когда
 # `backend` не стартует из-за отставшей схемы (`validate_business_rules`).
 migrate:
+	@test -f .env || { echo "Нет .env — выполните: cp .env.example .env"; exit 1; }
 	$(COMPOSE) run --rm backend alembic upgrade head
 
 logs:

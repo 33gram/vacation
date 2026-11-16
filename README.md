@@ -42,7 +42,7 @@
 └── CLAUDE.md, CONTEXT.md # правила работы и доменный словарь
 ```
 
-Каталога `infra/backup` и `docker-compose.prod.yml`, которые перечислены в `docs/plan.md` §3, в репозитории пока нет.
+Каталога `infra/backup` и `docker-compose.prod.yml`, которые перечислены в `docs/plan.md` §3 (там описана целевая структура), в репозитории пока нет: их заводят `T-M7-04` и `T-M7-10`.
 
 ## Разработка
 
@@ -85,7 +85,53 @@ make up
 
 Интерфейс открывается на **`:5173`**, а не на `:80`. `nginx` на `:80` проксирует `/` на frontend и `/api/` на backend, но frontend собран с `VITE_API_BASE_URL: http://localhost:8000` (`infra/docker-compose.yml`): браузер ходит к backend напрямую, а не через nginx. `CORS_ORIGINS` в `.env.example` разрешает единственный источник — `http://localhost:5173`, поэтому со страницы на `:80` запрос входа отклоняется браузером по CORS (в консоли: «No 'Access-Control-Allow-Origin' header is present»). Чтобы пользоваться `:80`, добавьте `http://localhost` в `CORS_ORIGINS` в `.env` и перезапустите `backend`.
 
-Войти можно локальной учётной записью из `BOOTSTRAP_ADMIN_LOGIN`/`BOOTSTRAP_ADMIN_PASSWORD` в `.env` (`FR-AUTH-005`; значения здесь не приводятся). Запись создаётся при старте, только если в базе нет ни одной активной записи с ролью `system_admin`; при первом входе система требует сменить пароль. Уже существующая запись при старте не перезаписывается, поэтому на старой dev-базе после смены пароля значения из `.env` для входа не подходят (вход вернёт «Неверный логин или пароль»).
+Войти можно локальной учётной записью из `BOOTSTRAP_ADMIN_LOGIN`/`BOOTSTRAP_ADMIN_PASSWORD` в `.env` (`FR-AUTH-005`; значения здесь не приводятся). Запись создаётся при старте, только если в базе нет ни одной активной записи с ролью `system_admin`; при первом входе система требует сменить пароль. Уже существующая запись при старте не перезаписывается, поэтому на старой dev-базе после смены пароля значения из `.env` для входа не подходят (вход вернёт «Неверный логин или пароль»); выход — «Сброс пароля в dev» ниже.
+
+Две вещи, без которых вход не находится:
+- в поле «Логин или e-mail» вводится значение `accounts.login` (у bootstrap-записи это `BOOTSTRAP_ADMIN_LOGIN`), а не e-mail: поле — обычная строка, `type="email"` там намеренно нет (`frontend/src/pages/LoginPage.tsx`);
+- «Мой отпуск» (остаток, история, прогноз) определяется наличием карточки сотрудника у учётной записи, а не ролью (`frontend/src/app/roles.ts`, `accessOf`): у bootstrap-записи `employee_id = NULL` (`backend/app/modules/auth/bootstrap.py`), и под ней этого раздела нет — доступны «Справочники» и «Администрирование». Чтобы увидеть остатки, создайте под ней сотрудника с локальным входом («Сотрудники» → «Добавить сотрудника») и войдите его учётной записью.
+
+### Сброс пароля в dev
+
+Хэш считается и записывается внутри контейнера одним шагом, хэшером проекта. Пароль ниже — заметный placeholder: замените его своим; он остаётся в истории оболочки (для dev-базы это допустимо, для чужой — нет).
+
+```bash
+docker compose --env-file .env -f infra/docker-compose.yml exec -T \
+  -e ACCOUNT_LOGIN=admin -e NEW_PASSWORD='DEV-ONLY-change-me' backend python - <<'PY'
+import asyncio
+import os
+
+from sqlalchemy import update
+
+from app.core.security import hash_password
+from app.db.session import get_session_factory
+from app.models.account import Account
+
+
+async def main() -> None:
+    async with get_session_factory()() as session:
+        result = await session.execute(
+            update(Account)
+            .where(Account.login == os.environ["ACCOUNT_LOGIN"])
+            .values(
+                local_password_hash=hash_password(os.environ["NEW_PASSWORD"]),
+                failed_login_attempts=0,
+                locked_until=None,
+                is_active=True,
+                must_change_password=False,  # True - потребовать смену при входе
+            )
+        )
+        await session.commit()
+        print("updated rows:", result.rowcount)
+
+
+asyncio.run(main())
+PY
+```
+
+`updated rows: 1` — запись найдена. Перезапуск backend не нужен: пароль читается из базы на каждый вход (`backend/app/modules/auth/local_service.py`); проверено — вход прошёл без перезапуска.
+
+Почему не `psql -c "UPDATE … '$2b$12$…'"`: bcrypt-хэш начинается с `$2b$12$`, и оболочка в двойных кавычках съедает `$2`, `$12`, `$b` как переменные — в базу попадает обрезанный хэш (наблюдалось проверяющим: `b2.A/DI7…`; воспроизведено: из `'$2b$12$abcDEF'` в двойных кавычках остаётся `'b2'`), и вход не работает, а причины не видно. SQL-вариант допустим только через закрытый heredoc (`<<'SQL'`), но хэш при этом всё равно нужно получить заранее, поэтому выше хэшер и запись объединены.
 
 ### Прочие команды
 

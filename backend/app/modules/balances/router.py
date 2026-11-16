@@ -174,14 +174,14 @@ async def get_employee_balances(
             else Decimal(0)
         )
         total_balance = await get_total_balance(session, employee_id, leave_type.id, as_of=on_date)
+        # `None` - числа ЗАПИСАНЫ: дата не позже бизнес-дня либо по виду начисления нет (оно есть
+        # только у основного вида), и вперёд по нему ничего не считалось (PR #201 check, П-1).
         added: Decimal | None = None
-        if is_forecast:
-            # Начисление есть только у основного вида; у остальных прогноз равен записанному.
-            by_year = forecast_by_year if leave_type.code == MAIN_LEAVE_TYPE_CODE else {}
-            added = sum(by_year.values(), Decimal(0))
+        if is_forecast and leave_type.code == MAIN_LEAVE_TYPE_CODE:
+            added = sum(forecast_by_year.values(), Decimal(0))
             total_balance += added
             if year_start is not None:
-                balance += by_year.get(year_start, Decimal(0))
+                balance += forecast_by_year.get(year_start, Decimal(0))
         out.append(
             LeaveTypeBalanceOut(
                 leave_type_id=leave_type.id,

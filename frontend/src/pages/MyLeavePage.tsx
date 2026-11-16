@@ -207,7 +207,6 @@ export function MyLeavePage() {
           <LeaveTypeCard
             key={balance.leave_type_id}
             balance={balance}
-            forecast={isForecast}
             recordedThrough={recordedThrough}
           />
         ))}
@@ -218,13 +217,17 @@ export function MyLeavePage() {
 
 function LeaveTypeCard({
   balance,
-  forecast,
   recordedThrough,
 }: {
   balance: LeaveTypeBalance;
-  forecast: boolean;
   recordedThrough: string | null;
 }) {
+  // Прогноз - свойство ВИДА (`forecast_accrual`, PR #201 check, П-1): `null` - числа вида записаны
+  // (дата не позже бизнес-дня либо по виду нет начисления), подписей прогноза у такого блока нет,
+  // даже когда весь ответ - прогноз. Строгое сравнение с `number|string`: отсутствующее поле
+  // (сервер старой версии) прогнозом не считается.
+  const added = balance.forecast_accrual ?? null;
+  const forecast = added !== null;
   const yearRange =
     balance.working_year_start && balance.working_year_end
       ? `${formatDate(balance.working_year_start)} — ${formatDate(balance.working_year_end)}`
@@ -240,10 +243,10 @@ function LeaveTypeCard({
         <Descriptions.Item label={`Всего по всем рабочим годам${forecast ? " (прогноз)" : ""}`}>
           {formatAmount(balance.total_balance, balance.unit)}
         </Descriptions.Item>
-        {forecast && balance.forecast_accrual != null && (
+        {added !== null && (
           // Величину называет сервер: клиент разности записанного и прогноза не считает.
           <Descriptions.Item label="Начислится к дате (в журнал не записано)">
-            {formatAmount(balance.forecast_accrual, balance.unit, { signed: true })}
+            {formatAmount(added, balance.unit, { signed: true })}
           </Descriptions.Item>
         )}
       </Descriptions>

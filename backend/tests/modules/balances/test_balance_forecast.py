@@ -22,7 +22,7 @@ from sqlalchemy import func, select, text
 from app.models.employee import Employee
 from app.models.leave_balance_entry import LeaveBalanceEntry
 from app.modules.balances.accrual import compute_accrual
-from app.modules.balances.service import accrue_all_working_years
+from app.modules.balances.service import accrue_all_working_years, adjust_balance
 from app.modules.business_rules import business_day
 from tests.modules.auth.factories import bearer_header, make_account, make_employee
 from tests.modules.balances.helpers import expected_total_accrual, make_context
@@ -306,3 +306,41 @@ async def test_the_forecast_shares_the_code_path_of_the_lazy_accrual_barrier(
     assert dry.accrued == real.accrued
     assert dry.skipped == real.skipped
     assert dry.skipped  # барьер сработал: годы до появления карточки пропущены
+
+
+async def test_a_kind_without_accrual_keeps_recorded_numbers_and_no_forecast_value(
+    db_session, api_client
+) -> None:
+    # PR #201 check, П-1: начисление есть только у основного вида. У второго вида с остатком
+    # (`time_off`, отгул) прогноз не считался: `forecast_accrual` - `None` (числа записаны), а не
+    # 0, и числа равны записанным; у основного - прогноз. `is_forecast` - свойство ответа.
+    ctx, employee, own = await _employee(db_session)
+    other_id = await db_session.scalar(text("SELECT id FROM leave_types WHERE code = 'time_off'"))
+    await adjust_balance(
+        db_session,
+        employee_id=employee.id,
+        leave_type_id=other_id,
+        working_year_start=HIRE,
+        working_year_end=datetime.date(2027, 4, 27),
+        quantity=Decimal("5"),
+        reason="Отгул за переработку",
+        actor_account_id=ctx.actor_id,
+        entry_date=TODAY,
+    )
+    recorded = await _get(api_client, employee, own)
+    before = await _event_count(db_session, employee.id)
+    far = TODAY + datetime.timedelta(days=400)
+
+    forecast = await _get(api_client, employee, own, far)
+
+    assert forecast.json()["is_forecast"] is True
+    main = _main(forecast)
+    other = next(b for b in forecast.json()["balances"] if b["code"] == "time_off")
+    recorded_other = next(b for b in recorded.json()["balances"] if b["code"] == "time_off")
+    assert main["forecast_accrual"] is not None  # у основного вида прогноз
+    assert Decimal(main["total_balance"]) == expected_total_accrual(HIRE, far)
+    assert other["forecast_accrual"] is None  # у второго - записанное, не 0
+    assert Decimal(other["total_balance"]) == Decimal("5")
+    assert other["total_balance"] == recorded_other["total_balance"]
+    assert Decimal(other["balance"]) == 0  # год даты (с 27.04.2027) событий не имеет: записанное
+    assert await _event_count(db_session, employee.id) == before  # журнал не изменился

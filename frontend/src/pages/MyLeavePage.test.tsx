@@ -775,6 +775,40 @@ describe("balance on a date (T-M2-31, BR-8)", () => {
       expect(within(block).getByText("30 кал. дн.")).toBeInTheDocument();
     });
 
+    it("marks only the kind the forecast was computed for: a kind without accrual keeps plain labels (PR #201 check, П-1)", async () => {
+      mockBackend({ role: "employee" }, () => ({
+        status: 200,
+        body: balancesResponse(
+          [
+            leaveTypeBalanceResponse({ balance: "21.00", total_balance: "30.00", forecast_accrual: "9.99" }),
+            leaveTypeBalanceResponse({
+              leave_type_id: 2,
+              code: "time_off",
+              name: "Отгул",
+              balance: "0",
+              total_balance: "5.00",
+              forecast_accrual: null,
+            }),
+          ],
+          { as_of: "2026-12-31", is_forecast: true },
+        ),
+      }));
+      renderApp("/my-leave");
+      const main = await screen.findByLabelText("Ежегодный оплачиваемый отпуск");
+      const other = screen.getByLabelText("Отгул");
+
+      // Подпись в шапке - свойство ответа; блоки - свойство вида.
+      expect(screen.getByText(FORECAST_CAPTION)).toBeInTheDocument();
+      expect(within(main).getByText("Остаток за текущий рабочий год (прогноз)")).toBeInTheDocument();
+      expect(within(main).getByText(/Начислится к дате/)).toBeInTheDocument();
+      expect(within(main).getByText("История (записано по 26.10.2026)")).toBeInTheDocument();
+      expect(within(other).getByText("Остаток за текущий рабочий год")).toBeInTheDocument();
+      expect(within(other).getByText("Всего по всем рабочим годам")).toBeInTheDocument();
+      expect(within(other).queryByText(/прогноз/)).not.toBeInTheDocument();
+      expect(within(other).queryByText(/Начислится к дате/)).not.toBeInTheDocument();
+      expect(within(other).getByText("История")).toBeInTheDocument();
+    });
+
     it("keeps the history RECORDED and names the journal date in its heading (Ф-2)", async () => {
       mockBackend({ role: "employee" }, () => ({
         status: 200,

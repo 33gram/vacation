@@ -17,7 +17,6 @@ from sqlalchemy import select
 
 from app.models.employee import Employee
 from app.models.leave_balance_entry import ACCRUAL, RECALCULATION, LeaveBalanceEntry
-from app.modules.balances.accrual import compute_accrual, working_year_starts
 from app.modules.balances.service import (
     accrue_all_working_years,
     accrue_leave,
@@ -25,7 +24,7 @@ from app.modules.balances.service import (
     get_total_balance,
     recalculate_balance,
 )
-from tests.modules.balances.helpers import Context, make_context
+from tests.modules.balances.helpers import Context, expected_total_accrual, make_context
 
 D = datetime.date
 ONE_DAY = datetime.timedelta(days=1)
@@ -86,24 +85,6 @@ async def _accrue_all(db_session, ctx: Context, as_of: datetime.date) -> None:
     )
 
 
-def _expected_total(hire: datetime.date, day: datetime.date) -> Decimal:
-    """Сумма `compute_accrual` по всем рабочим годам новой даты приёма на `day`; для
-    завершённого года расчёт берётся на его последний день."""
-    starts = working_year_starts(hire, day)
-    total = Decimal(0)
-    for index, start in enumerate(starts):
-        last_day = day if index == len(starts) - 1 else starts[index + 1] - ONE_DAY
-        total += compute_accrual(
-            hire_date=hire,
-            as_of=last_day,
-            annual_norm=28,
-            rounding_threshold_days=15,
-            excluded_days=0,
-            working_year_start=start,
-        ).accrued
-    return total
-
-
 async def _assert_total_matches(
     db_session,
     ctx: Context,
@@ -116,7 +97,7 @@ async def _assert_total_matches(
     (`stop` - дата увольнения: расчёт на более поздние дни стоит на ней)."""
     for day in _days(first, AS_OF):
         total = await get_total_balance(db_session, ctx.employee_id, ctx.leave_type_id, as_of=day)
-        expected = _expected_total(hire, min(day, stop) if stop else day)
+        expected = expected_total_accrual(hire, min(day, stop) if stop else day)
         assert total == expected, f"сумма по годам на {day}"
 
 
@@ -286,7 +267,7 @@ async def test_known_boundary_a_year_closed_in_one_piece_before_t_m2_32_is_not_c
         if balance != 0:
             nonzero[day] = balance
         total = await get_total_balance(db_session, ctx.employee_id, ctx.leave_type_id, as_of=day)
-        if total != _expected_total(new_hire, day):
+        if total != expected_total_accrual(new_hire, day):
             diverged += 1
     assert (len(nonzero), set(nonzero.values()), diverged) == (
         92,

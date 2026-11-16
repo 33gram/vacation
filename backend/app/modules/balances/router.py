@@ -14,8 +14,10 @@
 ЧТЕНИЕ ПИШЕТ (`T-M2-19`): `GET` начисляет лениво и коммитит; повтор запроса ничего не
 пишет, поэтому безопасен. Начисление всегда идёт до сегодняшней даты (и не дальше даты
 увольнения), а `as_of` - только фильтр показа: смотреть историю на дату - не повод менять
-журнал задним числом; запрос на будущую дату показывает записанное, прогноз не считается
-(второй арифметики остатка быть не должно).
+журнал задним числом; запрос на будущую дату НЕ пишет вперёд: он показывает ПРОГНОЗ
+(`T-M2-33`, `FR-BAL-002/2`) - записанное плюс начисление без записи (`forecast_accrual`,
+то же ленивое начисление в режиме `write=False`: формулы шагов те же), с признаком
+`is_forecast`. Сборка суммы по видам и годам ниже - своя, в этом слое; покрыта тестами эндпоинта.
 
 ПОРЯДОК 404/403: в `GET` сначала 404, потом 403 (как у `GET /api/employees/{id}`); в
 `POST` роль проверяет зависимость FastAPI ДО тела обработчика, поэтому там 403 раньше
@@ -36,11 +38,14 @@ from app.models.account import Account
 from app.models.leave_type import LeaveType
 from app.modules.auth.rbac import get_current_account, require_roles
 from app.modules.auth.repository import SYSTEM_AUTHOR_LABEL, get_author_display_names
-from app.modules.balances.accrual import working_year_containing
+from app.modules.balances.accrual import add_years, working_year_containing
 from app.modules.balances.service import (
+    FORECAST_HORIZON_YEARS,
+    MAIN_LEAVE_TYPE_CODE,
     BalanceEntryError,
     accrue_before_read,
     adjust_balance,
+    forecast_accrual,
     get_accrual_years,
     get_balance,
     get_total_balance,
@@ -66,14 +71,16 @@ router = APIRouter(
 
 _require_balance_editor = require_roles("hr_admin")
 
-@router.get("", response_model=EmployeeBalancesOut, responses=error_responses(404))
+@router.get("", response_model=EmployeeBalancesOut, responses=error_responses(400, 404))
 async def get_employee_balances(
     employee_id: int,
     as_of: datetime.date | None = Query(
         default=None,
         description=(
-            "Дата показа остатка (BR-8); по умолчанию бизнес-день (NFR-LOC-002). Это только ФИЛЬТР "
-            "показа: журнал по ней не меняется, начисление идёт до сегодняшнего дня."
+            "Дата показа остатка (BR-8); по умолчанию бизнес-день (NFR-LOC-002). Журнал по ней не "
+            "меняется, начисление идёт до бизнес-дня. Дата позже бизнес-дня - ПРОГНОЗ "
+            "(FR-BAL-002/2, is_forecast=true): записанное плюс начисление без записи, заявки и "
+            "запланированные отпуска не учтены; дальше пяти лет вперёд - отказ 400."
         ),
     ),
     session: AsyncSession = Depends(get_db_session),
@@ -90,12 +97,25 @@ async def get_employee_balances(
     zone = await business_zone(session)
     today = await business_today(session, zone=zone)
     on_date = as_of or today
+    is_forecast = on_date > today
+    # Предел горизонта проверяется ДО любой записи: отказ ничего не пишет (`FR-BAL-002/2`).
+    if is_forecast and on_date > add_years(today, FORECAST_HORIZON_YEARS):
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"as_of: Прогноз считается не дальше чем на {FORECAST_HORIZON_YEARS} лет вперёд.",
+        )
     # Ленивое начисление перед чтением (T-M2-19) ВСЕГДА до сегодняшнего дня (и не дальше
     # даты увольнения - это решает модуль): запрос на прошлую дату журнал задним числом
-    # не меняет, запрос на будущую - не пишет вперёд и показывает записанное, прогноз не
-    # считается. Отказ начисления не перехватывается: устаревшее число молча не отдаётся.
+    # не меняет, запрос на будущую - не пишет вперёд (прогноз ниже считается без записи).
+    # Отказ начисления не перехватывается: устаревшее число молча не отдаётся.
     await accrue_before_read(session, employee_id=employee_id, as_of=today, zone=zone)
     await session.commit()
+    # Прогноз - ТОЛЬКО начисление сверх записанного, по основному виду; журнал не меняется.
+    forecast_by_year = (
+        (await forecast_accrual(session, employee_id=employee_id, as_of=on_date, zone=zone)).accrued
+        if is_forecast
+        else {}
+    )
 
     # Набор видов (FR-BAL-002: «по каждому применимому виду оплачиваемого отпуска») -
     # ВЫБРАНО (требования v1.26, раздел 13 п. 32): виды с признаком «по виду ведётся
@@ -153,6 +173,17 @@ async def get_employee_balances(
             if year_start is not None
             else Decimal(0)
         )
+        total_balance = await get_total_balance(session, employee_id, leave_type.id, as_of=on_date)
+        # `None` - числа ЗАПИСАНЫ: дата не позже бизнес-дня либо по виду начисления нет (оно есть
+        # только у основного вида), и вперёд по нему ничего не считалось (PR #201 check, П-1).
+        added: Decimal | None = None
+        # Прогноз есть только у основного вида: это выбор показа; кому начислять, решает
+        # `_require_main_leave_type` в сервисе, здесь второго решения нет.
+        if is_forecast and leave_type.code == MAIN_LEAVE_TYPE_CODE:
+            added = sum(forecast_by_year.values(), Decimal(0))
+            total_balance += added
+            if year_start is not None:
+                balance += forecast_by_year.get(year_start, Decimal(0))
         out.append(
             LeaveTypeBalanceOut(
                 leave_type_id=leave_type.id,
@@ -162,9 +193,8 @@ async def get_employee_balances(
                 working_year_start=year_start,
                 working_year_end=year_end,
                 balance=balance,
-                total_balance=await get_total_balance(
-                    session, employee_id, leave_type.id, as_of=on_date
-                ),
+                total_balance=total_balance,
+                forecast_accrual=added,
                 history=[
                     BalanceEntryOut(
                         id=e.id,
@@ -195,7 +225,11 @@ async def get_employee_balances(
             )
         )
     return EmployeeBalancesOut(
-        employee_id=employee_id, as_of=on_date, today=today, balances=out
+        employee_id=employee_id,
+        as_of=on_date,
+        today=today,
+        is_forecast=is_forecast,
+        balances=out,
     )
 
 

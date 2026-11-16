@@ -78,6 +78,10 @@ from app.modules.business_rules.service import (
 # дополнительный отпуск - за границами MVP, `A-3.1`), менять надо это место и
 # выбор нормы в `accrue_leave`.
 MAIN_LEAVE_TYPE_CODE = "annual_paid"
+# Предел горизонта прогноза (`FR-BAL-002/2`, `T-M2-33`): дальше пяти лет от бизнес-дня запрос
+# отклоняется. Технический предел, а не норма раздела 5: защищает от абсурдной даты (запрос
+# на сотни лет вперёд), а не от стоимости - она определяется стажем сотрудника, не горизонтом.
+FORECAST_HORIZON_YEARS = 5
 
 # Типы событий, которые `accrue_leave` считает "уже начисленным" (T-M2-07,
 # решения ВЫВЕДЕНЫ):
@@ -421,6 +425,7 @@ async def accrue_leave(
     excluded_days: int = 0,
     working_year_start: datetime.date | None = None,
     attribution: AccrualAttribution | None = None,
+    write: bool = True,
 ) -> Decimal:
     """Начисляет отпуск за рабочий год на дату `as_of` (`FR-BAL-001`):
     пишет по ОДНОМУ событию `accrual` на каждый ещё не записанный шаг накопления
@@ -429,6 +434,16 @@ async def accrue_leave(
     (сумму шагов); ноль — если писать нечего (событий нет, исключение не
     поднимается). Шаг пишется, когда его нарастающий итог больше уже начисленного, на
     разность: сумма записанного та же, что у одного события на `as_of`.
+
+    `write=False` (`T-M2-33`, прогноз): считает ТО ЖЕ самое - те же шаги, ту же разность, те же
+    отказы - и возвращает, сколько было бы записано, но в журнал НЕ пишет и `flush` не делает;
+    замок строки сотрудника берётся как обычно. Формулы ШАГОВ одни: прогноз идёт тем же путём, а
+    не вторым расчётом, и по каждому году называет то, что записал бы настоящий догон. СБОРКА
+    суммы по видам и годам (`forecast_by_year` -> `forecast_accrual`, `balance`,
+    `total_balance`) - в слое API (`router.py`), своя, и покрыта тестами эндпоинта
+    (`test_balance_forecast.py`), а не этим путём. Начисление только у основного вида
+    обеспечивает `_require_main_leave_type` в этой же функции: проверка вида в роутере - выбор,
+    у каких видов показывать прогноз, а не второе решение о том, кому начислять.
 
     Работает только с основным видом (`MAIN_LEAVE_TYPE_CODE`): норма
     `annual_leave_days` - норма основного отпуска, и начислять её на другой
@@ -517,26 +532,27 @@ async def accrue_leave(
         if step.accrued <= written_total:
             continue
         quantity = step.accrued - written_total
-        session.add(
-            LeaveBalanceEntry(
-                employee_id=employee_id,
-                leave_type_id=leave_type_id,
-                working_year_start=accrual.working_year_start,
-                working_year_end=accrual.working_year_end,
-                entry_type=ACCRUAL,
-                quantity=quantity,
-                entry_date=step.date,
-                reason=(
-                    prefix + f"Начисление за {step.counted_months}-й месяц рабочего года "
-                    f"({step.date.strftime('%d.%m.%Y')}): "
-                    f"{step.counted_months} из {MONTHS_IN_YEAR} месяцев"
-                ),
-                actor_account_id=attribution.actor_account_id if attribution else None,
+        if write:
+            session.add(
+                LeaveBalanceEntry(
+                    employee_id=employee_id,
+                    leave_type_id=leave_type_id,
+                    working_year_start=accrual.working_year_start,
+                    working_year_end=accrual.working_year_end,
+                    entry_type=ACCRUAL,
+                    quantity=quantity,
+                    entry_date=step.date,
+                    reason=(
+                        prefix + f"Начисление за {step.counted_months}-й месяц рабочего года "
+                        f"({step.date.strftime('%d.%m.%Y')}): "
+                        f"{step.counted_months} из {MONTHS_IN_YEAR} месяцев"
+                    ),
+                    actor_account_id=attribution.actor_account_id if attribution else None,
+                )
             )
-        )
         written_total = step.accrued
         difference += quantity
-    if difference > 0:
+    if difference > 0 and write:
         await session.flush()
     return difference
 
@@ -555,6 +571,7 @@ async def accrue_all_working_years(
     as_of: datetime.date,
     attribution: AccrualAttribution | None = None,
     zone: zoneinfo.ZoneInfo | None = None,
+    write: bool = True,
 ) -> CatchUpResult:
     """Догоняет начисление по ВСЕМ рабочим годам от даты приёма до `as_of`,
     вызывая `accrue_leave` по каждому (своей арифметики и своей записи в журнал
@@ -579,7 +596,8 @@ async def accrue_all_working_years(
     учёта отпусков без содержания (M3, `T-M3-37`). Сотрудник принят позже
     `as_of` - пусто. Уволенный: догон идёт не дальше `termination_date` (включительно),
     уволенный без даты - `BalanceEntryError`. `attribution` пробрасывается в `accrue_leave`. Замок -
-    тот же единственный, что в `accrue_leave`."""
+    тот же единственный, что в `accrue_leave`. `write=False` (`T-M2-33`) пробрасывается туда же:
+    `accrued` называет, сколько БЫЛО БЫ записано по каждому году, журнал не меняется."""
     await _require_main_leave_type(session, leave_type_id)
     employee = await _lock_employee(session, employee_id)
     if employee is None:
@@ -626,6 +644,7 @@ async def accrue_all_working_years(
                 as_of=year_as_of,
                 working_year_start=start,
                 attribution=attribution,
+                write=write,
             )
         except AccrualClosedError as error:  # защитно: между проверкой и записью
             skipped[start] = str(error)
@@ -919,6 +938,7 @@ async def accrue_before_read(
     employee_id: int,
     as_of: datetime.date,
     zone: zoneinfo.ZoneInfo | None = None,
+    write: bool = True,
 ) -> CatchUpResult:
     """Ленивое начисление при чтении (`T-M2-19`, решение заказчика): догоняет
     начисление по основному виду на дату `as_of` через `accrue_all_working_years`
@@ -936,7 +956,8 @@ async def accrue_before_read(
     Годы, закрытые импортом или барьером, - не ошибка: они приходят в
     `skipped`. Отказ самого начисления (не закрытый год: `BalanceEntryError`,
     `LeaveTypeNotSeededError`) НЕ перехватывается - устаревшее число молча не
-    отдаётся. `excluded_days` = 0 - оговорка до периодов без содержания (M3)."""
+    отдаётся. `excluded_days` = 0 - оговорка до периодов без содержания (M3). `write=False` - расчёт
+    без записи (`forecast_accrual`)."""
     leave_type_id = await session.scalar(
         select(LeaveType.id).where(LeaveType.code == MAIN_LEAVE_TYPE_CODE)
     )
@@ -945,7 +966,39 @@ async def accrue_before_read(
             f"В справочнике нет основного вида отпуска {MAIN_LEAVE_TYPE_CODE!r}."
         )
     return await accrue_all_working_years(
-        session, employee_id=employee_id, leave_type_id=leave_type_id, as_of=as_of, zone=zone
+        session,
+        employee_id=employee_id,
+        leave_type_id=leave_type_id,
+        as_of=as_of,
+        zone=zone,
+        write=write,
+    )
+
+
+async def forecast_accrual(
+    session: AsyncSession,
+    *,
+    employee_id: int,
+    as_of: datetime.date,
+    zone: zoneinfo.ZoneInfo | None = None,
+) -> CatchUpResult:
+    """ПРОГНОЗ (`T-M2-33`, `FR-BAL-002/2`): сколько начисления по основному виду сверх уже
+    записанного добавилось бы к дате `as_of` позже бизнес-дня, по каждому рабочему году
+    (`CatchUpResult.accrued`: начало года -> прогнозное количество, только больше нуля). Это
+    ЛЕНИВОЕ НАЧИСЛЕНИЕ БЕЗ ЗАПИСИ (`accrue_before_read(write=False)`): те же шаги, барьер
+    появления карточки, закрытие начальным остатком, остановка на дате увольнения,
+    `excluded_days` = 0 (`T-M3-37`). Прогноз остатка = записанное + это; журнал не меняется.
+
+    ГРАНИЦЫ: учитывает ТОЛЬКО начисление (заявок и графика в Системе нет, M3-M4; подпись на
+    экране говорит это прямо); перенос остатка между годами не участвует (`carry_over_policy`,
+    `T-M3-30`); вызывать для даты позже бизнес-дня, для прошлой даты записанное не меняется и
+    прогнозом не называется. Дату дальше предела горизонта (`FORECAST_HORIZON_YEARS`) отсекает
+    вызывающий: функция сама её не проверяет. Стоимость определяется СТАЖЕМ сотрудника (числом
+    рабочих лет от приёма), а не расстоянием до даты (измерено ревью PR #201: стаж 26 лет, +1 день -
+    318 операторов, +5 лет - 343); прогноз вдвое дороже обычного чтения (два прохода по годам).
+    Замок строки сотрудника берётся, как у записи."""
+    return await accrue_before_read(
+        session, employee_id=employee_id, as_of=as_of, zone=zone, write=False
     )
 
 

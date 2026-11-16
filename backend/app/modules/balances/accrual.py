@@ -74,6 +74,11 @@ def _anniversary(hire_date: datetime.date, years: int) -> datetime.date:
     return _add_months(hire_date, years * MONTHS_IN_YEAR)
 
 
+def add_years(date: datetime.date, years: int) -> datetime.date:
+    """`date` + `years` лет; 29.02 + год = 28.02 (как годовщина приёма)."""
+    return _anniversary(date, years)
+
+
 def working_year_start_on(hire_date: datetime.date, year_index: int) -> datetime.date:
     """Начало `year_index`-го рабочего года (0 - первый): годовщина приёма."""
     return _anniversary(hire_date, year_index)

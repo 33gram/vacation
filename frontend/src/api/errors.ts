@@ -50,6 +50,7 @@ export const FIELD_ERROR_PREFIXES = [
   "is_active",
   "balance_tracked",
   "entry_date",
+  "as_of",
 ] as const;
 
 /** ЕДИНСТВЕННЫЙ разбор префиксов полей (`T-M2-27`). Текст — один или несколько отказов вида

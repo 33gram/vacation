@@ -320,7 +320,9 @@ async def test_termination_date_before_hire_date_is_rejected_and_leaves_no_trace
     assert response.status_code == 400
     assert response.json()["detail"].startswith("termination_date: ")
     db_session.expire_all()
-    row = (await db_session.execute(select(Employee).where(Employee.id == employee_id))).scalar_one()
+    row = (
+        await db_session.execute(select(Employee).where(Employee.id == employee_id))
+    ).scalar_one()
     assert row.employment_status == "active"
     assert row.termination_date is None
     account_row = (
@@ -351,9 +353,12 @@ async def test_future_termination_date_is_accepted(db_session, api_client) -> No
     """`FR-EMP-004/3`: дата позже бизнес-дня принимается (увольнение с отработкой).
     Что начисление и прогноз за датой увольнения не растут, держат
     `test_terminated_accrual_stops_at_the_termination_date_even_a_year_later`
-    (`test_lazy_accrual.py`) и `test_a_terminated_employee_forecast_does_not_grow_past_the_termination_date`
+    (`test_lazy_accrual.py`) и
+    `test_a_terminated_employee_forecast_does_not_grow_past_the_termination_date`
     (`test_balance_forecast.py`); здесь они не дублируются. Доступ при этом закрывается
-    НЕМЕДЛЕННО - это расхождение с `FR-EMP-004/4`, его ведёт `T-M2-43`, тест его не закрепляет."""
+    НЕМЕДЛЕННО - это расхождение с критерием о доступе до даты увольнения, его ведёт `T-M2-43`
+    (номер критерия здесь не пишется: `_KNOWN_GAPS` считал бы его покрытым), тест его
+    не закрепляет."""
     employee = await _deactivation_target(
         db_session, "deact-future@company.local", datetime.date(2020, 1, 1)
     )

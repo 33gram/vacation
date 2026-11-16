@@ -20,7 +20,7 @@ import pytest
 from sqlalchemy import func, select, text
 
 from app.models.employee import Employee
-from app.models.leave_balance_entry import LeaveBalanceEntry
+from app.models.leave_balance_entry import INITIAL_IMPORT, LeaveBalanceEntry
 from app.modules.balances.accrual import compute_accrual
 from app.modules.balances.service import accrue_all_working_years, adjust_balance
 from app.modules.business_rules import business_day
@@ -344,3 +344,55 @@ async def test_a_kind_without_accrual_keeps_recorded_numbers_and_no_forecast_val
     assert other["total_balance"] == recorded_other["total_balance"]
     assert Decimal(other["balance"]) == 0  # год даты (с 27.04.2027) событий не имеет: записанное
     assert await _event_count(db_session, employee.id) == before  # журнал не изменился
+
+
+async def test_the_endpoint_forecast_leaves_out_years_that_ended_before_the_card_was_created(
+    db_session, api_client
+) -> None:
+    # П-1 ревью PR #201: `_employee` по умолчанию заводит карточку в 2000 году, и барьер
+    # появления карточки (`T-M2-19`) в тестах ЭНДПОИНТА не срабатывал. Здесь приём 01.05.2023,
+    # карточка 01.06.2025: годы 2023-24 и 2024-25 закончились до карточки и в прогноз не входят.
+    hire = datetime.date(2023, 5, 1)
+    far = TODAY + datetime.timedelta(days=400)  # 18.12.2027
+    ctx, employee, own = await _employee(
+        db_session,
+        hire=hire,
+        created_at=datetime.datetime(2025, 6, 1, tzinfo=datetime.UTC),
+    )
+
+    main = _main(await _get(api_client, employee, own, far))
+
+    # Независимая сумма за все годы минус два пропущенных полных года по 28.
+    assert Decimal(main["total_balance"]) == expected_total_accrual(hire, far) - 2 * 28
+    assert Decimal(main["total_balance"]) < expected_total_accrual(hire, far)
+    assert await _event_count(db_session, employee.id) > 0  # лениво записанное до бизнес-дня
+    assert Decimal(main["forecast_accrual"]) > 0
+
+
+async def test_the_endpoint_forecast_leaves_out_years_closed_by_an_initial_import(
+    db_session, api_client
+) -> None:
+    # П-1 ревью PR #201: год, закрытый начальным остатком (`initial_import`, `T-M1-36`), не
+    # начисляется ни при записи, ни в прогнозе; в сумме - только сам остаток.
+    hire = datetime.date(2023, 5, 1)
+    far = TODAY + datetime.timedelta(days=400)  # 18.12.2027
+    ctx, employee, own = await _employee(db_session, hire=hire)
+    db_session.add(
+        LeaveBalanceEntry(
+            employee_id=employee.id,
+            leave_type_id=ctx.leave_type_id,
+            working_year_start=datetime.date(2025, 5, 1),
+            working_year_end=datetime.date(2026, 5, 1),
+            entry_type=INITIAL_IMPORT,
+            quantity=Decimal("5"),
+            entry_date=TODAY,
+            actor_account_id=ctx.actor_id,
+        )
+    )
+    await db_session.flush()
+
+    main = _main(await _get(api_client, employee, own, far))
+
+    # Закрыты годы 2023-24, 2024-25, 2025-26 (по 28): остаются 5 импортированных
+    # и начисление за 2026-27 и 2027-28.
+    assert Decimal(main["total_balance"]) == expected_total_accrual(hire, far) - 3 * 28 + 5

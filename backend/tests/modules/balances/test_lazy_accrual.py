@@ -351,6 +351,25 @@ async def test_terminated_accrual_stops_at_the_termination_date_even_a_year_late
     assert again.accrued == {}  # и ещё через год - ничего нового
 
 
+async def test_a_future_termination_date_does_not_change_accrual_before_it(db_session) -> None:
+    # FR-EMP-004/3, T-M2-41: дата увольнения может быть позже бизнес-дня (увольнение с
+    # отработкой). Пока она не наступила, догон идёт как у действующего: `min(as_of, дата)`.
+    # Принят 10.03.2026, уволен с 10.07.2026, прочитан 27.05.2026 (до даты увольнения).
+    ctx = await _employee(db_session, D(2026, 3, 10), _utc(2026, 3, 10))
+    employee = await db_session.get(Employee, ctx.employee_id)
+    employee.employment_status = "terminated"
+    employee.termination_date = D(2026, 7, 10)
+    await db_session.flush()
+
+    result = await _catch_up(db_session, ctx, as_of=D(2026, 5, 27))
+
+    # 2 полных месяца (10.03-09.05) и 17 дней >= 15 округляются вверх: 28 * 3 / 12
+    assert result.accrued == {D(2026, 3, 10): Decimal("7.00")}
+    # контроль: не уволенный с той же датой приёма получает то же самое
+    control = await _employee(db_session, D(2026, 3, 10), _utc(2026, 3, 10), "b")
+    assert (await _catch_up(db_session, control, as_of=D(2026, 5, 27))).accrued == result.accrued
+
+
 async def test_terminated_without_a_termination_date_is_a_loud_refusal(db_session) -> None:
     ctx = await _employee(db_session, D(2026, 3, 10), _utc(2026, 3, 10))
     employee = await db_session.get(Employee, ctx.employee_id)

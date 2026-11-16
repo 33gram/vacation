@@ -33,7 +33,7 @@ LOCK_BASE_IMAGE = python@sha256:02108f5d322dd89f1c9e552442c25acb0543dfdbc455693a
 # переменная при вызове.
 LOCK_UPGRADE ?=
 
-.PHONY: up down logs test-backend test-frontend test-e2e lint-backend lint-frontend openapi-export openapi-client check-conflict-markers check-task-checkbox check-basis-version lock-backend
+.PHONY: up down logs test-backend test-frontend test-e2e lint-backend lint-frontend openapi-export openapi-client check-conflict-markers check-task-checkbox check-basis-version lock-backend migrate
 
 up:
 	@test -f .env || { echo "Нет .env — выполните: cp .env.example .env"; exit 1; }
@@ -41,6 +41,15 @@ up:
 
 down:
 	$(COMPOSE) down
+
+# T-M2-42: миграции dev-базы - отдельное решение разработчика, `up` их НЕ
+# применяет (как и `alembic upgrade head` стоит только в `test-backend` и
+# `test-e2e`, для тестовой и e2e-баз). `run --rm`, а не `exec`: одноразовый
+# контейнер не исполняет `lifespan`, поэтому работает и тогда, когда
+# `backend` не стартует из-за отставшей схемы (`validate_business_rules`).
+migrate:
+	@test -f .env || { echo "Нет .env — выполните: cp .env.example .env"; exit 1; }
+	$(COMPOSE) run --rm backend alembic upgrade head
 
 logs:
 	$(COMPOSE) logs -f

@@ -5,9 +5,10 @@ from __future__ import annotations
 
 import datetime
 import itertools
+from decimal import Decimal
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import select, text
 
 from app.core.config import get_settings
 from app.core.crypto import encrypt
@@ -289,32 +290,56 @@ async def _deactivation_target(db_session, email: str, hire_date: datetime.date)
     return employee
 
 
-async def _balance_entry_count(db_session, employee_id: int) -> int:
-    return (
-        await db_session.execute(
-            select(func.count())
-            .select_from(LeaveBalanceEntry)
-            .where(LeaveBalanceEntry.employee_id == employee_id)
-        )
+async def _seed_balance_events(db_session, employee_id: int) -> None:
+    """Два события журнала (начисление и списание) до отказа: проверка «журнал не тронут» без
+    них доказывала бы только ноль (`deactivate_employee` в журнал сегодня не пишет, `T-M1-37`)."""
+    leave_type_id = (
+        await db_session.execute(text("SELECT id FROM leave_types WHERE code = 'annual_paid'"))
     ).scalar_one()
+    for entry_type, quantity in (("accrual", "10.00"), ("usage", "-3.00")):
+        db_session.add(
+            LeaveBalanceEntry(
+                employee_id=employee_id,
+                leave_type_id=leave_type_id,
+                working_year_start=datetime.date(2026, 3, 10),
+                working_year_end=datetime.date(2027, 3, 10),
+                entry_type=entry_type,
+                quantity=Decimal(quantity),
+                entry_date=datetime.date(2026, 4, 1),
+            )
+        )
+    await db_session.flush()
+
+
+async def _balance_entries(db_session, employee_id: int) -> list[tuple[int, str, Decimal]]:
+    rows = await db_session.execute(
+        select(
+            LeaveBalanceEntry.id, LeaveBalanceEntry.entry_type, LeaveBalanceEntry.quantity
+        )
+        .where(LeaveBalanceEntry.employee_id == employee_id)
+        .order_by(LeaveBalanceEntry.id)
+    )
+    return [tuple(row) for row in rows]
 
 
 async def test_termination_date_before_hire_date_is_rejected_and_leaves_no_trace(
     db_session, api_client
 ) -> None:
-    """`FR-EMP-004/3`: дата раньше даты приёма - 400 с префиксом поля, карточка,
-    учётная запись и журнал остатка не тронуты."""
+    """`FR-EMP-004/3`: дата раньше даты приёма - 400 с префиксом поля, карточка, учётная
+    запись и события журнала (они заведены ДО отказа: id, тип, количество) не тронуты."""
     employee = await _deactivation_target(
         db_session, "deact-before-hire@company.local", datetime.date(2026, 3, 10)
     )
-    admin = await _make_admin(db_session)
+    headers = bearer_header(await _make_admin(db_session))
     employee_id = employee.id
-    entries_before = await _balance_entry_count(db_session, employee_id)
+    await _seed_balance_events(db_session, employee_id)
+    entries_before = await _balance_entries(db_session, employee_id)
+    assert len(entries_before) == 2
 
     response = await api_client.post(
         f"/api/employees/{employee_id}/deactivate",
         json={"termination_date": "2026-03-09"},
-        headers=bearer_header(admin),
+        headers=headers,
     )
 
     assert response.status_code == 400
@@ -329,7 +354,15 @@ async def test_termination_date_before_hire_date_is_rejected_and_leaves_no_trace
         await db_session.execute(select(Account).where(Account.employee_id == employee_id))
     ).scalar_one()
     assert account_row.is_active is True
-    assert await _balance_entry_count(db_session, employee_id) == entries_before
+    assert await _balance_entries(db_session, employee_id) == entries_before
+
+    # Откат: тот же клиент и та же сессия после отказа работают, и верная дата проходит.
+    retry = await api_client.post(
+        f"/api/employees/{employee_id}/deactivate",
+        json={"termination_date": "2026-03-10"},
+        headers=headers,
+    )
+    assert retry.status_code == 200
 
 
 async def test_termination_date_equal_to_hire_date_is_accepted(db_session, api_client) -> None:

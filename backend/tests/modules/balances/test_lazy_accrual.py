@@ -351,23 +351,35 @@ async def test_terminated_accrual_stops_at_the_termination_date_even_a_year_late
     assert again.accrued == {}  # и ещё через год - ничего нового
 
 
-async def test_a_future_termination_date_does_not_change_accrual_before_it(db_session) -> None:
+async def test_a_future_termination_date_stops_accrual_only_when_it_arrives(db_session) -> None:
     # FR-EMP-004/3, T-M2-41: дата увольнения может быть позже бизнес-дня (увольнение с
-    # отработкой). Пока она не наступила, догон идёт как у действующего: `min(as_of, дата)`.
-    # Принят 10.03.2026, уволен с 10.07.2026, прочитан 27.05.2026 (до даты увольнения).
+    # отработкой), и карточка при этом сразу `terminated`. Два чтения одной карточки:
+    # ДО даты увольнения догон идёт как у действующего (не остановились раньше времени),
+    # ПОСЛЕ неё - не дальше даты (остановка на `termination_date` работает). Второе чтение
+    # охраняет остановку: без `min(as_of, termination_date)` оно начислило бы год вперёд.
+    # Принят 10.03.2026, уволен с 10.07.2026.
     ctx = await _employee(db_session, D(2026, 3, 10), _utc(2026, 3, 10))
     employee = await db_session.get(Employee, ctx.employee_id)
     employee.employment_status = "terminated"
     employee.termination_date = D(2026, 7, 10)
     await db_session.flush()
 
-    result = await _catch_up(db_session, ctx, as_of=D(2026, 5, 27))
-
+    before = await _catch_up(db_session, ctx, as_of=D(2026, 5, 27))
     # 2 полных месяца (10.03-09.05) и 17 дней >= 15 округляются вверх: 28 * 3 / 12
-    assert result.accrued == {D(2026, 3, 10): Decimal("7.00")}
-    # контроль: не уволенный с той же датой приёма получает то же самое
-    control = await _employee(db_session, D(2026, 3, 10), _utc(2026, 3, 10), "b")
-    assert (await _catch_up(db_session, control, as_of=D(2026, 5, 27))).accrued == result.accrued
+    assert before.accrued == {D(2026, 3, 10): Decimal("7.00")}
+
+    after = await _catch_up(db_session, ctx, as_of=D(2027, 10, 27))
+    # дата наступила и прошла: добор до 4 полных месяцев (28 * 4 / 12 = 9.33), то есть
+    # +2.33 к уже записанным 7.00, и ни одного шага после даты увольнения
+    assert after.accrued == {D(2026, 3, 10): Decimal("2.33")}
+    entries = (
+        await db_session.execute(
+            select(LeaveBalanceEntry.entry_date).where(
+                LeaveBalanceEntry.employee_id == ctx.employee_id
+            )
+        )
+    ).scalars()
+    assert max(entries) == D(2026, 6, 24)
 
 
 async def test_terminated_without_a_termination_date_is_a_loud_refusal(db_session) -> None:

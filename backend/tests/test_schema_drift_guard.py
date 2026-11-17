@@ -20,14 +20,20 @@
 пробной схеме расходятся 8 колонок, у которых в модели `default=` на стороне
 Python, а в миграции `server_default`, - вынесено в `T-M1-63`), триггеры (в
 миграциях их нет, сверки для них нет), данные (сидирование параметров), смысл
-«VARCHAR + CHECK вместо enum».
+«VARCHAR + CHECK вместо enum». Слепые зоны самого `alembic check` (измерено,
+`alembic/ddl/impl.py`, `_column_args_match`: параметры типа сравниваются, только
+когда их число совпадает): `varchar(N)` против `String()` без длины и `COLLATE` на
+одной стороне, имя ограничения внешнего ключа; снятие первичного ключа ловит только
+сверка индексов. `String(N)` в моделях сегодня нет, так что это граница, а не дефект.
 """
 
+import os
 import subprocess
 import sys
 from pathlib import Path
 
-from sqlalchemy import CheckConstraint, text
+from sqlalchemy import CheckConstraint, UniqueConstraint, text
+from sqlalchemy.engine import make_url
 
 from app.db.base import Base
 from app.db.session import get_engine
@@ -40,9 +46,9 @@ MIN_INDEXES = 16
 
 _PROBE_SCHEMA = "drift_probe"
 
-# Определения читаются обеих схем одним запросом и одной функцией; фильтр по схеме
-# структурный (системные домены `information_schema` тоже имеют `contype = 'c'`,
-# но на наших таблицах их нет).
+# Определения читаются обеих схем одним запросом и одной функцией. Системные домены
+# `information_schema` тоже имеют `contype = 'c'`, но отсекает их не фильтр по схеме,
+# а `JOIN pg_class ON cls.oid = con.conrelid`: у ограничения домена `conrelid = 0`.
 _CHECKS_SQL = text(
     """
     SELECT cls.relname, con.conname, pg_get_constraintdef(con.oid)
@@ -124,7 +130,10 @@ async def test_check_constraints_of_the_model_match_the_database() -> None:
     assert len(from_model) >= MIN_CHECK_CONSTRAINTS
 
     differences = _differences(from_model, from_migrations)
-    assert differences is None, f"CHECK модели и схемы из миграций разошлись: {differences}"
+    assert differences is None, (
+        f"CHECK модели и схемы из миграций разошлись: {differences}. Если расхождение "
+        "только в форме перечня, текст мог быть перепарсен `ALTER … TYPE`."
+    )
 
 
 async def test_indexes_of_the_model_match_the_database() -> None:
@@ -134,7 +143,11 @@ async def test_indexes_of_the_model_match_the_database() -> None:
     ровно оно, и подстановка ничего другого не прячет: имя схемы стоит только
     после `ON`, а имена таблиц, колонок и выражения от неё не зависят.
     Таблица `alembic_version` не из модели (её ведёт сам Alembic), поэтому
-    индекс из базы берётся только для таблиц `Base.metadata`."""
+    индекс из базы берётся только для таблиц `Base.metadata`.
+
+    Второй тест нужен и сверх `alembic check`: `PostgresqlImpl.compare_indexes`
+    сравнивает выражения, уникальность и `nulls_not_distinct`, а `WHERE`
+    (частичный индекс) и `INCLUDE` не сравнивает - их ловит только этот тест."""
     from_model, from_migrations = await _read_model_and_migrations(_INDEXES_SQL)
     from_model = {
         key: definition.replace(f"{_PROBE_SCHEMA}.", "public.")
@@ -146,6 +159,15 @@ async def test_indexes_of_the_model_match_the_database() -> None:
         if key[0] in Base.metadata.tables
     }
 
+    # Как у CHECK: найденное равно объявленному (первичные ключи + UniqueConstraint
+    # + Index), иначе обнаружение, ослепшее на часть индексов, прошло бы под полом.
+    declared = sum(
+        (1 if table.primary_key.columns else 0)
+        + sum(isinstance(constraint, UniqueConstraint) for constraint in table.constraints)
+        + len(table.indexes)
+        for table in Base.metadata.tables.values()
+    )
+    assert len(from_model) == declared
     assert len(from_model) >= MIN_INDEXES
     differences = _differences(from_model, from_migrations)
     assert differences is None, f"индексы модели и схемы из миграций разошлись: {differences}"
@@ -158,9 +180,15 @@ def test_alembic_check_finds_no_drift_in_columns_types_and_indexes() -> None:
     `asyncio.run`, что внутри процесса pytest сбросило бы цикл событий,
     общий для всех async-тестов сессии (`conftest.event_loop`)."""
     backend = Path(__file__).resolve().parents[1]
+    # База подпроцесса - та же, с которой работает тест, а не выбранная им самим:
+    # измерено ревью, что при `.env` вне `backend` (cwd подпроцесса) он уходил в
+    # dev-базу, а тест давал 3 passed; охранник `conftest` смотрит только на базу теста.
+    database_url = get_engine().url.render_as_string(hide_password=False)
+    assert (make_url(database_url).database or "").endswith("_test")
     result = subprocess.run(
         [sys.executable, "-m", "alembic", "-c", str(backend / "alembic.ini"), "check"],
         cwd=backend,
+        env={**os.environ, "DATABASE_URL": database_url},
         capture_output=True,
         text=True,
         timeout=120,

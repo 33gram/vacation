@@ -526,6 +526,20 @@ async def deactivate_employee(
     if account is None:
         raise ValueError(f"У сотрудника {employee_id} нет привязанной учётной записи")
 
+    # FR-EMP-004/3: раньше даты приёма - отказ; позже бизнес-дня и давняя дата после
+    # приёма допустимы (решение заказчика, `requirements.md` раздел 13 п. 42). Проверка здесь,
+    # а не в схеме: даты приёма в теле запроса нет, она у карточки. Стоит ДО любой записи
+    # карточки и учётной записи, поэтому откатывать нечего; журнал остатка эта операция сегодня
+    # не пишет вовсе (`T-M1-37` не сделана), и когда начнёт, запись обязана идти после этой
+    # проверки - иначе отказ оставит событие (тест `..._leaves_no_trace` засеивает события и
+    # краснеет на такой записи). Префикс `termination_date:` - машиночитаемый (`CLAUDE.md`
+    # «Соглашения»), его снимает интерфейс (`FIELD_ERROR_PREFIXES`).
+    if payload.termination_date < employee.hire_date:
+        raise ValueError(
+            "termination_date: Дата увольнения не может быть раньше даты приёма "
+            f"({employee.hire_date.strftime('%d.%m.%Y')})."
+        )
+
     # PR #139 review, verification item 4: same write skew PR #138 closed
     # for manager_id cycles, on a different pair of paths. Under READ
     # COMMITTED, a concurrent PUT assigning employee.id as someone's

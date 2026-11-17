@@ -414,6 +414,48 @@ describe("422 validation errors (T-M2-28)", () => {
 });
 
 
+describe("a termination date before the hire date (FR-EMP-004/3, T-M2-41)", () => {
+  it("shows the server's refusal in the dialog without the machine-readable field prefix", async () => {
+    setAccessToken("token");
+    setFetchHandler((method, pathname) => {
+      if (method === "GET" && pathname === "/api/auth/me") {
+        return { status: 200, body: meResponse({ role: "hr_admin", must_change_password: false }) };
+      }
+      if (method === "GET" && pathname === "/api/departments") {
+        return { status: 200, body: DEPARTMENTS };
+      }
+      if (method === "GET" && pathname === "/api/employees") {
+        return { status: 200, body: [MANAGER, EMPLOYEE] };
+      }
+      if (method === "GET" && pathname === "/api/employees/2") {
+        return { status: 200, body: EMPLOYEE };
+      }
+      if (method === "POST" && pathname === "/api/employees/2/deactivate") {
+        return {
+          status: 400,
+          body: {
+            detail: "termination_date: Дата увольнения не может быть раньше даты приёма (10.03.2026).",
+          },
+        };
+      }
+      return null;
+    });
+
+    renderApp("/employees/2");
+    const user = userEvent.setup();
+    await screen.findByRole("heading", { name: "Петров Пётр Петрович" });
+    await user.click(screen.getByRole("button", { name: "Деактивировать" }));
+    const dialog = await screen.findByRole("dialog");
+    await user.click(within(dialog).getByRole("button", { name: "Деактивировать" }));
+
+    expect(
+      await within(dialog).findByText("Дата увольнения не может быть раньше даты приёма (10.03.2026)."),
+    ).toBeInTheDocument();
+    expect(within(dialog).queryByText(/termination_date:/)).not.toBeInTheDocument();
+    expect(screen.queryByText("Не удалось деактивировать сотрудника.")).not.toBeInTheDocument();
+  });
+});
+
 describe("the default termination date is the server's business day (T-M2-38)", () => {
   afterEach(() => {
     vi.useRealTimers();

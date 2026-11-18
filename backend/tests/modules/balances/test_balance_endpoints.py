@@ -481,6 +481,38 @@ async def test_fr_bal_004_an_adjustment_writes_one_event_with_the_author_and_the
     assert event.working_year_start <= entry_date < event.working_year_end
 
 
+async def test_fr_bal_004_an_adjustment_of_an_untracked_active_type_is_written_and_shown(
+    db_session, api_client
+) -> None:
+    # Измерение к `T-M1-36` (PR #206 check, пункт 2): `adjust_balance` смотрит только
+    # `is_active` и `balance_tracked` не читает, а список остатков показывает вид, по которому
+    # у сотрудника есть события, даже если признак ложь - ручная корректировка по такому виду
+    # рабочий путь, а не неизвестность.
+    ctx, employee, own = await _setup(db_session)
+    hr = await _account(db_session, "hr_admin", "hr-untracked@company.local")
+    await db_session.execute(
+        text("UPDATE leave_types SET balance_tracked = false WHERE code = 'time_off'")
+    )
+    time_off_id = await db_session.scalar(
+        text("SELECT id FROM leave_types WHERE code = 'time_off'")
+    )
+    before = await api_client.get(_url(employee.id), headers=bearer_header(own))
+    assert "time_off" not in {item["code"] for item in before.json()["balances"]}  # не показан
+
+    response = await api_client.post(
+        _url(employee.id, "/adjust"),
+        json={"leave_type_id": time_off_id, "quantity": "2", "reason": "Перенос отгулов"},
+        headers=bearer_header(hr),
+    )
+
+    assert response.status_code == 200
+    events = [e for e in await _events(db_session, employee.id) if e.leave_type_id == time_off_id]
+    assert [(e.entry_type, e.quantity) for e in events] == [(MANUAL_ADJUSTMENT, Decimal("2"))]
+    after = await api_client.get(_url(employee.id), headers=bearer_header(own))
+    by_code = {item["code"]: item for item in after.json()["balances"]}
+    assert Decimal(by_code["time_off"]["balance"]) == Decimal("2")  # остаток по виду виден
+
+
 async def test_fr_bal_004_an_adjustment_is_preceded_by_the_lazy_accrual(
     db_session, api_client
 ) -> None:

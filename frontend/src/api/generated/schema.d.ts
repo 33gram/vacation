@@ -772,6 +772,8 @@ export interface components {
             rejected_count: number;
             /** Errors */
             errors: components["schemas"]["ImportRowError"][];
+            /** Warning Rows */
+            warning_rows: number[];
         };
         /** LdapSettingsIn */
         LdapSettingsIn: {

@@ -19,6 +19,9 @@ const FORMAT_COLUMNS = [
   "work_schedule_type",
   "manager_personnel_number",
   "leave_category",
+  "initial_balance_annual_paid",
+  "initial_balance_additional_paid",
+  "initial_balance_time_off",
 ];
 
 /** Импорт сотрудников (`FR-EMP-003`) — двухшаговый мастер: у
@@ -102,6 +105,27 @@ export function EmployeeImportPage() {
             ]}
           />
         )}
+        {summary.warning_rows.length > 0 && (
+          // Третий перечень сводки (`FR-EMP-003/7`): строки приняты, это не ошибки. Только
+          // номера строк - ни ФИО, ни e-mail, ни табельных номеров.
+          <Alert
+            type="warning"
+            showIcon
+            style={{ marginTop: 24, maxWidth: 640 }}
+            message="Предупреждения"
+            description={
+              <>
+                <Typography.Paragraph>
+                  Строки приняты, но у сотрудников с датой приёма раньше дня импорта нет
+                  начального остатка по основному отпуску. Без него остаток за текущий рабочий
+                  год будет посчитан с его начала, хотя использованное до импорта Системе
+                  неизвестно. Номера строк:
+                </Typography.Paragraph>
+                <Typography.Text>{summary.warning_rows.join(", ")}</Typography.Text>
+              </>
+            }
+          />
+        )}
         <Button style={{ marginTop: 24 }} onClick={() => setStep("select")}>
           Назад
         </Button>
@@ -117,6 +141,12 @@ export function EmployeeImportPage() {
         <Typography.Text code>{FORMAT_COLUMNS.join(", ")}</Typography.Text>. Подразделение —
         по названию, руководитель — по табельному номеру (пусто только для вершины иерархии).
         Дата приёма — в формате ГГГГ-ММ-ДД. Категория для расчёта может быть пустой.
+      </Typography.Paragraph>
+      <Typography.Paragraph>
+        Три последние колонки — начальный остаток на день импорта по основному оплачиваемому,
+        дополнительному отпуску и отгулам, в днях. Колонки должны быть в заголовке, значение
+        может быть пустым; ноль и пусто — остатка нет. Разделитель — запятая или точка, не больше
+        двух знаков после неё; отрицательное число — ошибка строки.
       </Typography.Paragraph>
       <Typography.Paragraph type="secondary">
         Предпросмотра нет: корректные строки записываются сразу, отклонённые — перечисляются в

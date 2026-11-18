@@ -22,6 +22,17 @@ from openpyxl import load_workbook
 # пустым). Обе последние КОЛОНКИ обязаны присутствовать в заголовке;
 # пустые ЗНАЧЕНИЯ в них — не ошибка (руководитель пуст только для вершины
 # иерархии, leave_category не заполняется на MVP).
+#
+# Три последние колонки - НАЧАЛЬНЫЙ ОСТАТОК на дату импорта по видам, по которым Система ведёт
+# остаток (`FR-EMP-003/3`, `T-M1-36`): имя колонки - `initial_balance_` + код вида
+# (`BALANCE_COLUMNS`). Они обязаны присутствовать в заголовке по той же причине, что
+# `leave_category`: файл без них - файл не той версии, и молчаливое «остатков нет» было бы
+# ошибкой выгрузки, принятой за факт; пустое ЗНАЧЕНИЕ допустимо (события нет).
+BALANCE_COLUMNS = {
+    "initial_balance_annual_paid": "annual_paid",
+    "initial_balance_additional_paid": "additional_paid",
+    "initial_balance_time_off": "time_off",
+}
 EXPECTED_COLUMNS = (
     "full_name",
     "personnel_number",
@@ -32,6 +43,7 @@ EXPECTED_COLUMNS = (
     "work_schedule_type",
     "manager_personnel_number",
     "leave_category",
+    *BALANCE_COLUMNS,
 )
 
 # Жёсткие лимиты на загруженный файл (NFR-SCALE-001: штат до 750

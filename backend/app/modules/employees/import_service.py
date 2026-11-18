@@ -77,7 +77,9 @@ broken_chains`) работает над данными, уже загружен�
 from __future__ import annotations
 
 import datetime
+import re
 from dataclasses import dataclass
+from decimal import Decimal
 from typing import Literal, NamedTuple
 
 from sqlalchemy import select
@@ -87,9 +89,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.account import Account
 from app.models.department import Department
 from app.models.employee import WORK_SCHEDULE_TYPES, Employee
+from app.models.leave_type import LeaveType
 from app.modules.auth.rbac import MAX_MANAGEMENT_CHAIN_DEPTH
+from app.modules.balances.service import BalanceEntryError, import_initial_balance
+from app.modules.business_rules.business_day import business_today
 from app.modules.employees.employee_service import lock_management_chain
-from app.modules.employees.import_parsing import ImportFileError, ParsedRow
+from app.modules.employees.import_parsing import BALANCE_COLUMNS, ImportFileError, ParsedRow
 from app.modules.employees.unique_violations import unique_violation_field
 
 # Гонка на personnel_number/email (см. докстринг модуля) сходится за
@@ -149,6 +154,9 @@ class ImportResult:
     accepted_count: int
     rejected_count: int
     errors: list[RowError]
+    # Номера принятых строк с приёмом раньше дня импорта и без начального остатка по основному
+    # виду (`FR-EMP-003/7`); только номера - ни ФИО, ни e-mail, ни табельных номеров.
+    warning_rows: list[int]
 
 
 @dataclass
@@ -163,6 +171,40 @@ class _Candidate:
     work_schedule_type: str
     manager_personnel_number: str | None
     leave_category: str | None
+    # Начальные остатки по КОДУ вида: только строго положительные (ноль и пусто - события нет).
+    balances: dict[str, Decimal]
+
+
+# Основной вид: по нему идёт начисление, поэтому отсутствие остатка именно по нему даёт
+# предупреждение (`FR-EMP-003/7`, раздел 13 п. 43, выбор (а)).
+_MAIN_LEAVE_TYPE_CODE = "annual_paid"
+# `Numeric(7, 2)` колонки `quantity`: не больше пяти знаков до запятой и двух после.
+_BALANCE_NUMBER = re.compile(r"^[0-9]{1,5}([.,][0-9]{1,2})?$")
+
+
+def _parse_balance(raw: str) -> tuple[Decimal | None, str | None]:
+    """(значение, причина отказа). Десятичный разделитель - запятая или точка; минус в файле -
+    ошибка (`FR-EMP-003/6`: скорее ошибка выгрузки, чем факт). Не больше двух знаков после
+    разделителя и пяти до него - иначе значение не легло бы в `Numeric(7, 2)`."""
+    text = raw.strip()
+    if text.startswith("-"):
+        return None, f"отрицательный остаток «{raw}»: исправляется ручной корректировкой"
+    if not _BALANCE_NUMBER.fullmatch(text):
+        return None, (
+            f"некорректный остаток «{raw}»: нужно число, не больше двух знаков после "
+            "запятой и пяти до неё"
+        )
+    return Decimal(text.replace(",", ".")), None
+
+
+async def _load_tracked_leave_type_ids(session: AsyncSession) -> dict[str, int]:
+    """Код -> id видов, по которым ведётся остаток (положительное значение в такой колонке
+    принимается только по ним): проверяется в фазе 1, чтобы запись остатка в фазе 2 не могла
+    отказать - отказ после создания карточек отклонил бы весь импорт, а не строку."""
+    result = await session.execute(
+        select(LeaveType.code, LeaveType.id).where(LeaveType.balance_tracked.is_(True))
+    )
+    return {row.code: row.id for row in result.all()}
 
 
 async def _load_existing(session: AsyncSession):
@@ -198,6 +240,8 @@ def _validate_rows(
     *,
     existing: dict,
     departments_by_name: dict[str, list[int]],
+    today: datetime.date,
+    tracked_leave_types: dict[str, int],
 ) -> tuple[dict[str, _Candidate], list[RowError]]:
     errors: list[RowError] = []
     candidates: dict[str, _Candidate] = {}
@@ -232,6 +276,24 @@ def _validate_rows(
                 row_errors.append(
                     RowError(row.row_number, "hire_date", f"некорректная дата: «{hire_date_raw}»")
                 )
+
+        balances: dict[str, Decimal] = {}
+        for column, leave_type_code in BALANCE_COLUMNS.items():
+            raw_balance = values.get(column)
+            if raw_balance is None:
+                continue
+            amount, problem = _parse_balance(raw_balance)
+            if problem is None and amount is not None and amount > 0:
+                if leave_type_code not in tracked_leave_types:
+                    problem = f"по виду отпуска «{leave_type_code}» остаток не ведётся"
+                elif hire_date is not None and hire_date > today:
+                    problem = (
+                        "остаток на дату импорта невозможен: дата приёма позже дня импорта"
+                    )
+            if problem is not None:
+                row_errors.append(RowError(row.row_number, column, problem))
+            elif amount is not None and amount > 0:
+                balances[leave_type_code] = amount
 
         if work_schedule_type is not None and work_schedule_type not in WORK_SCHEDULE_TYPES:
             row_errors.append(
@@ -325,6 +387,7 @@ def _validate_rows(
             work_schedule_type=work_schedule_type,
             manager_personnel_number=manager_personnel_number,
             leave_category=leave_category,
+            balances=balances,
         )
 
     return candidates, errors
@@ -492,6 +555,10 @@ async def _write_accepted(
     session: AsyncSession,
     accepted: list[_Candidate],
     manager_target: dict[str, _ManagerTarget],
+    *,
+    today: datetime.date,
+    tracked_leave_types: dict[str, int],
+    actor_account_id: int | None,
 ) -> None:
     employees_by_pn: dict[str, Employee] = {}
     for candidate in accepted:
@@ -536,10 +603,35 @@ async def _write_accepted(
         for candidate in accepted
     )
 
+    # Начальные остатки - той же транзакцией (`FR-EMP-003/4`), только через функцию модуля
+    # `balances`: журнала отсюда не касаются. Всё, чем она может отказать, проверено в фазе 1,
+    # но не всё можно проверить заранее (вид могли сменить между фазами): отказ здесь не
+    # отклоняет строку, а прерывает весь импорт (`import_employees`), ничего не записано.
+    for candidate in accepted:
+        for leave_type_code, amount in candidate.balances.items():
+            await import_initial_balance(
+                session,
+                employee_id=employees_by_pn[candidate.personnel_number].id,
+                leave_type_id=tracked_leave_types[leave_type_code],
+                quantity=amount,
+                actor_account_id=actor_account_id,
+                entry_date=today,
+            )
+
     await session.commit()
 
 
-async def import_employees(session: AsyncSession, rows: list[ParsedRow]) -> ImportResult:
+async def import_employees(
+    session: AsyncSession,
+    rows: list[ParsedRow],
+    *,
+    actor_account_id: int | None = None,
+) -> ImportResult:
+    """`actor_account_id` - учётная запись, от имени которой идёт импорт: автор событий
+    «начальный остаток» (`FR-EMP-003/8`). Импорт без остатков автора не требует; строка с
+    остатком при `None` прерывает импорт (`BalanceEntryError`, ничего не записано): молчаливого
+    автора по умолчанию нет. Скрипта первичного развёртывания в репозитории НЕТ: контракт
+    держит параметр, а скрипт передаст в него учётную запись первичного администратора."""
     for attempt in range(1, _MAX_WRITE_ATTEMPTS + 1):
         # PR #139 review, замечание C: на всю фазу 1+2 этой попытки, а не
         # только вокруг проверки графа, — снимок employment_status,
@@ -549,9 +641,15 @@ async def import_employees(session: AsyncSession, rows: list[ParsedRow]) -> Impo
         await lock_management_chain(session)
         existing = await _load_existing(session)
         departments_by_name = await _load_departments_by_name(session)
+        today = await business_today(session)
+        tracked_leave_types = await _load_tracked_leave_type_ids(session)
 
         candidates, errors = _validate_rows(
-            rows, existing=existing, departments_by_name=departments_by_name
+            rows,
+            existing=existing,
+            departments_by_name=departments_by_name,
+            today=today,
+            tracked_leave_types=tracked_leave_types,
         )
         manager_target = _resolve_manager_targets(candidates, existing, errors)
         cycle_members = _find_file_cycles(candidates, manager_target)
@@ -563,7 +661,17 @@ async def import_employees(session: AsyncSession, rows: list[ParsedRow]) -> Impo
 
         try:
             if accepted:
-                await _write_accepted(session, accepted, manager_target)
+                await _write_accepted(
+                    session,
+                    accepted,
+                    manager_target,
+                    today=today,
+                    tracked_leave_types=tracked_leave_types,
+                    actor_account_id=actor_account_id,
+                )
+        except BalanceEntryError:
+            await session.rollback()
+            raise
         except IntegrityError as exc:
             await session.rollback()
             field = unique_violation_field(exc)
@@ -585,6 +693,11 @@ async def import_employees(session: AsyncSession, rows: list[ParsedRow]) -> Impo
             accepted_count=len(accepted),
             rejected_count=rejected_count,
             errors=sorted(errors, key=lambda e: (e.row_number, e.field)),
+            warning_rows=sorted(
+                c.row_number
+                for c in accepted
+                if c.hire_date < today and _MAIN_LEAVE_TYPE_CODE not in c.balances
+            ),
         )
 
     raise AssertionError("unreachable: loop above always returns or raises")

@@ -344,8 +344,9 @@ def _import_event(
 async def test_fr_bal_001_4_the_import_year_accrues_only_the_steps_after_the_import_date(
     db_session,
 ) -> None:
-    # FR-BAL-001/4. Остаток 5 на 01.05.2026: шаги 24.03 и 24.04 (2 месяца, 4,67) покрыты им; до 24.10.2026
-    # идут шаги 3-8 (накоплено 18,67), начисляется 18,67 - 4,67 = 14,00 шестью событиями.
+    # FR-BAL-001/4. Остаток 5 на 01.05.2026: шаги 24.03 и 24.04 (2 месяца, 4,67) покрыты им;
+    # до 24.10.2026 идут шаги 3-8 (накоплено 18,67), начисляется 18,67 - 4,67 = 14,00
+    # шестью событиями.
     ctx = await _hired(db_session, D(2026, 3, 10))
     db_session.add(_import_event(ctx, D(2026, 3, 10), Decimal("5"), on_date=D(2026, 5, 1)))
     await db_session.flush()
@@ -543,7 +544,10 @@ async def test_fr_bal_001_4_years_before_the_import_year_stay_closed_as_a_whole(
         await _accrue(db_session, ctx, D(2026, 3, 9), working_year_start=D(2025, 3, 10))
     before = len(await _events(db_session, ctx))
     result = await accrue_all_working_years(
-        db_session, employee_id=ctx.employee_id, leave_type_id=ctx.leave_type_id, as_of=D(2027, 3, 9)
+        db_session,
+        employee_id=ctx.employee_id,
+        leave_type_id=ctx.leave_type_id,
+        as_of=D(2027, 3, 9),
     )
     assert D(2025, 3, 10) in result.skipped and len(await _events(db_session, ctx)) > before
 

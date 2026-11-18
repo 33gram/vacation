@@ -19,9 +19,9 @@ from app.models.leave_balance_entry import INITIAL_IMPORT, LeaveBalanceEntry
 from app.modules.balances.service import BalanceEntryError, accrue_before_read, get_balance
 from app.modules.business_rules.business_day import business_today
 from app.modules.employees import import_service
-from app.modules.employees.import_parsing import ParsedRow
+from app.modules.employees.import_parsing import EXPECTED_COLUMNS, ParsedRow
 from app.modules.employees.import_service import import_employees
-from tests.modules.auth.factories import make_account, make_department
+from tests.modules.auth.factories import bearer_header, make_account, make_department
 
 _seq = itertools.count(1)
 _COLUMNS = {
@@ -318,3 +318,63 @@ async def test_fr_bal_001_4_after_the_import_nothing_is_accrued_up_to_the_import
 
     assert result.accrued == {}
     assert len(await _entries(db_session, "ACC")) == 1
+
+
+# --- эндпоинт: автор, перечень предупреждений, отказ записи остатка -----------------
+
+
+def _csv(*data_lines: str) -> tuple[str, bytes, str]:
+    content = "\n".join([",".join(EXPECTED_COLUMNS), *data_lines]).encode("utf-8")
+    return ("employees.csv", content, "text/csv")
+
+
+async def _hr_admin(db_session):
+    return await make_account(
+        db_session, login=f"hr-endpoint-{next(_seq)}", auth_type="local", role="hr_admin"
+    )
+
+
+async def test_fr_emp_003_8_the_endpoint_writes_the_requesting_account_as_the_author(
+    db_session, api_client
+) -> None:
+    await make_department(db_session, name="IT")
+    admin = await _hr_admin(db_session)
+    line = "Иван Иванов,EP-1,IT,Инженер,2015-03-10,ep1@company.local,standard,,,10,,"
+    old_without_balance = "Пётр Петров,EP-2,IT,Инженер,2015-03-10,ep2@company.local,standard,,,,,"
+
+    response = await api_client.post(
+        "/api/employees/import",
+        files={"file": _csv(line, old_without_balance)},
+        headers=bearer_header(admin),
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert (body["accepted_count"], body["rejected_count"]) == (2, 0)
+    assert body["warning_rows"] == [3]  # FR-EMP-003/7: только номер строки
+    (entry,) = await _entries(db_session, "EP-1")
+    assert entry.actor_account_id == admin.id
+
+
+async def test_fr_emp_003_4_a_failed_balance_write_answers_400_and_writes_nothing(
+    db_session, api_client, monkeypatch
+) -> None:
+    await make_department(db_session, name="IT")
+    admin = await _hr_admin(db_session)
+
+    async def _boom(*args, **kwargs):
+        raise BalanceEntryError("сбой записи остатка")
+
+    monkeypatch.setattr(import_service, "import_initial_balance", _boom)
+    line = "Иван Иванов,EP-3,IT,Инженер,2015-03-10,ep3@company.local,standard,,,10,,"
+
+    response = await api_client.post(
+        "/api/employees/import", files={"file": _csv(line)}, headers=bearer_header(admin)
+    )
+
+    assert response.status_code == 400
+    assert "сбой записи остатка" in response.json()["detail"]
+    assert (
+        await db_session.scalar(select(Employee.id).where(Employee.personnel_number == "EP-3"))
+        is None
+    )

@@ -393,6 +393,10 @@ async def test_the_endpoint_forecast_leaves_out_years_closed_by_an_initial_impor
 
     main = _main(await _get(api_client, employee, own, far))
 
-    # Закрыты годы 2023-24, 2024-25, 2025-26 (по 28): остаются 5 импортированных
-    # и начисление за 2026-27 и 2027-28.
+    # Годы 2023-24 и 2024-25 закрыты целиком (по 28), год самого остатка 2025-26 - ДАТОЙ
+    # остатка (`entry_date` = TODAY, позже конца года, поэтому на деле тоже целиком): остаются
+    # 5 импортированных и начисление за 2026-27 и 2027-28. ДАННЫЕ НЕСОГЛАСОВАННЫ НАМЕРЕННО
+    # (остаток на сегодня за год 2025): тест охраняет, что покрытие не ПРОТЕКАЕТ в другой год
+    # (условие `cover.year_start == accrual.working_year_start` в `accrue_leave`); не «чинить»
+    # согласованием даты с годом.
     assert Decimal(main["total_balance"]) == expected_total_accrual(hire, far) - 3 * 28 + 5

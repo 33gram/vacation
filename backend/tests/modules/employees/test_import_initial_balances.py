@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import datetime
+import io
 import itertools
 from decimal import Decimal
 
@@ -19,7 +20,7 @@ from app.models.leave_balance_entry import INITIAL_IMPORT, LeaveBalanceEntry
 from app.modules.balances.service import BalanceEntryError, accrue_before_read, get_balance
 from app.modules.business_rules.business_day import business_today
 from app.modules.employees import import_service
-from app.modules.employees.import_parsing import EXPECTED_COLUMNS, ParsedRow
+from app.modules.employees.import_parsing import EXPECTED_COLUMNS, ParsedRow, parse_import_file
 from app.modules.employees.import_service import import_employees
 from tests.modules.auth.factories import bearer_header, make_account, make_department
 
@@ -211,6 +212,7 @@ async def test_fr_emp_003_7_warnings_are_exactly_old_hires_without_a_main_balanc
     await make_department(db_session, name="IT")
     author = await _author(db_session)
     today = (await business_today(db_session)).isoformat()
+    tomorrow = (await business_today(db_session) + datetime.timedelta(days=1)).isoformat()
     rows = [
         _row(2, personnel_number="W-OLD"),  # приём раньше, остатка нет -> предупреждение
         _row(3, personnel_number="W-MAIN", initial_balance_annual_paid="4"),  # есть -> нет
@@ -219,6 +221,8 @@ async def test_fr_emp_003_7_warnings_are_exactly_old_hires_without_a_main_balanc
         _row(5, personnel_number="W-TOFF", initial_balance_time_off="2"),
         _row(6, personnel_number="W-ZERO", initial_balance_annual_paid="0"),  # ноль = нет остатка
         _row(7, personnel_number="W-REJ", initial_balance_annual_paid="-3"),  # отклонена -> нет
+        # приём ПОЗЖЕ дня импорта без остатка: критерий говорит «в день импорта или позже»
+        _row(8, personnel_number="W-LATER", hire_date=tomorrow),
     ]
 
     result = await import_employees(db_session, rows, actor_account_id=author)
@@ -226,6 +230,65 @@ async def test_fr_emp_003_7_warnings_are_exactly_old_hires_without_a_main_balanc
     assert result.warning_rows == [2, 5, 6]
     assert result.rejected_count == 1  # предупреждение отклонённой строкой не считается
     assert [e.row_number for e in result.errors] == [7]
+
+
+async def test_fr_emp_003_6_a_positive_balance_with_the_hire_date_on_the_import_day_is_accepted(
+    db_session,
+) -> None:
+    # FR-EMP-003/6, граница: «позже бизнес-дня запуска» - значит приём РОВНО в день импорта
+    # принимается (мутация `hire_date > today` -> `>=` красит этот тест).
+    await make_department(db_session, name="IT")
+    author = await _author(db_session)
+    today = (await business_today(db_session)).isoformat()
+
+    result = await import_employees(
+        db_session,
+        [_row(2, personnel_number="DAY0", hire_date=today, initial_balance_annual_paid="5")],
+        actor_account_id=author,
+    )
+
+    assert (result.accepted_count, result.rejected_count) == (1, 0)
+    assert len(await _entries(db_session, "DAY0")) == 1
+
+
+def _xlsx_with_formula_balance() -> bytes:
+    from openpyxl import Workbook
+
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.append(list(EXPECTED_COLUMNS))
+    row = {
+        "full_name": "Formula Person",
+        "personnel_number": "FORM-1",
+        "department": "IT",
+        "position": "Инженер",
+        "hire_date": "2015-03-10",
+        "email": "form-1@company.local",
+        "work_schedule_type": "standard",
+        # openpyxl пишет формулу БЕЗ кэшированного значения, как файл, не открывавшийся в Excel
+        "initial_balance_time_off": "=ROUND(2*1.5,2)",
+    }
+    sheet.append([row.get(name) for name in EXPECTED_COLUMNS])
+    buffer = io.BytesIO()
+    workbook.save(buffer)
+    return buffer.getvalue()
+
+
+async def test_fr_emp_003_6_a_formula_without_a_cached_value_is_a_row_error_not_blank(
+    db_session,
+) -> None:
+    # FR-EMP-003/6 (PR #206 review, находка 3): `data_only=True` отдаёт для такой ячейки None,
+    # то есть «пусто», и остаток по неосновному виду исчезал бы молча.
+    await make_department(db_session, name="IT")
+    author = await _author(db_session)
+    rows = parse_import_file("people.xlsx", _xlsx_with_formula_balance())
+
+    result = await import_employees(db_session, rows, actor_account_id=author)
+
+    assert (result.accepted_count, result.rejected_count) == (0, 1)
+    assert [(e.row_number, e.field) for e in result.errors] == [(2, "initial_balance_time_off")]
+    assert "формула" in result.errors[0].reason
+    assert await _entries(db_session, "FORM-1") == []
 
 
 async def test_fr_emp_003_8_the_author_is_the_account_that_ran_the_import(db_session) -> None:

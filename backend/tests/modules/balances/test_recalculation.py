@@ -329,6 +329,11 @@ def _import_event(
     quantity: Decimal,
     on_date: datetime.date = D(2026, 1, 1),
 ) -> LeaveBalanceEntry:
+    # `on_date` по умолчанию (01.01.2026) для года с 10.03.2026 НАМЕРЕННО лежит вне года: тесты,
+    # которые берут его по умолчанию, проверяют год и барьер, а не дату, и результат от неё не
+    # зависит (шагов с датой не позже 01.01.2026 в таком году нет, покрытие пусто). Для года
+    # с 10.03.2025 та же дата внутри года. Не «чинить» согласованием с годом: тесты на дату
+    # задают `on_date` явно.
     return LeaveBalanceEntry(
         employee_id=ctx.employee_id,
         leave_type_id=ctx.leave_type_id,
@@ -361,6 +366,25 @@ async def test_fr_bal_001_4_the_import_year_accrues_only_the_steps_after_the_imp
     ]  # fmt: skip
     assert await _balance(db_session, ctx, D(2026, 3, 10)) == Decimal("19.00")
     assert await _accrue(db_session, ctx, AS_OF) == Decimal(0)  # повтор ничего не пишет
+
+
+async def test_fr_bal_001_4_the_latest_import_by_date_wins_when_there_are_two(
+    db_session,
+) -> None:
+    # Два события `initial_import` по одному виду достижимы НЕ из файла (импорт создаёт
+    # карточку один раз), а прямой записью. Тест фиксирует намерение `_latest_import`: покрытие
+    # задаёт САМОЕ ПОЗДНЕЕ по дате (мутация `desc` -> `asc` красит его). Остаток на 01.09.2026
+    # покрывает шаги 1-6 (14,00), начисляются 24.09 и 24.10: 18,67 - 14,00 = 4,67; если бы
+    # победил ранний (01.05.2026), вышло бы 14,00.
+    ctx = await _hired(db_session, D(2026, 3, 10))
+    db_session.add(_import_event(ctx, D(2026, 3, 10), Decimal("5"), on_date=D(2026, 5, 1)))
+    db_session.add(_import_event(ctx, D(2026, 3, 10), Decimal("1"), on_date=D(2026, 9, 1)))
+    await db_session.flush()
+
+    assert await _accrue(db_session, ctx, AS_OF) == Decimal("4.67")
+
+    events = [e for e in await _events(db_session, ctx) if e.entry_type == ACCRUAL]
+    assert [e.entry_date for e in events] == [D(2026, 9, 24), D(2026, 10, 24)]
 
 
 async def test_fr_bal_001_4_a_date_before_the_first_step_covers_nothing(db_session) -> None:

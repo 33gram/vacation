@@ -86,6 +86,8 @@ describe("employee import wizard (T-M1-19, FR-EMP-003)", () => {
     expect(screen.getByText("Отклонено строк: 0")).toBeInTheDocument();
     expect(screen.getByText("Предупреждения")).toBeInTheDocument();
     expect(screen.getByText("2, 7")).toBeInTheDocument();
+    // Способ исправить назван (PR #206 review, находка 9): ручная корректировка, FR-BAL-004.
+    expect(screen.getByText(/ручной корректировкой остатка/)).toBeInTheDocument();
   });
 
   it("draws no warnings block when there are none", async () => {

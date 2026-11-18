@@ -187,6 +187,8 @@ def _parse_balance(raw: str) -> tuple[Decimal | None, str | None]:
     ошибка (`FR-EMP-003/6`: скорее ошибка выгрузки, чем факт). Не больше двух знаков после
     разделителя и пяти до него - иначе значение не легло бы в `Numeric(7, 2)`."""
     text = raw.strip()
+    if text.startswith("="):
+        return None, "формула без сохранённого значения: сохраните файл со значениями"
     if text.startswith("-"):
         return None, f"отрицательный остаток «{raw}»: исправляется ручной корректировкой"
     if not _BALANCE_NUMBER.fullmatch(text):
@@ -285,7 +287,10 @@ def _validate_rows(
             amount, problem = _parse_balance(raw_balance)
             if problem is None and amount is not None and amount > 0:
                 if leave_type_code not in tracked_leave_types:
-                    problem = f"по виду отпуска «{leave_type_code}» остаток не ведётся"
+                    problem = (
+                        f"по виду отпуска «{leave_type_code}» остаток не ведётся: "
+                        "оставьте колонку пустой"
+                    )
                 elif hire_date is not None and hire_date > today:
                     problem = (
                         "остаток на дату импорта невозможен: дата приёма позже дня импорта"

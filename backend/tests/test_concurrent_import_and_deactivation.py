@@ -27,6 +27,7 @@ from app.db.session import get_engine
 from app.models.account import Account
 from app.models.department import Department
 from app.models.employee import Employee
+from app.modules.employees.import_parsing import EXPECTED_COLUMNS
 
 
 async def _setup(marker: str) -> tuple[int, int, int, str]:
@@ -111,10 +112,7 @@ async def test_concurrent_import_assigning_manager_and_deactivating_them_never_l
     token = create_access_token(account_id=admin_account_id, role="hr_admin")
     headers = {"Authorization": f"Bearer {token}"}
 
-    header = (
-        "full_name,personnel_number,department,position,hire_date,email,"
-        "work_schedule_type,manager_personnel_number,leave_category"
-    )
+    header = ",".join(EXPECTED_COLUMNS)
     row = (
         f"Import Deact Sub,{subordinate_personnel_number},{department_name},Engineer,"
         f"2024-01-15,{subordinate_email},standard,{manager_personnel_number},"

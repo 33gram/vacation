@@ -78,6 +78,7 @@ async def _type_ids(db_session) -> dict[str, int]:
 async def test_fr_emp_003_4_three_kinds_give_three_events_one_per_non_empty_column(
     db_session,
 ) -> None:
+    # FR-EMP-003/4.
     await make_department(db_session, name="IT")
     author = await _author(db_session)
     row = _row(
@@ -112,6 +113,7 @@ async def test_fr_emp_003_4_three_kinds_give_three_events_one_per_non_empty_colu
 
 
 async def test_fr_emp_003_5_zero_and_blank_write_no_event_and_are_not_errors(db_session) -> None:
+    # FR-EMP-003/5.
     await make_department(db_session, name="IT")
     author = await _author(db_session)
     rows = [
@@ -142,6 +144,7 @@ async def test_fr_emp_003_5_zero_and_blank_write_no_event_and_are_not_errors(db_
 async def test_fr_emp_003_6_a_bad_number_rejects_the_row_and_creates_no_card(
     db_session, raw: str, fragment: str
 ) -> None:
+    # FR-EMP-003/6.
     await make_department(db_session, name="IT")
     author = await _author(db_session)
     rows = [
@@ -163,6 +166,7 @@ async def test_fr_emp_003_6_a_bad_number_rejects_the_row_and_creates_no_card(
 async def test_fr_emp_003_6_a_positive_balance_with_a_future_hire_date_is_a_row_error(
     db_session,
 ) -> None:
+    # FR-EMP-003/6.
     await make_department(db_session, name="IT")
     author = await _author(db_session)
     future = (await business_today(db_session) + datetime.timedelta(days=30)).isoformat()
@@ -182,6 +186,7 @@ async def test_fr_emp_003_6_a_positive_balance_with_a_future_hire_date_is_a_row_
 async def test_fr_emp_003_6_a_positive_balance_of_an_untracked_type_is_a_row_error(
     db_session,
 ) -> None:
+    # FR-EMP-003/6.
     await make_department(db_session, name="IT")
     author = await _author(db_session)
     await db_session.execute(
@@ -202,6 +207,7 @@ async def test_fr_emp_003_6_a_positive_balance_of_an_untracked_type_is_a_row_err
 async def test_fr_emp_003_7_warnings_are_exactly_old_hires_without_a_main_balance(
     db_session,
 ) -> None:
+    # FR-EMP-003/7.
     await make_department(db_session, name="IT")
     author = await _author(db_session)
     today = (await business_today(db_session)).isoformat()
@@ -223,6 +229,7 @@ async def test_fr_emp_003_7_warnings_are_exactly_old_hires_without_a_main_balanc
 
 
 async def test_fr_emp_003_8_the_author_is_the_account_that_ran_the_import(db_session) -> None:
+    # FR-EMP-003/8.
     # Скриптом при первом развёртывании автор - первичный администратор (`FR-AUTH-005`): тот же
     # параметр, скрипта в репозитории нет. Здесь - учётная запись администратора как автор.
     await make_department(db_session, name="IT")
@@ -243,6 +250,7 @@ async def test_fr_emp_003_8_the_author_is_the_account_that_ran_the_import(db_ses
 async def test_fr_emp_003_8_a_balance_without_an_author_aborts_the_whole_import(
     db_session,
 ) -> None:
+    # FR-EMP-003/8.
     await make_department(db_session, name="IT")
     rows = [
         _row(2, personnel_number="NOAUTH-1"),
@@ -266,6 +274,7 @@ async def test_fr_emp_003_8_a_balance_without_an_author_aborts_the_whole_import(
 async def test_fr_emp_003_4_a_failure_of_the_balance_write_rolls_the_cards_back(
     db_session, monkeypatch
 ) -> None:
+    # FR-EMP-003/4.
     await make_department(db_session, name="IT")
     author = await _author(db_session)
 

@@ -265,8 +265,8 @@ def upgrade() -> None:
         # `app.models.leave_type.LEAVE_TYPE_*_VALUES`: миграция — замороженный
         # снимок схемы на момент ревизии и не должна импортировать код
         # приложения, иначе правка модели молча меняла бы смысл старой
-        # миграции. Цена: расхождение модели и миграции само не ловится
-        # (`T-M1-62`).
+        # миграции. Расхождение набора с моделью ловит
+        # `backend/tests/test_schema_drift_guard.py` (`T-M1-62`).
         sa.CheckConstraint(
             "is_paid IN ('full', 'none', 'partial')",
             name="ck_leave_types_is_paid",

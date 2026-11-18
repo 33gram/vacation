@@ -75,7 +75,8 @@ HR-администратор, и без автора по журналу не �
 
 Наборы типов в `CHECK` записаны литералами, а не берутся из
 `app.models.leave_balance_entry`: миграция — замороженный снимок. Их
-расхождение с моделью само не ловится (`T-M1-62`).
+расхождение с моделью ловит `backend/tests/test_schema_drift_guard.py`
+(`T-M1-62`).
 """
 
 from collections.abc import Sequence

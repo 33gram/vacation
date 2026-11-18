@@ -96,7 +96,9 @@ async def test_write_path_never_500s_on_unexpected_integrity_error(
         else:
             header = (
                 "full_name,personnel_number,department,position,hire_date,email,"
-                "work_schedule_type,manager_personnel_number,leave_category"
+                "work_schedule_type,manager_personnel_number,leave_category,"
+                "initial_balance_annual_paid,initial_balance_additional_paid,"
+                "initial_balance_time_off"
             )
             row = (
                 f"{full_name},{personnel_number},{department.name},Инженер,2024-01-15,"

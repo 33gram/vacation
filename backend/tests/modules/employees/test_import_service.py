@@ -302,7 +302,7 @@ async def test_import_reraises_unexpected_integrity_error_without_retry(
     rows = [_row(2)]
     call_count = {"n": 0}
 
-    async def _fake_write_accepted(session, accepted, manager_target):
+    async def _fake_write_accepted(session, accepted, manager_target, **_):
         call_count["n"] += 1
         raise fake_integrity_error("some_unrelated_constraint")
 
@@ -327,7 +327,7 @@ async def test_import_raises_import_file_error_after_exhausting_retries(
     rows = [_row(2)]
     call_count = {"n": 0}
 
-    async def _fake_write_accepted(session, accepted, manager_target):
+    async def _fake_write_accepted(session, accepted, manager_target, **_):
         call_count["n"] += 1
         raise fake_integrity_error("employees_personnel_number_key")
 

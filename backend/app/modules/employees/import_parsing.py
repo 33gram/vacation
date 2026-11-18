@@ -22,6 +22,17 @@ from openpyxl import load_workbook
 # пустым). Обе последние КОЛОНКИ обязаны присутствовать в заголовке;
 # пустые ЗНАЧЕНИЯ в них — не ошибка (руководитель пуст только для вершины
 # иерархии, leave_category не заполняется на MVP).
+#
+# Три последние колонки - НАЧАЛЬНЫЙ ОСТАТОК на дату импорта по видам, по которым Система ведёт
+# остаток (`FR-EMP-003/3`, `T-M1-36`): имя колонки - `initial_balance_` + код вида
+# (`BALANCE_COLUMNS`). Они обязаны присутствовать в заголовке по той же причине, что
+# `leave_category`: файл без них - файл не той версии, и молчаливое «остатков нет» было бы
+# ошибкой выгрузки, принятой за факт; пустое ЗНАЧЕНИЕ допустимо (события нет).
+BALANCE_COLUMNS = {
+    "initial_balance_annual_paid": "annual_paid",
+    "initial_balance_additional_paid": "additional_paid",
+    "initial_balance_time_off": "time_off",
+}
 EXPECTED_COLUMNS = (
     "full_name",
     "personnel_number",
@@ -32,6 +43,7 @@ EXPECTED_COLUMNS = (
     "work_schedule_type",
     "manager_personnel_number",
     "leave_category",
+    *BALANCE_COLUMNS,
 )
 
 # Жёсткие лимиты на загруженный файл (NFR-SCALE-001: штат до 750
@@ -175,6 +187,12 @@ def _parse_xlsx(content: bytes) -> list[ParsedRow]:
 
     try:
         workbook = load_workbook(io.BytesIO(content), read_only=True, data_only=True)
+        # Второй проход - ТОЛЬКО чтобы отличить формулу без кэшированного значения от пустой
+        # ячейки (`data_only=True` отдаёт для обеих `None`, и остаток по неосновному виду
+        # исчезал бы молча, PR #206 review, находка 3). Цена измерена: 1000 строк - 60 мс и
+        # около 1 МиБ на проход; файл на пределе `MAX_XLSX_UNCOMPRESSED_BYTES` (19 МиБ
+        # несжатых) - около 2 с и 22 МиБ.
+        formulas = load_workbook(io.BytesIO(content), read_only=True, data_only=False)
     except Exception as exc:
         raise ImportFileError(f"Не удалось прочитать XLSX-файл: {exc}") from exc
 
@@ -190,9 +208,21 @@ def _parse_xlsx(content: bytes) -> list[ParsedRow]:
         header = [(str(c).strip() if c is not None else "") for c in header_row]
         _require_expected_columns(header)
 
+        formula_sheet = formulas.active
+        formula_iter = formula_sheet.iter_rows(values_only=True) if formula_sheet else iter(())
+        next(formula_iter, None)  # заголовок
+        balance_positions = [i for i, name in enumerate(header) if name in BALANCE_COLUMNS]
         rows = []
         for row_number, raw_row in enumerate(rows_iter, start=2):
             cells = [_xlsx_cell_to_str(c) for c in raw_row]
+            raw_formulas = next(formula_iter, ())
+            for i in balance_positions:
+                if i < len(cells) and cells[i] is None and i < len(raw_formulas):
+                    typed = raw_formulas[i]
+                    if isinstance(typed, str) and typed.startswith("="):
+                        # Значение формулы в файле не сохранено: сохраняем текст формулы, чтобы
+                        # разбор остатка отклонил строку, а не принял её как «пусто».
+                        cells[i] = typed
             values = _row_values(header, cells)
             if _is_blank_row(values):
                 continue
@@ -204,3 +234,4 @@ def _parse_xlsx(content: bytes) -> list[ParsedRow]:
         raise ImportFileError(f"Не удалось прочитать XLSX-файл: {exc}") from exc
     finally:
         workbook.close()
+        formulas.close()

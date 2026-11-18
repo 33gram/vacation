@@ -104,6 +104,9 @@ class ImportSummary(BaseModel):
     accepted_count: int
     rejected_count: int
     errors: list[ImportRowError]
+    # Номера принятых строк с приёмом раньше дня импорта и без начального остатка по основному
+    # виду (`FR-EMP-003/7`): не ошибка, строка принята. Только номера (`NFR-SEC-001/002`).
+    warning_rows: list[int]
 
 
 class EmployeeUpdate(EmployeeCardFields):

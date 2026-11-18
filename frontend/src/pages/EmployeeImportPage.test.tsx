@@ -35,6 +35,7 @@ describe("employee import wizard (T-M1-19, FR-EMP-003)", () => {
         accepted_count: 2,
         rejected_count: 1,
         errors: [{ row_number: 5, field: "email", reason: "некорректный формат e-mail" }],
+        warning_rows: [],
       },
     });
 
@@ -59,10 +60,69 @@ describe("employee import wizard (T-M1-19, FR-EMP-003)", () => {
     expect(screen.queryByText(/^\{.*"row_number".*\}$/)).not.toBeInTheDocument();
   });
 
+  it("lists the warning rows as a third block, numbers only, and draws none when empty", async () => {
+    mockBackend({
+      status: 200,
+      body: {
+        accepted_count: 3,
+        rejected_count: 0,
+        errors: [],
+        warning_rows: [2, 7],
+      },
+    });
+
+    const { container } = renderApp("/employees/import");
+    const user = userEvent.setup();
+    await screen.findByText("Выбрать файл");
+    const fileInput = container.querySelector<HTMLInputElement>('input[type="file"]');
+    if (!fileInput) {
+      throw new Error("file input not found");
+    }
+    await user.upload(fileInput, selectAFile());
+    await user.click(screen.getByRole("button", { name: "Загрузить" }));
+
+    // FR-EMP-003/7: строки приняты (в «Принято»), предупреждение их не отклоняет.
+    expect(await screen.findByText("Принято строк: 3")).toBeInTheDocument();
+    expect(screen.getByText("Отклонено строк: 0")).toBeInTheDocument();
+    expect(screen.getByText("Предупреждения")).toBeInTheDocument();
+    expect(screen.getByText("2, 7")).toBeInTheDocument();
+    // Способ исправить назван (PR #206 review, находка 9): ручная корректировка, FR-BAL-004.
+    expect(screen.getByText(/ручной корректировкой остатка/)).toBeInTheDocument();
+  });
+
+  it("draws no warnings block when there are none", async () => {
+    mockBackend({
+      status: 200,
+      body: { accepted_count: 1, rejected_count: 0, errors: [], warning_rows: [] },
+    });
+
+    const { container } = renderApp("/employees/import");
+    const user = userEvent.setup();
+    await screen.findByText("Выбрать файл");
+    const fileInput = container.querySelector<HTMLInputElement>('input[type="file"]');
+    if (!fileInput) {
+      throw new Error("file input not found");
+    }
+    await user.upload(fileInput, selectAFile());
+    await user.click(screen.getByRole("button", { name: "Загрузить" }));
+
+    await screen.findByText("Принято строк: 1");
+    expect(screen.queryByText("Предупреждения")).not.toBeInTheDocument();
+  });
+
+  it("names the three balance columns on the first step", async () => {
+    mockBackend({ status: 200, body: { accepted_count: 0, rejected_count: 0, errors: [], warning_rows: [] } });
+
+    renderApp("/employees/import");
+
+    expect(await screen.findByText(/initial_balance_annual_paid/)).toBeInTheDocument();
+    expect(screen.getByText(/initial_balance_time_off/)).toBeInTheDocument();
+  });
+
   it("going back to step 1 keeps the previously selected file", async () => {
     mockBackend({
       status: 200,
-      body: { accepted_count: 1, rejected_count: 0, errors: [] },
+      body: { accepted_count: 1, rejected_count: 0, errors: [], warning_rows: [] },
     });
 
     const { container } = renderApp("/employees/import");

@@ -31,6 +31,14 @@ T-M2-08, `FR-BAL-001`, `FR-BAL-002`, `FR-BAL-004`).
 Сумма уже начисленного — это не остаток (остаток включает списания и корректировки)
 и ему не конкурент: единственное место вычисления остатка по-прежнему `get_balance`.
 
+НАЧАЛЬНЫЙ ОСТАТОК (`FR-BAL-001/4`, `T-M1-36`). Рабочий год, за который занесён
+`initial_import`, закрыт для начисления ДО даты остатка: шаги с датой не позже неё
+покрыты (покрытие — накопленное на последнем таком шаге, а НЕ сумма остатка из журнала:
+HR-число может быть меньше вычисленного, и тогда шаги до даты были бы записаны заново),
+шаги позже неё идут обычным порядком. Годы ДО года остатка закрыты целиком
+(`AccrualClosedError`). ГРАНИЦА: покрытие считается по ДЕЙСТВУЮЩЕЙ норме, а занесённое число —
+по норме на момент выгрузки; смена нормы посреди года (`T-M1-64`) складывает год из двух норм.
+
 ГРАНИЦА `FR-BAL-004` (правило 8). Критерий требует причину И запись в
 журнале аудита. Причину закрывает журнал событий (она обязательна на
 уровне БД и сервиса); `audit_log` появится в M6 (`T-M6-02`), и вторая
@@ -90,8 +98,9 @@ FORECAST_HORIZON_YEARS = 5
 #     его, следующее начисление записало бы ту же разность второй раз;
 #   - `initial_import` НЕ входит: он несёт начальный ОСТАТОК, в котором уже учтено
 #     прошлое использование, и считать его начисленным значило бы заглушить
-#     законное начисление; вместо этого год с начальным остатком (и все годы до
-#     него) для начисления ЗАКРЫТ целиком - см. `AccrualClosedError`.
+#     законное начисление; вместо этого начисление закрыто ДО даты начального
+#     остатка: годы до его года целиком (`AccrualClosedError`), его год - шаги с датой
+#     не позже остатка (`FR-BAL-001/4`, `T-M1-36`).
 # Расширять набор - осознанно: каждый тип сюда ломает или чинит двойной счёт.
 ALREADY_ACCRUED_ENTRY_TYPES = (ACCRUAL, RECALCULATION)
 
@@ -125,16 +134,14 @@ class AccrualAttribution:
 
 
 class AccrualClosedError(BalanceEntryError):
-    """Начисление по рабочему году закрыто начальным остатком: в этом или
-    более позднем году есть событие `initial_import`. Ничего не записано.
+    """Начисление по рабочему году закрыто начальным остатком: событие
+    `initial_import` занесено за БОЛЕЕ ПОЗДНИЙ рабочий год. Ничего не записано.
 
-    ПРЕДПОЛОЖЕНИЕ (не факт): начальный остаток уже включает прошлое
-    использование (прибавлять к нему вычисленное право - двойной счёт) и
-    покрывает все годы ДО года импорта. Что означает начальный остаток, решает
-    `T-M1-36`, и она ещё не решила. ИЗВЕСТНАЯ ДЫРА этого предположения: год
-    импорта закрыт ЦЕЛИКОМ, поэтому его часть после даты импорта не
-    начисляется никогда (следующий год стартует с нуля); кандидаты на
-    решение - в тексте `T-M1-36`."""
+    РЕШЕНИЕ ЗАКАЗЧИКА (`T-M1-36`, `FR-BAL-001/4`, раздел 13 п. 43): начальный остаток - остаток
+    НА ДАТУ ИМПОРТА. Целиком закрыты только годы ДО года импорта; сам год импорта закрыт лишь
+    до даты остатка (шаги начисления с датой не позже неё покрыты остатком, шаги после неё идут
+    обычным порядком), поэтому для него эта ошибка не поднимается. ГРАНИЦА: что остаток включает
+    прошлое использование - слово HR при выгрузке, Система проверить его не может."""
 
 
 async def get_balance(
@@ -363,6 +370,61 @@ async def adjust_balance(
     return await get_balance(session, employee_id, leave_type_id, working_year_start)
 
 
+async def import_initial_balance(
+    session: AsyncSession,
+    *,
+    employee_id: int,
+    leave_type_id: int,
+    quantity: Decimal,
+    actor_account_id: int | None,
+    entry_date: datetime.date,
+) -> None:
+    """Начальный остаток при импорте сотрудников (`FR-EMP-003/4`, `T-M1-36`): записывает ОДНО
+    событие `initial_import` и ничего не возвращает. Единственное место записи этого типа:
+    модуль импорта журнала не касается (сторож `test_balance_journal_guard.py`).
+
+    Событие относится к рабочему году сотрудника, в который попадает `entry_date`
+    (`get_working_year`), а не к году, который назвал бы вызывающий: границы года клиент и
+    импорт не присылают. `entry_date` - бизнес-день запуска импорта, его определяет
+    вызывающий (`business_today`); остаток - остаток НА эту дату (решение заказчика, раздел 13
+    п. 43), и начисление закрывается до неё (`FR-BAL-001/4`).
+
+    Отказы (`BalanceEntryError`, ничего не записано): количество не больше нуля (ноль - не
+    остаток, события нет; минус импорт не заносит, `FR-EMP-003/6`), нет автора, вид не найден
+    или по нему не ведётся остаток, дата раньше приёма сотрудника. Вид неактивный НЕ отказ: вид
+    «выключили» уже после выгрузки, остаток от этого не перестаёт быть правдой. Сотрудник
+    должен быть в сессии (после `flush`): рабочий год читается из его карточки. Только `flush`,
+    транзакцией владеет вызывающий: карточка и остаток пишутся одной транзакцией."""
+    if actor_account_id is None:
+        raise BalanceEntryError("Не указан автор начального остатка.")
+    if quantity <= 0:
+        raise BalanceEntryError("Начальный остаток должен быть больше нуля.")
+    tracked = await session.scalar(
+        select(LeaveType.balance_tracked).where(LeaveType.id == leave_type_id)
+    )
+    if tracked is None:
+        raise BalanceEntryError("Вид отпуска не найден.")
+    if not tracked:
+        raise BalanceEntryError(
+            "По этому виду отпуска остаток не ведётся: начальный остаток по нему не заносится."
+        )
+    year_start, year_end = await get_working_year(session, employee_id, entry_date)
+    session.add(
+        LeaveBalanceEntry(
+            employee_id=employee_id,
+            leave_type_id=leave_type_id,
+            working_year_start=year_start,
+            working_year_end=year_end,
+            entry_type=INITIAL_IMPORT,
+            quantity=quantity,
+            entry_date=entry_date,
+            reason=f"Начальный остаток на {entry_date:%d.%m.%Y} при импорте сотрудников",
+            actor_account_id=actor_account_id,
+        )
+    )
+    await session.flush()
+
+
 async def _lock_employee(session: AsyncSession, employee_id: int) -> Employee | None:
     """Строка сотрудника ПОД ЗАМКОМ и ПЕРЕЧИТАННАЯ (`T-M2-11`, замечание ревью).
 
@@ -396,23 +458,41 @@ async def _require_main_leave_type(session: AsyncSession, leave_type_id: int) ->
         )
 
 
-async def _latest_import_year(
+@dataclass(frozen=True)
+class ImportCover:
+    """Самый поздний начальный остаток по виду: рабочий год, за который он занесён, и дата,
+    на которую он действует."""
+
+    year_start: datetime.date
+    on_date: datetime.date
+
+
+async def _latest_import(
     session: AsyncSession, employee_id: int, leave_type_id: int
-) -> datetime.date | None:
-    """Начало самого позднего рабочего года с событием `initial_import`."""
-    return await session.scalar(
-        select(func.max(LeaveBalanceEntry.working_year_start)).where(
-            LeaveBalanceEntry.employee_id == employee_id,
-            LeaveBalanceEntry.leave_type_id == leave_type_id,
-            LeaveBalanceEntry.entry_type == INITIAL_IMPORT,
+) -> ImportCover | None:
+    """Начальный остаток с самой поздней датой по этому виду (при равных датах - с самым
+    поздним годом): по нему считается, что закрыто для начисления (`FR-BAL-001/4`)."""
+    row = (
+        await session.execute(
+            select(LeaveBalanceEntry.working_year_start, LeaveBalanceEntry.entry_date)
+            .where(
+                LeaveBalanceEntry.employee_id == employee_id,
+                LeaveBalanceEntry.leave_type_id == leave_type_id,
+                LeaveBalanceEntry.entry_type == INITIAL_IMPORT,
+            )
+            .order_by(
+                LeaveBalanceEntry.entry_date.desc(), LeaveBalanceEntry.working_year_start.desc()
+            )
+            .limit(1)
         )
-    )
+    ).first()
+    return None if row is None else ImportCover(row.working_year_start, row.entry_date)
 
 
-def _closed_by_import_message(year_start: datetime.date, import_year: datetime.date) -> str:
+def _closed_by_import_message(year_start: datetime.date, cover: ImportCover) -> str:
     return (
-        f"Начисление за рабочий год с {year_start:%d.%m.%Y} закрыто: "
-        f"начальный остаток занесён за рабочий год с {import_year:%d.%m.%Y}."
+        f"Начисление за рабочий год с {year_start:%d.%m.%Y} закрыто: начальный остаток на "
+        f"{cover.on_date:%d.%m.%Y} занесён за рабочий год с {cover.year_start:%d.%m.%Y}."
     )
 
 
@@ -451,8 +531,12 @@ async def accrue_leave(
 
     «Уже начислено» - сумма событий типов `ALREADY_ACCRUED_ENTRY_TYPES`
     (`accrual` и `recalculation`), см. оговорку у константы. По году, который
-    закрыт начальным остатком (`initial_import` в этом или более позднем году),
-    начисление не выполняется: `AccrualClosedError`, событий нет.
+    закрыт начальным остатком ЦЕЛИКОМ (`initial_import` занесён за более поздний год),
+    начисление не выполняется: `AccrualClosedError`, событий нет. Год самого начального
+    остатка закрыт только до его даты (`FR-BAL-001/4`, решение заказчика `T-M1-36`): шаги с датой
+    не позже неё покрыты остатком, шаги позже неё начисляются, поэтому шаг, ближайший после
+    даты остатка, начисляется ЦЕЛИКОМ - остаток покрывает накопленное на его дату, а не часть
+    идущего месяца.
 
     Норма и порог округления — из `business_rules_config`
     (`annual_leave_days`, `month_rounding_threshold_days`), дата приёма — из
@@ -499,11 +583,9 @@ async def accrue_leave(
     except ValueError as error:
         raise BalanceEntryError(str(error)) from error
 
-    closing_import_year = await _latest_import_year(session, employee_id, leave_type_id)
-    if closing_import_year is not None and closing_import_year >= accrual.working_year_start:
-        raise AccrualClosedError(
-            _closed_by_import_message(accrual.working_year_start, closing_import_year)
-        )
+    cover = await _latest_import(session, employee_id, leave_type_id)
+    if cover is not None and cover.year_start > accrual.working_year_start:
+        raise AccrualClosedError(_closed_by_import_message(accrual.working_year_start, cover))
 
     already = await session.execute(
         select(func.coalesce(func.sum(LeaveBalanceEntry.quantity), 0)).where(
@@ -526,6 +608,16 @@ async def accrue_leave(
         rounding_threshold_days=rules[MONTH_ROUNDING_THRESHOLD_DAYS],
         excluded_days=excluded_days,
     )
+    if cover is not None and cover.year_start == accrual.working_year_start:
+        # Год импорта закрыт ДО даты остатка (`FR-BAL-001/4`): накопленное на шагах с датой не
+        # позже неё покрыто начальным остатком, и нарастающий итог шага сравнивается с покрытием
+        # ПЛЮС уже начисленным после него (`already`), а не вместо него: иначе повторный вызов
+        # увидел бы только уже записанное и записал бы покрытое второй раз. ГРАНИЦА: начисления
+        # ДО даты остатка в том же году (их до остатка быть не должно: он заносится при создании
+        # карточки) были бы посчитаны дважды - покрытие их не вычитает.
+        covered = [step.accrued for step in steps if step.date <= cover.on_date]
+        if covered:
+            written_total += covered[-1]
     prefix = f"{attribution.reason_prefix.strip()}: " if attribution else ""
     difference = Decimal(0)
     for step in steps:
@@ -579,8 +671,9 @@ async def accrue_all_working_years(
     нормой), текущий - на `as_of`. Повторный вызов ничего не пишет.
 
     Годы, которые НЕ начисляются, пропускаются и названы в `skipped` с причиной
-    (это не ошибка читающего кода): (1) закрытые начальным остатком
-    (`AccrualClosedError`); (2) БАРЬЕР против выдуманного остатка (решение
+    (это не ошибка читающего кода): (1) закрытые начальным остатком ЦЕЛИКОМ - годы до года
+    импорта (`AccrualClosedError`; год самого остатка закрыт лишь до его даты, `FR-BAL-001/4`);
+    (2) БАРЬЕР против выдуманного остатка (решение
     заказчика, `T-M2-19`): годы, ЗАКОНЧИВШИЕСЯ до появления карточки сотрудника в
     Системе (`employees.created_at`; дата - ДЕНЬ ОРГАНИЗАЦИИ по параметру пояса,
     `business_date_of`, `T-M2-40`). Смысл: Система ведёт остаток с
@@ -616,7 +709,7 @@ async def accrue_all_working_years(
     # `zone` - пояс, уже прочитанный вызывающим (один запрос параметра на операцию, PR #198);
     # без него `business_date_of` читает параметр сам.
     card_date = await business_date_of(session, employee.created_at, zone=zone)
-    import_year = await _latest_import_year(session, employee_id, leave_type_id)
+    cover = await _latest_import(session, employee_id, leave_type_id)
     starts = working_year_starts(employee.hire_date, as_of)
     accrued: dict[datetime.date, Decimal] = {}
     skipped: dict[datetime.date, str] = {}
@@ -631,8 +724,8 @@ async def accrue_all_working_years(
                 f"закончился до появления карточки сотрудника в Системе ({card_date:%d.%m.%Y}): "
                 "прошлое приходит начальным остатком (initial_import, T-M1-36), а не вычисляется."
             )
-        if import_year is not None and import_year >= start:
-            reasons.append(_closed_by_import_message(start, import_year))
+        if cover is not None and cover.year_start > start:
+            reasons.append(_closed_by_import_message(start, cover))
         if reasons:
             skipped[start] = " ".join(reasons)
             continue

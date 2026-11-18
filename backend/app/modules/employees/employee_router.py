@@ -91,13 +91,14 @@ async def create_employee(
 async def import_employees_endpoint(
     file: UploadFile = File(...),
     session: AsyncSession = Depends(get_db_session),
-    _: Account = Depends(_require_employee_admin),
+    account: Account = Depends(_require_employee_admin),
 ) -> ImportSummary:
     content = await file.read()
     try:
         rows = parse_import_file(file.filename or "", content)
-        result = await import_employees(session, rows)
-    except ImportFileError as exc:
+        # Автор начальных остатков - запустившая импорт учётная запись (`FR-EMP-003/8`).
+        result = await import_employees(session, rows, actor_account_id=account.id)
+    except (ImportFileError, BalanceEntryError) as exc:
         # PR #139 review, коммит 1, п. 4: раньше `try` покрывал только
         # разбор файла — исчерпание повторов записи (`import_employees`)
         # поднимает тот же `ImportFileError`, но снаружи блока, поэтому
@@ -111,10 +112,11 @@ async def import_employees_endpoint(
     # табельный номер) сюда не попадает — только количества и номера
     # строк, отсутствие/причина ошибки не логируется по значению.
     logger.info(
-        "Employee import finished: accepted=%d rejected=%d error_rows=%s",
+        "Employee import finished: accepted=%d rejected=%d error_rows=%s warning_rows=%s",
         result.accepted_count,
         result.rejected_count,
         sorted({error.row_number for error in result.errors}),
+        result.warning_rows,
     )
 
     return ImportSummary(
@@ -124,6 +126,7 @@ async def import_employees_endpoint(
             ImportRowError(row_number=e.row_number, field=e.field, reason=e.reason)
             for e in result.errors
         ],
+        warning_rows=result.warning_rows,
     )
 
 

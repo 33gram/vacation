@@ -59,6 +59,28 @@ def test_parse_csv_missing_required_column_rejects_whole_file() -> None:
         parse_import_file("employees.csv", content)
 
 
+@pytest.mark.parametrize(
+    "column",
+    ["initial_balance_annual_paid", "initial_balance_additional_paid", "initial_balance_time_off"],
+)
+def test_fr_emp_003_3_a_missing_balance_column_rejects_the_whole_file(column: str) -> None:
+    # Колонки остатка обязательны в заголовке (файл без них - файл не той версии), значение
+    # в них может быть пустым.
+    header = ",".join(c for c in EXPECTED_COLUMNS if c != column)
+    content = (header + "\nИван Иванов,P-1,IT,Инженер,2024-01-15\n").encode()
+
+    with pytest.raises(ImportFileError, match=column):
+        parse_import_file("employees.csv", content)
+
+
+def test_fr_emp_003_3_an_empty_balance_value_is_kept_as_none() -> None:
+    content = _csv_bytes("Иван Иванов,P-1,IT,Инженер,2024-01-15,i@company.local,standard,,,,,")
+
+    (row,) = parse_import_file("employees.csv", content)
+
+    assert [row.values[c] for c in EXPECTED_COLUMNS[-3:]] == [None, None, None]
+
+
 def test_parse_csv_empty_file_is_rejected() -> None:
     with pytest.raises(ImportFileError):
         parse_import_file("employees.csv", b"")

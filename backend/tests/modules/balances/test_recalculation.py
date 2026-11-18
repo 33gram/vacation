@@ -320,10 +320,15 @@ async def test_fr_bal_003_accrual_after_a_recalculation_on_the_same_date_writes_
     assert await _balance(db_session, ctx, D(2026, 3, 10)) == Decimal("18.67")
 
 
-# --- решение (б): год с начальным остатком закрыт для начисления ------------
+# --- решение заказчика T-M1-36: начальный остаток закрывает начисление ДО своей даты ---
 
 
-def _import_event(ctx: Context, year_start: datetime.date, quantity: Decimal) -> LeaveBalanceEntry:
+def _import_event(
+    ctx: Context,
+    year_start: datetime.date,
+    quantity: Decimal,
+    on_date: datetime.date = D(2026, 1, 1),
+) -> LeaveBalanceEntry:
     return LeaveBalanceEntry(
         employee_id=ctx.employee_id,
         leave_type_id=ctx.leave_type_id,
@@ -331,23 +336,47 @@ def _import_event(ctx: Context, year_start: datetime.date, quantity: Decimal) ->
         working_year_end=year_start.replace(year=year_start.year + 1),
         entry_type=INITIAL_IMPORT,
         quantity=quantity,
-        entry_date=D(2026, 1, 1),
+        entry_date=on_date,
         actor_account_id=ctx.actor_id,
     )
 
 
-async def test_fr_bal_001_accrual_is_silent_for_a_year_that_has_an_initial_import(
+async def test_fr_bal_001_4_the_import_year_accrues_only_the_steps_after_the_import_date(
     db_session,
 ) -> None:
+    # FR-BAL-001/4. Остаток 5 на 01.05.2026: шаги 24.03 и 24.04 (2 месяца, 4,67) покрыты им; до 24.10.2026
+    # идут шаги 3-8 (накоплено 18,67), начисляется 18,67 - 4,67 = 14,00 шестью событиями.
     ctx = await _hired(db_session, D(2026, 3, 10))
-    db_session.add(_import_event(ctx, D(2026, 3, 10), Decimal("5")))
+    db_session.add(_import_event(ctx, D(2026, 3, 10), Decimal("5"), on_date=D(2026, 5, 1)))
     await db_session.flush()
 
-    with pytest.raises(AccrualClosedError, match="начальный остаток"):
-        await _accrue(db_session, ctx, AS_OF)
+    assert await _accrue(db_session, ctx, AS_OF) == Decimal("14.00")
 
-    assert len(await _events(db_session, ctx)) == 1  # только импорт
-    assert await _balance(db_session, ctx, D(2026, 3, 10)) == Decimal("5")
+    events = await _events(db_session, ctx)
+    assert [e.entry_type for e in events] == [INITIAL_IMPORT] + [ACCRUAL] * 6
+    assert [e.entry_date for e in events[1:]] == [
+        D(2026, 5, 24), D(2026, 6, 24), D(2026, 7, 24),
+        D(2026, 8, 24), D(2026, 9, 24), D(2026, 10, 24),
+    ]  # fmt: skip
+    assert await _balance(db_session, ctx, D(2026, 3, 10)) == Decimal("19.00")
+    assert await _accrue(db_session, ctx, AS_OF) == Decimal(0)  # повтор ничего не пишет
+
+
+async def test_fr_bal_001_4_a_date_before_the_first_step_covers_nothing(db_session) -> None:
+    ctx = await _hired(db_session, D(2026, 3, 10))
+    db_session.add(_import_event(ctx, D(2026, 3, 10), Decimal("5"), on_date=D(2026, 3, 10)))
+    await db_session.flush()
+
+    assert await _accrue(db_session, ctx, AS_OF) == Decimal("18.67")  # как без импорта
+
+
+async def test_fr_bal_001_4_a_step_dated_on_the_import_date_is_covered(db_session) -> None:
+    # Шаг 1 датирован 24.03.2026; остаток на ту же дату его покрывает (дата "не позже").
+    ctx = await _hired(db_session, D(2026, 3, 10))
+    db_session.add(_import_event(ctx, D(2026, 3, 10), Decimal("5"), on_date=D(2026, 3, 24)))
+    await db_session.flush()
+
+    assert await _accrue(db_session, ctx, AS_OF) == Decimal("16.34")  # 18,67 - 2,33
 
 
 async def test_fr_bal_001_accrual_works_for_a_year_without_an_initial_import(db_session) -> None:
@@ -417,8 +446,10 @@ async def test_br_8_catch_up_names_the_years_closed_by_an_initial_import(db_sess
         db_session, employee_id=ctx.employee_id, leave_type_id=ctx.leave_type_id, as_of=AS_OF
     )
 
-    assert set(result.skipped) == {D(2023, 3, 10), D(2024, 3, 10), D(2025, 3, 10)}
-    assert result.accrued == {D(2026, 3, 10): Decimal("18.67")}
+    # Закрыты целиком только годы ДО года импорта; год 2025 закрыт до 01.01.2026 (шаги 1-10,
+    # 23,33) и начисляет шаги 11 и 12 (4,67).
+    assert set(result.skipped) == {D(2023, 3, 10), D(2024, 3, 10)}
+    assert result.accrued == {D(2025, 3, 10): Decimal("4.67"), D(2026, 3, 10): Decimal("18.67")}
 
 
 async def test_br_8_catch_up_for_a_hire_date_in_the_future_writes_nothing(db_session) -> None:
@@ -465,19 +496,20 @@ async def test_fr_bal_003_a_field_without_an_effect_on_the_norm_writes_nothing(d
     assert len(await _events(db_session, ctx)) == before
 
 
-# --- ИЗВЕСТНАЯ ДЫРА (T-M1-36), зафиксированная как есть, а не как верное поведение --
+# --- T-M1-36: бывшая известная дыра закрыта решением заказчика ---------------------
 
 
-async def test_known_gap_t_m1_36_the_part_of_the_import_year_after_the_import_is_never_accrued(
+async def test_fr_bal_001_4_the_part_of_the_import_year_after_the_import_is_accrued(
     db_session,
 ) -> None:
-    # НЕ ожидаемое правильное поведение. Год импорта закрыт для начисления ЦЕЛИКОМ,
-    # поэтому часть года после даты импорта не начисляется никогда: следующий год
-    # стартует с нуля. Что делать (импорт с раздельными начислено/использовано;
-    # импорт только на границу года; ручная корректировка HR) - решает T-M1-36;
-    # когда она решит, этот тест надо заменить.
+    # Числа задачи: приём 10.03.2015, остаток занесён 01.11.2026 в рабочий год 10.03.2026-
+    # 09.03.2027, as_of 09.03.2027. По FR-BAL-001/1 к 01.11.2026 отработано 7 полных месяцев
+    # (10.03-09.10) и 23 дня восьмого (10.10-01.11, не меньше 15) - засчитано 8 месяцев, 28 * 8 / 12
+    # = 18,67: это покрыто остатком. Остаются месяцы 9-12: 28 * 4 / 12 = 9,33 (шаги 24.11.2026,
+    # 24.12.2026, 24.01.2027, 24.02.2027 по 2,33 + 2,33 + 2,34 + 2,33). Раньше не начислялось
+    # ничего, и сотрудник терял 9,33 дня.
     ctx = await _hired(db_session, D(2015, 3, 10))
-    db_session.add(_import_event(ctx, D(2026, 3, 10), Decimal("5")))
+    db_session.add(_import_event(ctx, D(2026, 3, 10), Decimal("5"), on_date=D(2026, 11, 1)))
     await db_session.flush()
 
     result = await accrue_all_working_years(
@@ -487,9 +519,33 @@ async def test_known_gap_t_m1_36_the_part_of_the_import_year_after_the_import_is
         as_of=D(2027, 3, 9),  # последний день года импорта
     )
 
-    assert D(2026, 3, 10) in result.skipped  # год пропущен
-    assert result.accrued == {}
-    assert await _balance(db_session, ctx, D(2026, 3, 10)) == Decimal("5")  # осталось 5, не 28
+    assert result.accrued == {D(2026, 3, 10): Decimal("9.33")}
+    assert D(2025, 3, 10) in result.skipped  # год ДО года импорта по-прежнему закрыт целиком
+    assert D(2026, 3, 10) not in result.skipped
+    accruals = [e for e in await _events(db_session, ctx) if e.entry_type == ACCRUAL]
+    assert [(e.entry_date, e.quantity) for e in accruals] == [
+        (D(2026, 11, 24), Decimal("2.33")),
+        (D(2026, 12, 24), Decimal("2.33")),
+        (D(2027, 1, 24), Decimal("2.34")),
+        (D(2027, 2, 24), Decimal("2.33")),
+    ]
+    assert await _balance(db_session, ctx, D(2026, 3, 10)) == Decimal("14.33")  # 5 + 9,33
+
+
+async def test_fr_bal_001_4_years_before_the_import_year_stay_closed_as_a_whole(
+    db_session,
+) -> None:
+    ctx = await _hired(db_session, D(2015, 3, 10))
+    db_session.add(_import_event(ctx, D(2026, 3, 10), Decimal("5"), on_date=D(2026, 11, 1)))
+    await db_session.flush()
+
+    with pytest.raises(AccrualClosedError, match="начальный остаток"):
+        await _accrue(db_session, ctx, D(2026, 3, 9), working_year_start=D(2025, 3, 10))
+    before = len(await _events(db_session, ctx))
+    result = await accrue_all_working_years(
+        db_session, employee_id=ctx.employee_id, leave_type_id=ctx.leave_type_id, as_of=D(2027, 3, 9)
+    )
+    assert D(2025, 3, 10) in result.skipped and len(await _events(db_session, ctx)) > before
 
 
 # --- автор и причина у КАЖДОЙ записи, порождённой пересчётом (FR-BAL-003) -----
@@ -587,9 +643,11 @@ async def test_fr_bal_003_a_shift_by_whole_years_keeps_an_import_in_the_survivin
     result = await _recalculate(db_session, ctx, D(2026, 3, 10), D(2025, 3, 10))
 
     assert result.closed_years == {}  # год с импортом сохранился - отказа нет
-    assert D(2025, 3, 10) in result.catch_up.skipped  # год ДО импорта закрыт им
-    assert D(2026, 3, 10) in result.catch_up.skipped
-    assert await _balance(db_session, ctx, D(2026, 3, 10)) == Decimal("5")
+    assert D(2025, 3, 10) in result.catch_up.skipped  # год ДО импорта закрыт им целиком
+    # `FR-BAL-001/4`: год самого остатка закрыт лишь до его даты (01.01.2026, до начала года -
+    # шагов нет), поэтому начисляется весь, 18,67 к 24.10.2026.
+    assert result.catch_up.accrued == {D(2026, 3, 10): Decimal("18.67")}
+    assert await _balance(db_session, ctx, D(2026, 3, 10)) == Decimal("23.67")
 
 
 async def test_fr_bal_003_moving_the_hire_date_back_accrues_the_years_before_the_old_date(

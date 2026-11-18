@@ -206,12 +206,13 @@ async def test_barrier_a_year_computed_before_a_change_of_the_zone_keeps_its_eve
 
 async def test_barrier_a_year_under_both_rules_names_both_reasons(db_session) -> None:
     ctx = await _employee(db_session, D(2023, 3, 10), _utc(2026, 10, 24))
+    # Остаток занесён 24.10.2026 за рабочий год с 10.03.2026: год 2025 - ДО года импорта.
     db_session.add(
         LeaveBalanceEntry(
             employee_id=ctx.employee_id,
             leave_type_id=ctx.leave_type_id,
-            working_year_start=D(2025, 3, 10),
-            working_year_end=D(2026, 3, 10),
+            working_year_start=D(2026, 3, 10),
+            working_year_end=D(2027, 3, 10),
             entry_type=INITIAL_IMPORT,
             quantity=Decimal("5"),
             entry_date=D(2026, 10, 24),
@@ -226,7 +227,9 @@ async def test_barrier_a_year_under_both_rules_names_both_reasons(db_session) ->
     assert "до появления карточки" in reason and "начальный остаток" in reason
 
 
-async def test_barrier_an_import_closes_years_as_before_when_the_card_is_old(db_session) -> None:
+async def test_barrier_an_import_closes_the_years_before_its_year_and_its_year_up_to_its_date(
+    db_session,
+) -> None:
     ctx = await _employee(db_session, D(2023, 3, 10), _utc(2023, 3, 10))
     db_session.add(
         LeaveBalanceEntry(
@@ -244,9 +247,11 @@ async def test_barrier_an_import_closes_years_as_before_when_the_card_is_old(db_
 
     result = await _catch_up(db_session, ctx)
 
-    assert set(result.skipped) == {D(2023, 3, 10), D(2024, 3, 10), D(2025, 3, 10)}
+    # `FR-BAL-001/4`: целиком закрыты годы ДО года импорта (2025-03-10); сам год остатка закрыт
+    # до 01.01.2026 (шаги 1-10, 23,33), после него начисляются шаги 11 и 12 (28,00 - 23,33 = 4,67).
+    assert set(result.skipped) == {D(2023, 3, 10), D(2024, 3, 10)}
     assert all("начальный остаток" in reason for reason in result.skipped.values())
-    assert result.accrued == {D(2026, 3, 10): Decimal("18.67")}
+    assert result.accrued == {D(2025, 3, 10): Decimal("4.67"), D(2026, 3, 10): Decimal("18.67")}
 
 
 # --- ленивое начисление при чтении --------------------------------------------
@@ -284,7 +289,7 @@ async def test_lazy_a_read_on_a_past_date_does_not_accrue_forward(db_session) ->
     assert sorted(set(years)) == [D(2023, 3, 10), D(2024, 3, 10)]  # 2025 и 2026 не тронуты
 
 
-async def test_lazy_an_employee_whose_every_year_is_closed_reads_without_an_error(
+async def test_lazy_a_year_with_an_initial_balance_accrues_the_part_after_its_date(
     db_session,
 ) -> None:
     ctx = await _employee(db_session, D(2026, 3, 10), _utc(2026, 3, 10))
@@ -304,7 +309,8 @@ async def test_lazy_an_employee_whose_every_year_is_closed_reads_without_an_erro
 
     result = await accrue_before_read(db_session, employee_id=ctx.employee_id, as_of=AS_OF)
 
-    assert result.accrued == {} and set(result.skipped) == {D(2026, 3, 10)}
+    # Остаток на 01.04.2026 покрывает шаг 1 (24.03, 2,33); до 24.10.2026 идут шаги 2-8 (16,34).
+    assert result.accrued == {D(2026, 3, 10): Decimal("16.34")} and result.skipped == {}
 
 
 async def test_lazy_a_failed_accrual_is_loud_not_swallowed(db_session) -> None:

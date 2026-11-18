@@ -210,9 +210,13 @@ async def test_a_terminated_employee_stops_growing_on_the_termination_date(db_se
     assert await _balance(db_session, ctx, start, D(2027, 3, 9)) == Decimal("9.33")  # 4 шага
 
 
-async def test_a_year_closed_by_the_initial_balance_gets_no_accrual_at_all(db_session) -> None:
-    # Ожидание: ни одного события начисления, остаток на каждый день - ровно начальный
-    # остаток (0 до даты его события и 12,5 с неё); барьер `AccrualClosedError` не изменился.
+async def test_a_year_with_an_initial_balance_accrues_only_the_steps_after_its_date(
+    db_session,
+) -> None:
+    # `FR-BAL-001/4`, решение заказчика `T-M1-36`: начальный остаток - остаток НА СВОЮ ДАТУ.
+    # Шаги года с датой не позже 01.05.2026 (24.03 и 24.04: 2 месяца, 4,67) покрыты им и не
+    # пишутся; шаги 3-12 начисляются обычным порядком, итого 28,00 - 4,67 = 23,33. Остаток на
+    # день: 0 до даты остатка, с неё 12,5 плюс накопленное по шагам СВЕРХ покрытых.
     hire, start = D(2026, 3, 10), D(2026, 3, 10)
     ctx = await _setup(db_session, hire)
     db_session.add(
@@ -237,10 +241,16 @@ async def test_a_year_closed_by_the_initial_balance_gets_no_accrual_at_all(db_se
         as_of=D(2027, 3, 9),
     )
 
-    assert result.accrued == {} and set(result.skipped) == {start}
-    assert [e.entry_type for e in await _events(db_session, ctx)] == [INITIAL_IMPORT]
+    assert result.accrued == {start: Decimal("23.33")} and result.skipped == {}
+    types = [e.entry_type for e in await _events(db_session, ctx)]
+    assert types == [INITIAL_IMPORT] + [ACCRUAL] * 10
     day = start
+    covered = Decimal("4.67")
     while day < D(2027, 3, 10):
-        expected = Decimal("12.5") if day >= D(2026, 5, 1) else Decimal(0)
+        if day < D(2026, 5, 1):
+            expected = Decimal(0)
+        else:
+            cumulative = _expected(hire, start, day, norm=28, threshold=15)
+            expected = Decimal("12.5") + max(Decimal(0), cumulative - covered)
         assert await _balance(db_session, ctx, start, day) == expected, f"остаток на {day}"
         day += ONE_DAY
